@@ -79,9 +79,10 @@ fn gates_equal(a: &Gate, b: &Gate) -> bool {
 fn qubits_of(gate: &Gate) -> (usize, [Qubit; 3]) {
     match gate {
         Gate::x(q) | Gate::h(q) | Gate::s(q) | Gate::sdg(q) | Gate::z(q)
-        | Gate::t(q) | Gate::tdg(q) | Gate::rz(_, q) => (1, [*q, 0, 0]),
+        | Gate::t(q) | Gate::tdg(q) | Gate::rz(_, q) | Gate::reset(q) => (1, [*q, 0, 0]),
         Gate::cnot { control, target } => (2, [*control, *target, 0]),
         Gate::ccx { control1, control2, target } => (3, [*control1, *control2, *target]),
+        Gate::measure { qubit, .. } => (1, [*qubit, 0, 0]),
     }
 }
 
@@ -92,7 +93,15 @@ impl Pass for CancelPairs {
     fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
         let gates = cancel_pairs(&circuit.gates, circuit.num_qubits, pb);
         let has_toffoli = gates.iter().any(|g| matches!(g, Gate::ccx { .. }));
-        Circuit { num_qubits: circuit.num_qubits, gates, has_toffoli }
+        let has_measurement = gates.iter()
+            .any(|g| matches!(g, Gate::measure { .. } | Gate::reset(_)));
+        Circuit {
+            num_qubits: circuit.num_qubits,
+            num_cbits: circuit.num_cbits,
+            gates,
+            has_toffoli,
+            has_measurement,
+        }
     }
 }
 
@@ -994,6 +1003,156 @@ mod tests {
     }
 
     // --- Large cascade depth ---
+
+    // --- measurement / reset barrier tests ---
+
+    fn make_circuit_with_cbits(num_qubits: usize, num_cbits: usize, gates: Vec<Gate>) -> Circuit {
+        let mut c = Circuit::with_cbits(num_qubits, num_cbits);
+        for g in gates { c.apply(g); }
+        c
+    }
+
+    #[test]
+    fn hh_blocked_by_measure_on_same_qubit() {
+        let c = make_circuit_with_cbits(1, 1, vec![
+            Gate::h(0),
+            Gate::measure { qubit: 0, cbit: 0 },
+            Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(r.has_measurement);
+        assert_eq!(r.num_cbits, 1);
+    }
+
+    #[test]
+    fn hh_blocked_by_reset_on_same_qubit() {
+        let c = make_circuit(1, vec![
+            Gate::h(0), Gate::reset(0), Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(r.has_measurement);
+    }
+
+    #[test]
+    fn hh_allowed_past_measure_on_other_qubit() {
+        let c = make_circuit_with_cbits(2, 1, vec![
+            Gate::h(0),
+            Gate::measure { qubit: 1, cbit: 0 },
+            Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(&r.gates[0], Gate::measure { qubit: 1, cbit: 0 }));
+    }
+
+    #[test]
+    fn hh_allowed_past_reset_on_other_qubit() {
+        let c = make_circuit(2, vec![
+            Gate::h(0), Gate::reset(1), Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(&r.gates[0], Gate::reset(1)));
+    }
+
+    #[test]
+    fn xx_blocked_by_measure() {
+        let c = make_circuit_with_cbits(1, 1, vec![
+            Gate::x(0),
+            Gate::measure { qubit: 0, cbit: 0 },
+            Gate::x(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+    }
+
+    #[test]
+    fn cnot_blocked_by_measure_on_control() {
+        let c = make_circuit_with_cbits(2, 1, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::measure { qubit: 0, cbit: 0 },
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+    }
+
+    #[test]
+    fn cnot_blocked_by_measure_on_target() {
+        let c = make_circuit_with_cbits(2, 1, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::measure { qubit: 1, cbit: 0 },
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+    }
+
+    #[test]
+    fn cnot_allowed_past_measure_on_disjoint_qubit() {
+        let c = make_circuit_with_cbits(3, 1, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::measure { qubit: 2, cbit: 0 },
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(&r.gates[0], Gate::measure { qubit: 2, cbit: 0 }));
+    }
+
+    #[test]
+    fn cnot_blocked_by_reset_on_target() {
+        let c = make_circuit(2, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::reset(1),
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+    }
+
+    #[test]
+    fn ccx_blocked_by_measure_on_any_qubit() {
+        for blocked_q in 0..3 {
+            let c = make_circuit_with_cbits(3, 1, vec![
+                Gate::ccx { control1: 0, control2: 1, target: 2 },
+                Gate::measure { qubit: blocked_q, cbit: 0 },
+                Gate::ccx { control1: 0, control2: 1, target: 2 },
+            ]);
+            let r = CancelPairs.run(&c);
+            assert_eq!(r.gates.len(), 3, "measure q{} should block CCX pair", blocked_q);
+        }
+    }
+
+    #[test]
+    fn measure_reset_pair_does_not_cancel() {
+        // measure and reset are NOT self-inverse, so two adjacent ones must stay.
+        let c = make_circuit_with_cbits(1, 1, vec![
+            Gate::measure { qubit: 0, cbit: 0 },
+            Gate::measure { qubit: 0, cbit: 0 },
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 2);
+
+        let c = make_circuit(1, vec![
+            Gate::reset(0),
+            Gate::reset(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 2);
+    }
+
+    #[test]
+    fn num_cbits_preserved() {
+        let c = make_circuit_with_cbits(1, 3, vec![
+            Gate::h(0), Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 0);
+        assert_eq!(r.num_cbits, 3);
+    }
 
     #[test]
     fn cascade_depth_10() {

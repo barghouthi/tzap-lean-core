@@ -49,7 +49,7 @@ impl Pass for DecomposeRz {
             result
         }).collect();
 
-        let mut output = Circuit::new(circuit.num_qubits);
+        let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for gates in expanded {
             for g in gates {
                 output.apply(g);
@@ -113,6 +113,21 @@ mod tests {
     #[test]
     fn default_epsilon_is_1e_10() {
         assert_eq!(DecomposeRz::default().epsilon, 1e-10);
+    }
+
+    #[test]
+    fn preserves_measure_and_reset() {
+        let mut c = Circuit::with_cbits(2, 1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::rz(PI / 5.0, 0));
+        c.apply(Gate::measure { qubit: 1, cbit: 0 });
+        let dec = DecomposeRz { epsilon: 1e-3 }.run(&c);
+        // No rz survives; reset and measure both still there.
+        assert!(!dec.gates.iter().any(|g| matches!(g, Gate::rz(..))));
+        assert!(dec.gates.iter().any(|g| matches!(g, Gate::reset(0))));
+        assert!(dec.gates.iter().any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 })));
+        assert_eq!(dec.num_cbits, 1);
+        assert!(dec.has_measurement);
     }
 
     #[test]

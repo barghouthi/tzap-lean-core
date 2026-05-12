@@ -72,6 +72,13 @@ pub fn phase_fold_global(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
                 // AND-based parity — opaque, just refresh the target.
                 qubits[*target] = fresh();
             }
+            Gate::measure { qubit, .. } | Gate::reset(qubit) => {
+                // Measurement / reset destroys coherent phase on `qubit`: a fresh
+                // parity tag prevents post-measure rotations from merging with
+                // pre-measure rotations on the same wire. Other qubits' tags
+                // remain valid (Rz on wire w commutes with measure on wire q ≠ w).
+                qubits[*qubit] = fresh();
+            }
         }
     }
 
@@ -102,7 +109,7 @@ pub fn phase_fold_global(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
     }
 
     // Reconstruct circuit, moving gates to avoid per-gate clones.
-    let mut output = Circuit::new(n);
+    let mut output = Circuit::with_cbits(n, circuit.num_cbits);
     for (idx, gate) in circuit.gates.clone().into_iter().enumerate() {
         if skip[idx] {
             continue;
@@ -1850,5 +1857,104 @@ mod tests {
         let opt = phase_fold_global(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
+    }
+
+    // --- measurement / reset barrier tests ---
+
+    #[test]
+    fn measure_blocks_t_t_merge() {
+        // T q0; measure q0 -> c0; T q0 — must NOT merge into S.
+        let mut c = Circuit::with_cbits(1, 1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::t(0));
+        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        // Both Ts must survive, measure must survive.
+        assert_eq!(count_t_gates(&opt), 2);
+        assert_eq!(opt.gates.len(), 3);
+        assert!(matches!(&opt.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(opt.has_measurement);
+    }
+
+    #[test]
+    fn reset_blocks_t_t_merge() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::reset(0));
+        c.apply(Gate::t(0));
+        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        assert_eq!(count_t_gates(&opt), 2);
+        assert_eq!(opt.gates.len(), 3);
+        assert!(matches!(&opt.gates[1], Gate::reset(0)));
+    }
+
+    #[test]
+    fn measure_blocks_t_tdg_cancel() {
+        // T q0; measure q0 -> c0; Tdg q0 — must NOT cancel.
+        let mut c = Circuit::with_cbits(1, 1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::tdg(0));
+        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        assert_eq!(count_phase_gates(&opt), 2);
+        assert_eq!(opt.gates.len(), 3);
+    }
+
+    #[test]
+    fn measure_on_other_qubit_does_not_block_merge() {
+        // T q0; measure q1 -> c0; T q0 — same wire as the rotations is undisturbed.
+        let mut c = Circuit::with_cbits(2, 1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::measure { qubit: 1, cbit: 0 });
+        c.apply(Gate::t(0));
+        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        // T+T merge to S on q0.
+        assert_eq!(count_t_gates(&opt), 0);
+        assert_eq!(count_phase_gates(&opt), 1);
+        assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
+        // Measurement is preserved.
+        assert!(opt.gates.iter().any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 })));
+    }
+
+    #[test]
+    fn reset_on_other_qubit_does_not_block_merge() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::t(0));
+        c.apply(Gate::reset(1));
+        c.apply(Gate::t(0));
+        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        assert_eq!(count_phase_gates(&opt), 1);
+        assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
+        assert!(opt.gates.iter().any(|g| matches!(g, Gate::reset(1))));
+    }
+
+    #[test]
+    fn measure_preserved_with_no_rotations() {
+        let mut c = Circuit::with_cbits(2, 2);
+        c.apply(Gate::h(0));
+        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::measure { qubit: 1, cbit: 1 });
+        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        assert_eq!(opt.gates.len(), 4);
+        assert_eq!(opt.num_cbits, 2);
+        assert!(opt.has_measurement);
+    }
+
+    #[test]
+    fn measure_then_fresh_t_chain_folds_independently() {
+        // Pre-measure T+T should merge; post-measure T+T should merge separately.
+        let mut c = Circuit::with_cbits(1, 1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::t(0));
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::t(0));
+        c.apply(Gate::t(0));
+        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        // Expect: S, measure, S
+        assert_eq!(opt.gates.len(), 3);
+        assert!(matches!(&opt.gates[0], Gate::s(0)));
+        assert!(matches!(&opt.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(matches!(&opt.gates[2], Gate::s(0)));
     }
 }

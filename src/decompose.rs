@@ -7,7 +7,7 @@ pub struct DecomposeToffoli;
 impl Pass for DecomposeToffoli {
     fn name(&self) -> &str { "Toffoli decomposition" }
     fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
-        let mut output = Circuit::new(circuit.num_qubits);
+        let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for gate in &circuit.gates {
             pb.inc(1);
             match gate {
@@ -127,5 +127,44 @@ mod tests {
         assert!(matches!(&dec.gates[1], Gate::sdg(1)));
         assert!(matches!(&dec.gates[2], Gate::s(2)));
         assert!(circuits_equiv(&c, &dec, 1e-10));
+    }
+
+    #[test]
+    fn preserves_measure() {
+        let mut c = Circuit::with_cbits(2, 2);
+        c.apply(Gate::h(0));
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::measure { qubit: 1, cbit: 1 });
+        let dec = DecomposeToffoli.run(&c);
+        assert_eq!(dec.gates.len(), 3);
+        assert!(matches!(&dec.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(matches!(&dec.gates[2], Gate::measure { qubit: 1, cbit: 1 }));
+    }
+
+    #[test]
+    fn preserves_reset() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::h(1));
+        c.apply(Gate::reset(1));
+        let dec = DecomposeToffoli.run(&c);
+        assert_eq!(dec.gates.len(), 3);
+        assert!(matches!(&dec.gates[0], Gate::reset(0)));
+        assert!(matches!(&dec.gates[2], Gate::reset(1)));
+    }
+
+    #[test]
+    fn ccx_decomposes_with_surrounding_measure() {
+        // Toffoli decomposes; surrounding measurements / resets pass through unchanged.
+        let mut c = Circuit::with_cbits(3, 1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::measure { qubit: 2, cbit: 0 });
+        let dec = DecomposeToffoli.run(&c);
+        // 1 (reset) + 15 (CCX decomposition) + 1 (measure) = 17
+        assert_eq!(dec.gates.len(), 17);
+        assert!(matches!(&dec.gates[0], Gate::reset(0)));
+        assert!(matches!(dec.gates.last().unwrap(), Gate::measure { qubit: 2, cbit: 0 }));
+        assert_eq!(dec.num_cbits, 1);
     }
 }
