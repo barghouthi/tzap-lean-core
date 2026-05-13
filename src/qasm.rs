@@ -55,12 +55,14 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
             }
         } else if let Some(rest) = line.strip_prefix("measure ") {
             seen_gate = true;
-            let (qubit, cbit) = parse_measure(rest, &registers, &cregisters, line_num)?;
-            gates.push(Gate::measure { qubit, cbit });
+            for (qubit, cbit) in parse_measure(rest, &registers, &cregisters, line_num)? {
+                gates.push(Gate::measure { qubit, cbit });
+            }
         } else if let Some(rest) = line.strip_prefix("reset ") {
             seen_gate = true;
-            let q = resolve_qubits(rest, &registers, line_num)?[0];
-            gates.push(Gate::reset(q));
+            for q in expand_qubit_operand(rest, &registers, line_num)? {
+                gates.push(Gate::reset(q));
+            }
         } else if let Some(rest) = line.strip_prefix("cx ") {
             seen_gate = true;
             let qubits = resolve_qubits(rest, &registers, line_num)?;
@@ -167,11 +169,13 @@ fn parse_gate_stmt(
     gates: &mut Vec<Gate>,
 ) -> Result<(), String> {
     if let Some(rest) = line.strip_prefix("measure ") {
-        let (qubit, cbit) = parse_measure(rest, registers, cregisters, line_num)?;
-        gates.push(Gate::measure { qubit, cbit });
+        for (qubit, cbit) in parse_measure(rest, registers, cregisters, line_num)? {
+            gates.push(Gate::measure { qubit, cbit });
+        }
     } else if let Some(rest) = line.strip_prefix("reset ") {
-        let q = resolve_qubits(rest, registers, line_num)?[0];
-        gates.push(Gate::reset(q));
+        for q in expand_qubit_operand(rest, registers, line_num)? {
+            gates.push(Gate::reset(q));
+        }
     } else if let Some(rest) = line.strip_prefix("cx ") {
         let qubits = resolve_qubits(rest, registers, line_num)?;
         gates.push(Gate::cnot { control: qubits[0], target: qubits[1] });
@@ -555,26 +559,61 @@ fn find_matching_paren(s: &str) -> Option<usize> {
     None
 }
 
-/// Parse `q[i] -> c[j]` from a measure statement (the `measure ` prefix already stripped).
+/// Parse a measure statement body (without the `measure ` prefix) and return one or more
+/// (qubit, cbit) pairs. Supports both the indexed form `measure q[i] -> c[j];` and the
+/// register-broadcast form `measure q -> c;` (per OpenQASM 2.0 §3.4, broadcast requires
+/// same-size registers).
 fn parse_measure(
     s: &str,
     registers: &[(String, usize, usize)],
     cregisters: &[(String, usize, usize)],
     line_num: usize,
-) -> Result<(usize, usize), String> {
+) -> Result<Vec<(usize, usize)>, String> {
     let arrow = s.find("->")
         .ok_or_else(|| format!("line {line_num}: measure missing '->' (got '{s}')"))?;
     let q_part = s[..arrow].trim();
     let c_part = s[arrow + 2..].trim();
-    let qs = resolve_qubits(q_part, registers, line_num)?;
-    if qs.len() != 1 {
-        return Err(format!("line {line_num}: measure expects one qubit"));
+    let qs = expand_qubit_operand(q_part, registers, line_num)?;
+    let cs = expand_cbit_operand(c_part, cregisters, line_num)?;
+    if qs.len() != cs.len() {
+        return Err(format!(
+            "line {line_num}: measure operand size mismatch ({} qubits, {} cbits)",
+            qs.len(), cs.len()
+        ));
     }
-    let cs = resolve_cbits(c_part, cregisters, line_num)?;
-    if cs.len() != 1 {
-        return Err(format!("line {line_num}: measure expects one classical bit"));
+    Ok(qs.into_iter().zip(cs).collect())
+}
+
+/// Expand a single qubit-operand (either `name[i]` or bare `name`) into a list of qubit
+/// indices. A bare register name expands to every qubit in the register, in order.
+fn expand_qubit_operand(
+    s: &str,
+    registers: &[(String, usize, usize)],
+    line_num: usize,
+) -> Result<Vec<usize>, String> {
+    let s = s.trim().trim_end_matches(';').trim();
+    if s.contains('[') {
+        return resolve_qubits(s, registers, line_num);
     }
-    Ok((qs[0], cs[0]))
+    let (_, offset, size) = registers.iter()
+        .find(|(n, _, _)| n == s)
+        .ok_or_else(|| format!("line {line_num}: unknown register '{s}'"))?;
+    Ok((*offset..*offset + *size).collect())
+}
+
+fn expand_cbit_operand(
+    s: &str,
+    cregisters: &[(String, usize, usize)],
+    line_num: usize,
+) -> Result<Vec<usize>, String> {
+    let s = s.trim().trim_end_matches(';').trim();
+    if s.contains('[') {
+        return resolve_cbits(s, cregisters, line_num);
+    }
+    let (_, offset, size) = cregisters.iter()
+        .find(|(n, _, _)| n == s)
+        .ok_or_else(|| format!("line {line_num}: unknown classical register '{s}'"))?;
+    Ok((*offset..*offset + *size).collect())
 }
 
 fn resolve_cbits(
@@ -1304,6 +1343,127 @@ measure q[1] -> c[1];
         assert_eq!(parsed.num_qubits, 2);
         assert_eq!(parsed.num_cbits, 2);
         assert!(matches!(&parsed.gates[0], Gate::measure { qubit: 0, cbit: 1 }));
+    }
+
+    // --- broadcast (whole-register) measure and reset (OpenQASM 2.0 §3.4) ---
+
+    #[test]
+    fn measure_broadcast_whole_register() {
+        // `measure q -> c;` expands to one measure per qubit in same-size registers.
+        let qasm = "OPENQASM 2.0;\nqreg q[3];\ncreg c[3];\nmeasure q -> c;\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.num_qubits, 3);
+        assert_eq!(parsed.num_cbits, 3);
+        assert_eq!(parsed.gates.len(), 3);
+        assert!(matches!(&parsed.gates[0], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(matches!(&parsed.gates[1], Gate::measure { qubit: 1, cbit: 1 }));
+        assert!(matches!(&parsed.gates[2], Gate::measure { qubit: 2, cbit: 2 }));
+        assert!(parsed.has_measurement);
+    }
+
+    #[test]
+    fn measure_broadcast_with_offsets() {
+        // Multiple qregs and cregs; broadcast picks the named register only.
+        let qasm = "OPENQASM 2.0;\nqreg a[1];\nqreg b[2];\ncreg x[1];\ncreg y[2];\n\
+                    measure b -> y;\n";
+        let parsed = parse(qasm).unwrap();
+        // b's qubits are 1, 2; y's cbits are 1, 2.
+        assert_eq!(parsed.gates.len(), 2);
+        assert!(matches!(&parsed.gates[0], Gate::measure { qubit: 1, cbit: 1 }));
+        assert!(matches!(&parsed.gates[1], Gate::measure { qubit: 2, cbit: 2 }));
+    }
+
+    #[test]
+    fn measure_broadcast_size_mismatch_errors() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[3];\nmeasure q -> c;\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("size mismatch"));
+    }
+
+    #[test]
+    fn measure_broadcast_unknown_qreg() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nmeasure nope -> c;\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("unknown register"));
+        assert!(err.contains("'nope'"));
+    }
+
+    #[test]
+    fn measure_broadcast_unknown_creg() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nmeasure q -> nope;\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("unknown classical register"));
+        assert!(err.contains("'nope'"));
+    }
+
+    #[test]
+    fn measure_mixed_indexed_lhs_broadcast_rhs_size_mismatch() {
+        // `measure q[0] -> c;` — LHS has size 1, RHS broadcasts to 2; mismatch.
+        let qasm = "OPENQASM 2.0;\nqreg q[1];\ncreg c[2];\nmeasure q[0] -> c;\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("size mismatch"));
+    }
+
+    #[test]
+    fn measure_mixed_size_one_register_matches_indexed() {
+        // `measure q -> c[0];` where q is size 1 — both sides have size 1, allowed.
+        let qasm = "OPENQASM 2.0;\nqreg q[1];\ncreg c[2];\nmeasure q -> c[0];\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 1);
+        assert!(matches!(&parsed.gates[0], Gate::measure { qubit: 0, cbit: 0 }));
+    }
+
+    #[test]
+    fn reset_broadcast_whole_register() {
+        let qasm = "OPENQASM 2.0;\nqreg q[3];\nreset q;\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 3);
+        assert!(matches!(&parsed.gates[0], Gate::reset(0)));
+        assert!(matches!(&parsed.gates[1], Gate::reset(1)));
+        assert!(matches!(&parsed.gates[2], Gate::reset(2)));
+        assert!(parsed.has_measurement);
+    }
+
+    #[test]
+    fn reset_broadcast_with_offset() {
+        let qasm = "OPENQASM 2.0;\nqreg a[1];\nqreg b[2];\nreset b;\n";
+        let parsed = parse(qasm).unwrap();
+        // b's qubits are 1, 2.
+        assert_eq!(parsed.gates.len(), 2);
+        assert!(matches!(&parsed.gates[0], Gate::reset(1)));
+        assert!(matches!(&parsed.gates[1], Gate::reset(2)));
+    }
+
+    #[test]
+    fn reset_broadcast_unknown_register() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\nreset nope;\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("unknown register"));
+        assert!(err.contains("'nope'"));
+    }
+
+    #[test]
+    fn measure_broadcast_via_streaming_reader() {
+        use std::io::Cursor;
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nh q[0];\nmeasure q -> c;\n";
+        let mut r = StreamingReader::new(Cursor::new(qasm.as_bytes())).unwrap();
+        let batch = r.next_batch(10).unwrap().unwrap();
+        assert_eq!(batch.len(), 3);
+        assert!(matches!(&batch[0], Gate::h(0)));
+        assert!(matches!(&batch[1], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(matches!(&batch[2], Gate::measure { qubit: 1, cbit: 1 }));
+    }
+
+    #[test]
+    fn reset_broadcast_via_streaming_reader() {
+        use std::io::Cursor;
+        let qasm = "OPENQASM 2.0;\nqreg q[3];\nreset q;\n";
+        let mut r = StreamingReader::new(Cursor::new(qasm.as_bytes())).unwrap();
+        let batch = r.next_batch(10).unwrap().unwrap();
+        assert_eq!(batch.len(), 3);
+        for (i, g) in batch.iter().enumerate() {
+            assert!(matches!(g, Gate::reset(q) if *q == i));
+        }
     }
 
     #[test]

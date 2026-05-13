@@ -12,7 +12,7 @@ It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized O
 
 - **Toffoli (`ccx`)** gates are automatically decomposed into Clifford+T before optimization.
 - **Rz** gates are left as-is by default. Pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth). `--to-cliffordt` also decomposes Rz gates. Use `--epsilon <eps>` with either flag to control the approximation precision (default: `1e-10`; accepts scientific notation).
-- **`measure` and `reset`** act as barriers: phase folding does not merge rotations on a qubit across a `measure`/`reset` on the same wire, and pair cancellation will not cancel gates that straddle one. Rotations and gates on other wires commute through freely.
+- **`measure` and `reset`** act as barriers: phase folding does not merge rotations on a qubit across a `measure`/`reset` on the same wire, and pair cancellation will not cancel gates that straddle one. Rotations and gates on other wires commute through freely. Both indexed (`measure q[0] -> c[0];`, `reset q[0];`) and register-broadcast (`measure q -> c;`, `reset q;`) forms are supported per the OpenQASM 2.0 spec.
 
 ## Usage
 
