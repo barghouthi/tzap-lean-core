@@ -1129,6 +1129,136 @@ t q[0];
     }
 
     #[test]
+    fn measure_qubit_out_of_range() {
+        // Symmetric to cbit out-of-range — the qubit side is also checked.
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[5];\nmeasure q[7] -> c[0];\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("line 4"));
+        assert!(err.contains("out of range"));
+        assert!(err.contains("'q'"));
+    }
+
+    #[test]
+    fn reset_qubit_out_of_range() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\nreset q[9];\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("line 3"));
+        assert!(err.contains("out of range"));
+        assert!(err.contains("'q'"));
+    }
+
+    #[test]
+    fn measure_size_check_reports_both_sizes() {
+        // The size-mismatch error should include both sizes so the user can see which side is wrong.
+        let qasm = "OPENQASM 2.0;\nqreg q[4];\ncreg c[2];\nmeasure q -> c;\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("size mismatch"));
+        assert!(err.contains('4'));
+        assert!(err.contains('2'));
+    }
+
+    #[test]
+    fn programmatic_measure_skips_size_check() {
+        // Construction-time validation is NOT performed: the Circuit API trusts callers.
+        // (Parser-time validation is enforced; this is the internal-construction contract.)
+        let mut c = Circuit::with_cbits(1, 1);
+        c.apply(Gate::measure { qubit: 99, cbit: 99 });
+        assert_eq!(c.gates.len(), 1);
+        assert!(c.has_measurement);
+        // But serialize → parse will fail to round-trip because the indices reference
+        // bits outside the declared `qreg q[1]` / `creg c[1]`.
+        let qasm = serialize(&c);
+        let err = parse(&qasm).unwrap_err();
+        assert!(err.contains("out of range"));
+    }
+
+    #[test]
+    fn programmatic_reset_skips_size_check() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::reset(42));
+        assert_eq!(c.gates.len(), 1);
+        assert!(c.has_measurement);
+        let qasm = serialize(&c);
+        let err = parse(&qasm).unwrap_err();
+        assert!(err.contains("out of range"));
+    }
+
+    #[test]
+    fn measure_broadcast_size_mismatch_line_number() {
+        // Size check is at parse time and reports the correct line number.
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nh q[0];\nh q[1];\nmeasure q -> c[0];\n";
+        let err = parse(qasm).unwrap_err();
+        assert!(err.contains("line 6"));
+        assert!(err.contains("size mismatch"));
+    }
+
+    #[test]
+    fn measure_semicolon_separated_on_one_line() {
+        // Multiple statements per line should each be parsed independently.
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nh q[0]; measure q -> c;\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 3);
+        assert!(matches!(&parsed.gates[0], Gate::h(0)));
+        assert!(matches!(&parsed.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(matches!(&parsed.gates[2], Gate::measure { qubit: 1, cbit: 1 }));
+    }
+
+    #[test]
+    fn reset_semicolon_separated_on_one_line() {
+        let qasm = "OPENQASM 2.0;\nqreg q[3];\nh q[0]; reset q;\n";
+        let parsed = parse(qasm).unwrap();
+        // H + 3 resets
+        assert_eq!(parsed.gates.len(), 4);
+        assert!(matches!(&parsed.gates[0], Gate::h(0)));
+        for (i, g) in parsed.gates[1..].iter().enumerate() {
+            assert!(matches!(g, Gate::reset(q) if *q == i));
+        }
+    }
+
+    #[test]
+    fn measure_broadcast_with_inline_comment() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nmeasure q -> c; // sink\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 2);
+    }
+
+    #[test]
+    fn reset_broadcast_with_extra_whitespace() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\nreset    q   ;\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 2);
+        assert!(matches!(&parsed.gates[0], Gate::reset(0)));
+        assert!(matches!(&parsed.gates[1], Gate::reset(1)));
+    }
+
+    #[test]
+    fn measure_broadcast_with_extra_whitespace() {
+        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nmeasure   q   ->   c  ;\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 2);
+        assert!(matches!(&parsed.gates[0], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(matches!(&parsed.gates[1], Gate::measure { qubit: 1, cbit: 1 }));
+    }
+
+    #[test]
+    fn measure_to_register_bracketed_lhs_size_one() {
+        // q[0] resolves to size 1; c is a creg of size 1 → broadcast matches.
+        let qasm = "OPENQASM 2.0;\nqreg q[3];\ncreg c[1];\nmeasure q[2] -> c;\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 1);
+        assert!(matches!(&parsed.gates[0], Gate::measure { qubit: 2, cbit: 0 }));
+    }
+
+    #[test]
+    fn measure_lhs_broadcast_rhs_indexed_size_one_qreg() {
+        // q is size 1 → expands to [q0]; c[1] is one cbit. Both size 1.
+        let qasm = "OPENQASM 2.0;\nqreg q[1];\ncreg c[3];\nmeasure q -> c[1];\n";
+        let parsed = parse(qasm).unwrap();
+        assert_eq!(parsed.gates.len(), 1);
+        assert!(matches!(&parsed.gates[0], Gate::measure { qubit: 0, cbit: 1 }));
+    }
+
+    #[test]
     fn measure_missing_arrow() {
         let qasm = "OPENQASM 2.0;\nqreg q[1];\ncreg c[1];\nmeasure q[0] c[0];\n";
         let err = parse(qasm).unwrap_err();
