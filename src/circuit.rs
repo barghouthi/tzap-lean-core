@@ -3,6 +3,7 @@
 use std::fmt;
 
 pub type Qubit = usize;
+pub type CBit = usize;
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Debug)]
@@ -17,23 +18,45 @@ pub enum Gate {
     rz(f64, Qubit),
     cnot { control: Qubit, target: Qubit },
     ccx { control1: Qubit, control2: Qubit, target: Qubit },
+    measure { qubit: Qubit, cbit: CBit },
+    reset(Qubit),
 }
 
 #[derive(Clone, Debug)]
 pub struct Circuit {
     pub num_qubits: usize,
+    pub num_cbits: usize,
     pub gates: Vec<Gate>,
     pub has_toffoli: bool,
+    pub has_measurement: bool,
 }
 
 impl Circuit {
     pub fn new(num_qubits: usize) -> Self {
-        Circuit { num_qubits, gates: Vec::new(), has_toffoli: false }
+        Circuit {
+            num_qubits,
+            num_cbits: 0,
+            gates: Vec::new(),
+            has_toffoli: false,
+            has_measurement: false,
+        }
+    }
+
+    pub fn with_cbits(num_qubits: usize, num_cbits: usize) -> Self {
+        Circuit {
+            num_qubits,
+            num_cbits,
+            gates: Vec::new(),
+            has_toffoli: false,
+            has_measurement: false,
+        }
     }
 
     pub fn apply(&mut self, gate: Gate) {
-        if matches!(gate, Gate::ccx { .. }) {
-            self.has_toffoli = true;
+        match &gate {
+            Gate::ccx { .. } => self.has_toffoli = true,
+            Gate::measure { .. } | Gate::reset(_) => self.has_measurement = true,
+            _ => {}
         }
         self.gates.push(gate);
     }
@@ -62,6 +85,8 @@ impl fmt::Display for Gate {
             Gate::ccx { control1, control2, target } => {
                 write!(f, "ccx q{control1}, q{control2}, q{target}")
             }
+            Gate::measure { qubit, cbit } => write!(f, "measure q{qubit} -> c{cbit}"),
+            Gate::reset(q) => write!(f, "reset q{q}"),
         }
     }
 }
@@ -80,13 +105,15 @@ impl fmt::Display for Circuit {
 pub fn qubits_of(gate: &Gate) -> Vec<Qubit> {
     match gate {
         Gate::x(q) | Gate::h(q) | Gate::s(q) | Gate::sdg(q) | Gate::z(q)
-        | Gate::t(q) | Gate::tdg(q) | Gate::rz(_, q) => vec![*q],
+        | Gate::t(q) | Gate::tdg(q) | Gate::rz(_, q) | Gate::reset(q) => vec![*q],
         Gate::cnot { control, target } => vec![*control, *target],
         Gate::ccx { control1, control2, target } => vec![*control1, *control2, *target],
+        Gate::measure { qubit, .. } => vec![*qubit],
     }
 }
 
 /// Remap a gate's qubits through a lookup table: qubit i becomes its index in `qubits`.
+/// Classical bits are not remapped.
 pub fn remap_gate(gate: &Gate, qubits: &[Qubit]) -> Gate {
     let m = |q: &Qubit| qubits.iter().position(|&x| x == *q).unwrap();
     match gate {
@@ -104,6 +131,8 @@ pub fn remap_gate(gate: &Gate, qubits: &[Qubit]) -> Gate {
             control2: m(control2),
             target: m(target),
         },
+        Gate::measure { qubit, cbit } => Gate::measure { qubit: m(qubit), cbit: *cbit },
+        Gate::reset(q) => Gate::reset(m(q)),
     }
 }
 
@@ -202,5 +231,71 @@ mod tests {
         c.apply(Gate::sdg(0));
         let s = format!("{c}");
         assert!(s.contains("sdg q0"));
+    }
+
+    #[test]
+    fn measure_gate_display() {
+        let mut c = Circuit::with_cbits(1, 1);
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        let s = format!("{c}");
+        assert!(s.contains("measure q0 -> c0"));
+        assert!(c.has_measurement);
+    }
+
+    #[test]
+    fn reset_gate_display() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::reset(0));
+        let s = format!("{c}");
+        assert!(s.contains("reset q0"));
+        assert!(c.has_measurement);
+    }
+
+    #[test]
+    fn measure_qubits_of() {
+        let g = Gate::measure { qubit: 3, cbit: 7 };
+        assert_eq!(qubits_of(&g), vec![3]);
+    }
+
+    #[test]
+    fn reset_qubits_of() {
+        let g = Gate::reset(2);
+        assert_eq!(qubits_of(&g), vec![2]);
+    }
+
+    #[test]
+    fn measure_remap() {
+        let g = Gate::measure { qubit: 5, cbit: 2 };
+        let remapped = remap_gate(&g, &[5]);
+        match remapped {
+            Gate::measure { qubit: 0, cbit: 2 } => {}
+            _ => panic!("expected measure q0 -> c2, got {remapped:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_remap() {
+        let g = Gate::reset(5);
+        let remapped = remap_gate(&g, &[5]);
+        assert!(matches!(remapped, Gate::reset(0)));
+    }
+
+    #[test]
+    fn with_cbits_default_fields() {
+        let c = Circuit::with_cbits(2, 3);
+        assert_eq!(c.num_qubits, 2);
+        assert_eq!(c.num_cbits, 3);
+        assert!(!c.has_measurement);
+        assert!(!c.has_toffoli);
+        assert_eq!(c.gates.len(), 0);
+    }
+
+    #[test]
+    fn has_measurement_flag_set_by_reset_alone() {
+        // reset has no cbits but still counts as measurement
+        let mut c = Circuit::new(1);
+        assert!(!c.has_measurement);
+        c.apply(Gate::reset(0));
+        assert!(c.has_measurement);
     }
 }

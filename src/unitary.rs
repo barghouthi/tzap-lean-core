@@ -190,6 +190,8 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
             Gate::ccx { control1, control2, target } => {
                 mat.apply_ccx(*control1, *control2, *target, n)
             }
+            Gate::measure { .. } | Gate::reset(_) =>
+                panic!("circuit_unitary: measurement/reset is not a unitary operation"),
         }
     }
     // convert to Vec<Vec<C>> for external use
@@ -201,8 +203,16 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
 
 /// Check if two unitaries are equal up to a global phase.
 /// Finds the phase from the first nonzero entry, then checks all entries.
+///
+/// Panics if either circuit contains a measurement or reset — those are non-unitary
+/// (CPTP) operations and unitary equivalence is not well-defined. Tests that need to
+/// compare circuits with measurements should split off the unitary prefix.
 pub fn circuits_equiv(a: &Circuit, b: &Circuit, tol: f64) -> bool {
     assert_eq!(a.num_qubits, b.num_qubits);
+    assert!(!a.has_measurement,
+        "circuits_equiv: left circuit contains measurement/reset — not a unitary");
+    assert!(!b.has_measurement,
+        "circuits_equiv: right circuit contains measurement/reset — not a unitary");
     let ua = circuit_unitary(a);
     let ub = circuit_unitary(b);
     let dim = ua.len();
@@ -680,6 +690,33 @@ mod tests {
         let mut b = Circuit::new(1);
         b.apply(Gate::tdg(0));
         assert!(circuits_equiv(&a, &b, 1e-10));
+    }
+
+    #[test]
+    #[should_panic(expected = "measurement/reset")]
+    fn equiv_panics_on_measurement_left() {
+        let mut a = Circuit::with_cbits(1, 1);
+        a.apply(Gate::measure { qubit: 0, cbit: 0 });
+        let b = Circuit::new(1);
+        circuits_equiv(&a, &b, 1e-10);
+    }
+
+    #[test]
+    #[should_panic(expected = "measurement/reset")]
+    fn equiv_panics_on_measurement_right() {
+        let a = Circuit::new(1);
+        let mut b = Circuit::with_cbits(1, 1);
+        b.apply(Gate::measure { qubit: 0, cbit: 0 });
+        circuits_equiv(&a, &b, 1e-10);
+    }
+
+    #[test]
+    #[should_panic(expected = "measurement/reset")]
+    fn equiv_panics_on_reset() {
+        let mut a = Circuit::new(1);
+        a.apply(Gate::reset(0));
+        let b = Circuit::new(1);
+        circuits_equiv(&a, &b, 1e-10);
     }
 
     #[test]

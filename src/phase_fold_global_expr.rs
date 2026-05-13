@@ -107,6 +107,9 @@ pub fn phase_fold_global_expr(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
                 // AND-based parity — opaque, just refresh the target.
                 qubits[*target] = fresh();
             }
+            Gate::measure { qubit, .. } | Gate::reset(qubit) => {
+                qubits[*qubit] = fresh();
+            }
         }
     }
 
@@ -122,7 +125,7 @@ pub fn phase_fold_global_expr(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
     }
 
     // Reconstruct circuit.
-    let mut output = Circuit::new(n);
+    let mut output = Circuit::with_cbits(n, circuit.num_cbits);
     for (idx, gate) in circuit.gates.iter().enumerate() {
         if skip[idx] {
             continue;
@@ -446,6 +449,59 @@ mod tests {
         let expr_out = run(&c);
         assert_eq!(hash_out.gates.len(), expr_out.gates.len());
         assert!(circuits_equiv(&hash_out, &expr_out, TOL));
+    }
+
+    #[test]
+    // --- measurement / reset barrier tests ---
+
+    #[test]
+    fn measure_blocks_t_t_merge_expr() {
+        let mut c = Circuit::with_cbits(1, 1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::t(0));
+        let opt = run(&c);
+        assert_eq!(count_t_gates(&opt), 2);
+        assert_eq!(opt.gates.len(), 3);
+        assert!(matches!(&opt.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
+        assert!(opt.has_measurement);
+    }
+
+    #[test]
+    fn reset_blocks_t_tdg_cancel_expr() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::reset(0));
+        c.apply(Gate::tdg(0));
+        let opt = run(&c);
+        assert_eq!(opt.gates.len(), 3);
+        assert!(matches!(&opt.gates[1], Gate::reset(0)));
+    }
+
+    #[test]
+    fn measure_on_other_qubit_does_not_block_expr() {
+        let mut c = Circuit::with_cbits(2, 1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::measure { qubit: 1, cbit: 0 });
+        c.apply(Gate::t(0));
+        let opt = run(&c);
+        assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
+        assert!(opt.gates.iter().any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 })));
+        // No T survives.
+        assert_eq!(count_t_gates(&opt), 0);
+    }
+
+    #[test]
+    fn measure_preserved_with_no_rotations_expr() {
+        let mut c = Circuit::with_cbits(2, 2);
+        c.apply(Gate::h(0));
+        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::measure { qubit: 1, cbit: 1 });
+        let opt = run(&c);
+        assert_eq!(opt.gates.len(), 4);
+        assert_eq!(opt.num_cbits, 2);
+        assert!(opt.has_measurement);
     }
 
     #[test]
