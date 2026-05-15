@@ -3,8 +3,9 @@
 [![CI](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml/badge.svg)](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
+[![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
-A fast, Rust-based T-gate optimizer for large Clifford+T circuits. tzap (pronounced *T-zap*) applies phase folding that is O(n) in the number of gates.
+A fast, Rust-based T-gate optimizer for large Clifford+T circuits. tzap (pronounced *T-zap*) applies phase folding that is O(n) in the number of gates, based on [this paper](https://arxiv.org/abs/2605.13929).
 
 It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized OpenQASM 2.0. The supported gate set is: `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `rz`, `cx`, `ccx`, `cz`, `measure`, `reset` (plus `qreg` and `creg` declarations).
 
@@ -69,4 +70,20 @@ Install [Rust](https://github.com/qqq-wisc/tzap.git) then
 
 ```
 cargo install --path .
+```
+
+## Citation
+
+If you use tzap in your research, please cite:
+
+```bibtex
+@misc{albarghouthi2026tzap,
+      title={Linear-Time T-Gate Optimization via Random Abstraction}, 
+      author={Aws Albarghouthi},
+      year={2026},
+      eprint={2605.13929},
+      archivePrefix={arXiv},
+      primaryClass={cs.PL},
+      url={https://arxiv.org/abs/2605.13929}, 
+}
 ```
