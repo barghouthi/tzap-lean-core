@@ -7,7 +7,7 @@
 
 A fast, Rust-based T-gate optimizer for large Clifford+T circuits. tzap (pronounced *T-zap*) applies phase folding that is O(n) in the number of gates, based on [this paper](https://arxiv.org/abs/2605.13929).
 
-It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized OpenQASM 2.0. The supported gate set is: `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `rz`, `cx`, `ccx`, `cz`, `measure`, `reset` (plus `qreg` and `creg` declarations).
+It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized OpenQASM 2.0.
 
 **Gate handling:**
 
