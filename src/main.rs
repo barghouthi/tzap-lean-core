@@ -189,7 +189,7 @@ fn main() {
 
     let mut input_path = None;
     let mut output_path = None;
-    let mut cancel = false;
+    let mut cancel = true;
     let mut no_global = false;
     let mut expr = false;
     let mut decompose_rz = false;
@@ -221,7 +221,7 @@ fn main() {
                 println!("    \x1b[1m--decompose-rz\x1b[0m   Decompose Rz gates into Clifford+T (gridsynth)");
                 println!("    \x1b[1m--epsilon\x1b[0m <eps>  Approximation epsilon for --decompose-rz / --to-cliffordt (default: 1e-10)");
                 println!("    \x1b[1m--to-cliffordt\x1b[0m   Decompose ccx + Rz to Clifford+T, no optimization");
-                println!("    \x1b[1m--cancel\x1b[0m         Enable the gate cancellation pass");
+                println!("    \x1b[1m--no-cancel\x1b[0m      Skip the gate cancellation pass");
                 println!("    \x1b[1m--expr\x1b[0m           Use expr-based phase folding (exact parity)");
                 println!("    \x1b[1m--no-global\x1b[0m      Skip the global phase folding pass");
                 println!("    \x1b[1m--parallel\x1b[0m       Force parallel mode");
@@ -232,7 +232,7 @@ fn main() {
                 println!();
                 process::exit(0);
             }
-            "--cancel" => cancel = true,
+            "--no-cancel" => cancel = false,
             "--no-global" => no_global = true,
             "--expr" => expr = true,
             "--decompose-rz" => decompose_rz = true,
@@ -272,7 +272,7 @@ fn main() {
     }
 
     let Some(input_path) = input_path else {
-        eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--to-cliffordt] [--cancel] [--no-global] [--expr] [--parallel] [--no-parallel]");
+        eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--to-cliffordt] [--no-cancel] [--no-global] [--expr] [--parallel] [--no-parallel]");
         process::exit(1);
     };
 
@@ -499,4 +499,3 @@ fn main() {
         eprintln!("  wrote {output_path}");
     }
 }
-

@@ -21,7 +21,7 @@ CLI usage or API usage (see [API.md](API.md)).
 ```
 tzap input.qasm                           # optimize, print stats only
 tzap input.qasm -o output.qasm            # write optimized circuit to file
-tzap input.qasm -o output.qasm --cancel   # enable gate cancellation pass
+tzap input.qasm -o output.qasm --no-cancel # skip gate cancellation pass
 tzap input.qasm -o output.qasm --decompose-rz              # decompose Rz via gridsynth (epsilon=1e-10)
 tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6  # coarser approximation
 ```

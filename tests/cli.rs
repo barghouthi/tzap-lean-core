@@ -69,6 +69,27 @@ fn output_is_valid_qasm() {
 }
 
 #[test]
+fn no_cancel_skips_adjacent_gate_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("hh.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[1];
+h q[0];
+h q[0];
+").unwrap();
+
+    let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "--no-cancel"]);
+    assert!(out.status.success());
+
+    let content = fs::read_to_string(&output).unwrap();
+    let gates = gate_lines_from(&content);
+    assert_eq!(gates, vec!["h q[0];", "h q[0];"]);
+}
+
+#[test]
 fn writes_to_output_file() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
@@ -126,7 +147,7 @@ fn mod5_4_reduces_t_count() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    let out = tzap_run(&["qasm/mod5_4.qasm", "-o", out_path.to_str().unwrap(), "--cancel"]);
+    let out = tzap_run(&["qasm/mod5_4.qasm", "-o", out_path.to_str().unwrap()]);
     assert!(out.status.success());
 
     let content = fs::read_to_string(&out_path).unwrap();
