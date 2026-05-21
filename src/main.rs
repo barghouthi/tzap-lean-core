@@ -11,7 +11,7 @@ use tzap::decompose::DecomposeToffoli;
 use tzap::decompose_rz::DecomposeRz;
 use tzap::cancel::CancelPairs;
 use tzap::pass::{Pass, count_t};
-use tzap::phase_fold_global::PhaseFoldGlobal;
+use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::qasm::{StreamingReader, serialize_gates};
 
@@ -99,11 +99,11 @@ fn run_streaming(
 
     let decompose = DecomposeToffoli;
     let cancel_pass = CancelPairs;
-    let global = PhaseFoldGlobal;
+    let global = PhaseFoldRand;
     let global_expr = PhaseFoldGlobalExpr;
     let rz_decompose = DecomposeRz { epsilon: rz_epsilon };
     let cancel_pass2 = CancelPairs;
-    let global2 = PhaseFoldGlobal;
+    let global2 = PhaseFoldRand;
 
     let num_par_chunks = std::thread::available_parallelism()
         .map(|n| n.get() * 4)
@@ -365,7 +365,7 @@ fn main() {
 
     let decompose = DecomposeToffoli;
     let cancel_pass = CancelPairs;
-    let global = PhaseFoldGlobal;
+    let global = PhaseFoldRand;
     let global_expr = PhaseFoldGlobalExpr;
     let rz_decompose = DecomposeRz { epsilon: rz_epsilon };
 

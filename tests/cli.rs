@@ -1,6 +1,9 @@
 use std::fs;
 use std::process::Command;
 
+const TEST_QASM: &str = "tests/fixtures/test.qasm";
+const TWO_CCX_QASM: &str = "tests/fixtures/two_ccx.qasm";
+
 fn tzap() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tzap"))
 }
@@ -30,7 +33,7 @@ fn optimizes_test_qasm_to_file() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    let out = tzap_run(&["qasm/test.qasm", "-o", out_path.to_str().unwrap()]);
+    let out = tzap_run(&[TEST_QASM, "-o", out_path.to_str().unwrap()]);
     assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
 
     let content = fs::read_to_string(&out_path).unwrap();
@@ -48,7 +51,7 @@ fn output_is_valid_qasm() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    let out = tzap_run(&["qasm/test.qasm", "-o", out_path.to_str().unwrap()]);
+    let out = tzap_run(&[TEST_QASM, "-o", out_path.to_str().unwrap()]);
     assert!(out.status.success());
 
     let content = fs::read_to_string(&out_path).unwrap();
@@ -70,7 +73,7 @@ fn writes_to_output_file() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    let out = tzap_run(&["qasm/test.qasm", out_path.to_str().unwrap()]);
+    let out = tzap_run(&[TEST_QASM, out_path.to_str().unwrap()]);
     assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
 
     // stdout should be empty when writing to file
@@ -90,7 +93,7 @@ fn roundtrip_preserves_qasm_structure() {
     let pass1 = dir.path().join("pass1.qasm");
     let pass2 = dir.path().join("pass2.qasm");
 
-    let out1 = tzap_run(&["qasm/test.qasm", pass1.to_str().unwrap()]);
+    let out1 = tzap_run(&[TEST_QASM, pass1.to_str().unwrap()]);
     assert!(out1.status.success());
 
     let out2 = tzap_run(&[pass1.to_str().unwrap(), pass2.to_str().unwrap()]);
@@ -107,7 +110,7 @@ fn toffoli_decomposition_increases_gate_count() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    let out = tzap_run(&["qasm/two_ccx.qasm", "-o", out_path.to_str().unwrap()]);
+    let out = tzap_run(&[TWO_CCX_QASM, "-o", out_path.to_str().unwrap()]);
     assert!(out.status.success());
 
     let content = fs::read_to_string(&out_path).unwrap();

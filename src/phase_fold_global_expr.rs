@@ -63,9 +63,14 @@ impl ParityExpr {
 }
 
 struct Group {
+    /// Accumulated phase in canonical frame (negated=false).
+    /// Contributions from sites on the complement parity are subtracted.
     angle: f64,
     last_idx: usize,
     last_qubit: usize,
+    /// True when `last_idx` sits on the complement of the canonical parity.
+    /// On emission, the rotation is negated to compensate.
+    last_sign: bool,
     indices: Vec<usize>,
 }
 
@@ -118,9 +123,10 @@ pub fn phase_fold_global_expr(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
         for &i in &g.indices {
             skip[i] = true;
         }
-        if !angle_is_zero(g.angle) {
+        let emit_angle = if g.last_sign { -g.angle } else { g.angle };
+        if !angle_is_zero(emit_angle) {
             skip[g.last_idx] = false;
-            emit_at[g.last_idx] = Some((g.last_qubit, g.angle));
+            emit_at[g.last_idx] = Some((g.last_qubit, emit_angle));
         }
     }
 
@@ -148,19 +154,28 @@ fn record_phase(
     groups: &mut BTreeMap<ParityExpr, Group>,
 ) {
     let parity = &qubits[q];
+    let is_complement = parity.negated;
+    // Canonicalize: keys always have negated=false. Contributions from the
+    // complement side are folded in with a sign flip — matches the hash
+    // version's complementary-parity lookup so rotations bracketed by X
+    // (or any CNOT·X·CNOT pattern) merge across the negation.
+    let key = ParityExpr { vars: parity.vars.clone(), negated: false };
+    let signed_angle = if is_complement { -angle } else { angle };
 
-    if let Some(g) = groups.get_mut(parity) {
-        g.angle += angle;
+    if let Some(g) = groups.get_mut(&key) {
+        g.angle += signed_angle;
         g.last_idx = idx;
         g.last_qubit = q;
+        g.last_sign = is_complement;
         g.indices.push(idx);
         return;
     }
 
-    groups.insert(parity.clone(), Group {
-        angle,
+    groups.insert(key, Group {
+        angle: signed_angle,
         last_idx: idx,
         last_qubit: q,
+        last_sign: is_complement,
         indices: vec![idx],
     });
 }
@@ -368,14 +383,28 @@ mod tests {
     }
 
     #[test]
-    fn x_flips_parity_prevents_merge() {
+    fn x_folds_t_t_to_identity() {
+        // T · X · T = X (since X · T · X = Tdg), so the two T contributions
+        // cancel in the canonical frame and only X survives.
         let mut c = Circuit::new(1);
         c.apply(Gate::t(0));
         c.apply(Gate::x(0));
         c.apply(Gate::t(0));
         let out = run(&c);
-        // X flips negation, so parities differ
-        assert_eq!(count_t_gates(&out), 2);
+        assert_eq!(count_t_gates(&out), 0);
+        assert!(circuits_equiv(&c, &out, TOL));
+    }
+
+    #[test]
+    fn x_folds_t_tdg_to_s() {
+        // T · X · Tdg = X · S (in canonical frame the two contributions add
+        // to π/2, then negate because the second site is on ¬canonical).
+        let mut c = Circuit::new(1);
+        c.apply(Gate::t(0));
+        c.apply(Gate::x(0));
+        c.apply(Gate::tdg(0));
+        let out = run(&c);
+        assert_eq!(count_t_gates(&out), 0);
         assert!(circuits_equiv(&c, &out, TOL));
     }
 
@@ -437,7 +466,7 @@ mod tests {
 
     #[test]
     fn agrees_with_hash_version_simple() {
-        use crate::phase_fold_global::phase_fold_global;
+        use crate::phase_fold_rand::phase_fold_rand;
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
         c.apply(Gate::t(0));
@@ -445,7 +474,7 @@ mod tests {
         c.apply(Gate::t(1));
         c.apply(Gate::tdg(1));
         c.apply(Gate::s(0));
-        let hash_out = phase_fold_global(&c, &ProgressBar::hidden());
+        let hash_out = phase_fold_rand(&c, &ProgressBar::hidden());
         let expr_out = run(&c);
         assert_eq!(hash_out.gates.len(), expr_out.gates.len());
         assert!(circuits_equiv(&hash_out, &expr_out, TOL));
@@ -506,7 +535,7 @@ mod tests {
 
     #[test]
     fn agrees_with_hash_version_3q() {
-        use crate::phase_fold_global::phase_fold_global;
+        use crate::phase_fold_rand::phase_fold_rand;
         let mut c = Circuit::new(3);
         c.apply(Gate::h(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
@@ -520,12 +549,11 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::h(1));
         c.apply(Gate::t(1));
-        let hash_out = phase_fold_global(&c, &ProgressBar::hidden());
+        let hash_out = phase_fold_rand(&c, &ProgressBar::hidden());
         let expr_out = run(&c);
-        // Hash version folds across X (complementary-parity lookup); expr version
-        // does not. Both must be semantically equivalent to the input; the hash
-        // output may be strictly smaller.
-        assert!(hash_out.gates.len() <= expr_out.gates.len());
+        // Both passes canonicalize parity over X (negation), so they should
+        // produce equal-sized outputs that are semantically equivalent.
+        assert_eq!(hash_out.gates.len(), expr_out.gates.len());
         assert!(circuits_equiv(&c, &hash_out, TOL));
         assert!(circuits_equiv(&c, &expr_out, TOL));
     }

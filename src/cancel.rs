@@ -2,6 +2,7 @@ use indicatif::ProgressBar;
 
 use crate::circuit::{Circuit, Gate, Qubit};
 use crate::pass::Pass;
+use crate::phase_fold_rand::classify_quarter_pi;
 
 /// Cancel adjacent self-inverse gate pairs (HH, XX, CNOT-CNOT) in O(n),
 /// allowing commutation past gates on non-overlapping qubits.
@@ -86,12 +87,182 @@ fn qubits_of(gate: &Gate) -> (usize, [Qubit; 3]) {
     }
 }
 
+fn is_h(g: &Gate, q: usize) -> bool { matches!(g, Gate::h(p) if *p == q) }
+fn is_x(g: &Gate, q: usize) -> bool { matches!(g, Gate::x(p) if *p == q) }
+
+/// For a single-qubit diagonal gate on `q`, classifies its rotation:
+///   `Some(Some(k))` — diagonal, rotates by k·π/4
+///   `Some(None)`    — diagonal `rz` whose angle is not a π/4 multiple
+///   `None`          — not a single-qubit diagonal gate on `q`
+fn diagonal_k(g: &Gate, q: usize) -> Option<Option<u32>> {
+    let (k, p) = match g {
+        Gate::t(p) => (1, p),
+        Gate::tdg(p) => (7, p),
+        Gate::s(p) => (2, p),
+        Gate::sdg(p) => (6, p),
+        Gate::z(p) => (4, p),
+        Gate::rz(theta, p) => {
+            return if *p == q {
+                Some(classify_quarter_pi(*theta).map(|k| k as u32))
+            } else {
+                None
+            };
+        }
+        _ => return None,
+    };
+    if *p == q { Some(Some(k)) } else { None }
+}
+
+/// Local Clifford identities that strictly lower the Hadamard count:
+///
+///   H·H          = I
+///   H·X·H        = Z
+///   H·D·H        = X            when the diagonal run D ≡ Z   (mod 2π)
+///   H·D·H        = Sdg·H·Sdg    when D ≡ S
+///   H·D·H        = S·H·S        when D ≡ Sdg
+///   H·D·H        = I            when D ≡ I
+///
+/// `D` is a maximal run of diagonal gates with no other gate touching the
+/// qubit in between, so each identity is local to that wire and sound
+/// regardless of the rest of the circuit. Fewer Hadamards means longer
+/// Hadamard-free sections for the downstream phase-folding pass to merge
+/// rotations across. Every rule removes at least one `h`, so the fixpoint
+/// loop terminates. The S-rules differ by a global phase, which the rest of
+/// the pipeline (and `circuits_equiv`) ignores.
+///
+/// Returns the rewritten gate list and whether any rewrite fired.
+fn reduce_hadamards(input: &[Gate], num_qubits: usize) -> (Vec<Gate>, bool) {
+    let mut gates = input.to_vec();
+    let mut changed = false;
+    while let Some(next) = reduce_hadamards_pass(&gates, num_qubits) {
+        gates = next;
+        changed = true;
+    }
+    (gates, changed)
+}
+
+/// One sweep of [`reduce_hadamards`]. Returns the rewritten gate list when at
+/// least one rewrite fired, or `None` at the fixpoint.
+fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>> {
+    // Per-qubit ordered list of indices of gates touching that qubit.
+    let mut tracks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
+    for (i, g) in gates.iter().enumerate() {
+        let (n, qs) = qubits_of(g);
+        for &q in &qs[..n] {
+            tracks[q].push(i);
+        }
+    }
+
+    // Per-index edit: a gate is dropped, replaced, or kept. Rewrites on
+    // different qubits never share an index, and within a qubit the scan
+    // skips past consumed indices, so the edits never conflict.
+    let mut delete = vec![false; gates.len()];
+    let mut replace: Vec<Option<Gate>> = vec![None; gates.len()];
+    let mut changed = false;
+
+    for q in 0..num_qubits {
+        let track = &tracks[q];
+        let mut p = 0;
+        while p < track.len() {
+            let io = track[p];
+            if !is_h(&gates[io], q) {
+                p += 1;
+                continue;
+            }
+            // H·X·H = Z
+            if p + 2 < track.len()
+                && is_x(&gates[track[p + 1]], q)
+                && is_h(&gates[track[p + 2]], q)
+            {
+                delete[io] = true;
+                replace[track[p + 1]] = Some(Gate::z(q));
+                delete[track[p + 2]] = true;
+                changed = true;
+                p += 3;
+                continue;
+            }
+            // H · (maximal diagonal run) · H
+            let mut k = 0u32;
+            let mut dirty = false;
+            let mut j = p + 1;
+            while j < track.len() {
+                match diagonal_k(&gates[track[j]], q) {
+                    Some(Some(v)) => { k = (k + v) & 7; j += 1; }
+                    Some(None) => { dirty = true; j += 1; }
+                    None => break,
+                }
+            }
+            if j < track.len() && is_h(&gates[track[j]], q) && !dirty && k % 2 == 0 {
+                let ic = track[j];
+                let run = &track[p + 1..j];
+                match k {
+                    0 => {
+                        delete[io] = true;
+                        delete[ic] = true;
+                        for &r in run { delete[r] = true; }
+                    }
+                    4 => {
+                        delete[io] = true;
+                        delete[ic] = true;
+                        replace[run[0]] = Some(Gate::x(q));
+                        for &r in &run[1..] { delete[r] = true; }
+                    }
+                    2 | 6 => {
+                        let outer = if k == 2 { Gate::sdg(q) } else { Gate::s(q) };
+                        replace[io] = Some(outer.clone());
+                        replace[ic] = Some(outer);
+                        replace[run[0]] = Some(Gate::h(q));
+                        for &r in &run[1..] { delete[r] = true; }
+                    }
+                    _ => unreachable!(),
+                }
+                changed = true;
+                p = j + 1;
+            } else if j < track.len() && is_h(&gates[track[j]], q) {
+                // Closing H exists but the run carries a T (or a non-π/4 rz):
+                // not a Clifford, so leave it — but that H may still open the
+                // next triple.
+                p = j;
+            } else {
+                p = j + 1;
+            }
+        }
+    }
+
+    if !changed {
+        return None;
+    }
+    let mut out = Vec::with_capacity(gates.len());
+    for (i, g) in gates.iter().enumerate() {
+        if delete[i] {
+            continue;
+        }
+        out.push(replace[i].take().unwrap_or_else(|| g.clone()));
+    }
+    Some(out)
+}
+
 pub struct CancelPairs;
 
 impl Pass for CancelPairs {
     fn name(&self) -> &str { "Pair cancellation" }
     fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
-        let gates = cancel_pairs(&circuit.gates, circuit.num_qubits, pb);
+        let n = circuit.num_qubits;
+        // Cancel self-inverse pairs and shrink Hadamard barriers, alternating
+        // to a combined fixpoint: each step can expose work for the other —
+        // cancelling gates between two H's exposes a reducible run, and a
+        // rewrite that emits an X or Z exposes a new cancellable pair.
+        let mut gates = cancel_pairs(&circuit.gates, n, pb);
+        let quiet = ProgressBar::hidden();
+        loop {
+            let (reduced, reduce_changed) = reduce_hadamards(&gates, n);
+            let before = reduced.len();
+            gates = cancel_pairs(&reduced, n, &quiet);
+            let cancel_changed = gates.len() != before;
+            if !reduce_changed && !cancel_changed {
+                break;
+            }
+        }
         let has_toffoli = gates.iter().any(|g| matches!(g, Gate::ccx { .. }));
         let has_measurement = gates.iter()
             .any(|g| matches!(g, Gate::measure { .. } | Gate::reset(_)));
@@ -511,13 +682,15 @@ mod tests {
 
     #[test]
     fn cascade_mixed_self_inverse() {
-        // H X H X — H cancels with H, X cancels with X? No — X blocks H.
-        // H(q0) X(q0) H(q0) X(q0): X blocks H cancel, X blocks X cancel
+        // H X H X — no adjacent self-inverse pair cancels, but the Hadamard
+        // pass rewrites H·X·H = Z, leaving Z·X.
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::x(0), Gate::h(0), Gate::x(0),
         ]);
         let r = CancelPairs.run(&c);
-        assert_eq!(r.gates.len(), 4); // nothing cancels
+        assert_eq!(r.gates.len(), 2);
+        assert!(matches!(r.gates[0], Gate::z(0)));
+        assert!(matches!(r.gates[1], Gate::x(0)));
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
 
@@ -1175,5 +1348,138 @@ mod tests {
         let r2 = CancelPairs.run(&c2);
         assert_eq!(r2.gates.len(), 0);
         assert!(circuits_equiv(&c2, &r2, 1e-10));
+    }
+
+    // --- Hadamard-reduction tests ---
+    // CancelPairs also collapses H barriers via local Clifford identities, so
+    // the downstream phase-folding pass sees longer Hadamard-free sections.
+
+    fn count_h(c: &Circuit) -> usize {
+        c.gates.iter().filter(|g| matches!(g, Gate::h(_))).count()
+    }
+
+    #[test]
+    fn hxh_becomes_z() {
+        let c = make_circuit(1, vec![Gate::h(0), Gate::x(0), Gate::h(0)]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(r.gates[0], Gate::z(0)));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn hzh_becomes_x() {
+        let c = make_circuit(1, vec![Gate::h(0), Gate::z(0), Gate::h(0)]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(r.gates[0], Gate::x(0)));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn hsh_drops_one_hadamard() {
+        // H·S·H = Sdg·H·Sdg — still three gates, but one fewer Hadamard.
+        let c = make_circuit(1, vec![Gate::h(0), Gate::s(0), Gate::h(0)]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(count_h(&r), 1);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn hsh_cascade_eliminates_all_hadamards() {
+        // H·S·H·S·H reduces to a single Sdg, with no Hadamards left.
+        let c = make_circuit(1, vec![
+            Gate::h(0), Gate::s(0), Gate::h(0), Gate::s(0), Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(count_h(&r), 0);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn hadamard_run_summing_to_identity_collapses() {
+        // H·Sdg·S·H — the run Sdg·S is the identity, so both H's vanish.
+        let c = make_circuit(1, vec![
+            Gate::h(0), Gate::sdg(0), Gate::s(0), Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 0);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn hxh_reduced_despite_other_qubit_gate_between() {
+        // A gate on another wire interleaved between the H's must not block
+        // the (wire-local) H·X·H = Z rewrite.
+        let c = make_circuit(3, vec![
+            Gate::h(0), Gate::x(0), Gate::cnot { control: 1, target: 2 }, Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(count_h(&r), 0);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnot_inside_hadamards_blocks_reduction() {
+        // A CNOT touching the wire between the two H's makes the run
+        // non-Clifford — nothing may be rewritten.
+        let c = make_circuit(2, vec![
+            Gate::h(0), Gate::cnot { control: 0, target: 1 }, Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn hadamard_run_with_t_is_not_reducible() {
+        // H·T·H carries a genuine T — not a Clifford run, both H's survive.
+        let c = make_circuit(1, vec![Gate::h(0), Gate::t(0), Gate::h(0)]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(count_h(&r), 2);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn lone_hadamard_is_kept() {
+        let c = make_circuit(1, vec![Gate::t(0), Gate::h(0), Gate::t(0)]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn measure_between_hadamards_blocks_reduction() {
+        let mut c = Circuit::with_cbits(1, 1);
+        c.apply(Gate::h(0));
+        c.apply(Gate::measure { qubit: 0, cbit: 0 });
+        c.apply(Gate::h(0));
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(matches!(r.gates[1], Gate::measure { .. }));
+    }
+
+    #[test]
+    fn reduction_exposes_pair_cancellation() {
+        // H·X·H = Z, and the emitted Z then cancels with the leading Z — only
+        // the combined cancel+reduce fixpoint catches this.
+        let c = make_circuit(1, vec![
+            Gate::z(0), Gate::h(0), Gate::x(0), Gate::h(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(r.gates.len(), 0);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn pair_cancellation_exposes_reduction() {
+        // The inner X·X cancels, leaving H·H which then also cancels — the
+        // pair pass feeds the Hadamard pass.
+        let c = make_circuit(1, vec![
+            Gate::t(0), Gate::h(0), Gate::x(0), Gate::x(0), Gate::h(0), Gate::t(0),
+        ]);
+        let r = CancelPairs.run(&c);
+        assert_eq!(count_h(&r), 0);
+        assert!(circuits_equiv(&c, &r, 1e-10));
     }
 }

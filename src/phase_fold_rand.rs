@@ -18,6 +18,15 @@ fn fresh_parity() -> ParityHash {
     (hi << 64) | lo
 }
 
+fn canonical_parity(parity: ParityHash) -> (ParityHash, bool) {
+    let complement = !parity;
+    if parity <= complement {
+        (parity, false)
+    } else {
+        (complement, true)
+    }
+}
+
 /// Accumulated phase for a parity group.
 /// `int_part` counts π/4 steps mod 8 (Clifford+T gates land here exclusively).
 /// `float_part` holds leftover rotation for rz gates whose angle is not a π/4 multiple.
@@ -32,16 +41,16 @@ struct LivePhase {
     current_sign: bool,
 }
 
-pub struct PhaseFoldGlobal;
+pub struct PhaseFoldRand;
 
-impl Pass for PhaseFoldGlobal {
+impl Pass for PhaseFoldRand {
     fn name(&self) -> &str { "Phase folding" }
     fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
-        phase_fold_global(circuit, pb)
+        phase_fold_rand(circuit, pb)
     }
 }
 
-pub fn phase_fold_global(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
+pub fn phase_fold_rand(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
     let n = circuit.num_qubits;
     let fresh = || fresh_parity();
     let mut qubits: Vec<ParityHash> = (0..n).map(|_| fresh()).collect();
@@ -134,36 +143,36 @@ fn record_int(
     skip: &mut [bool],
 ) {
     let parity = qubits[q];
+    let (key, is_complement) = canonical_parity(parity);
 
-    // Direct match.
-    if let Some(&gi) = parity_to_group.get(&parity) {
+    if let Some(&gi) = parity_to_group.get(&key) {
         skip[live[gi].current_idx] = true;
-        live[gi].int_part = (live[gi].int_part + k) & 7;
+        if is_complement {
+            // RZ(θ) on ¬p ≡ RZ(−θ) on p up to global phase.
+            live[gi].int_part = live[gi].int_part.wrapping_sub(k) & 7;
+        } else {
+            live[gi].int_part = (live[gi].int_part + k) & 7;
+        }
         live[gi].current_idx = idx;
         live[gi].qubit = q;
-        live[gi].current_sign = false;
+        live[gi].current_sign = is_complement;
         return;
     }
 
-    // Complement match: RZ(θ) on ¬p ≡ RZ(−θ) on p up to global phase.
-    if let Some(&gi) = parity_to_group.get(&!parity) {
-        skip[live[gi].current_idx] = true;
-        live[gi].int_part = live[gi].int_part.wrapping_sub(k) & 7;
-        live[gi].current_idx = idx;
-        live[gi].qubit = q;
-        live[gi].current_sign = true;
-        return;
-    }
-
+    let int_part = if is_complement {
+        8u8.wrapping_sub(k) & 7
+    } else {
+        k
+    };
     let gi = live.len();
     live.push(LivePhase {
-        int_part: k,
+        int_part,
         float_part: 0.0,
         current_idx: idx,
         qubit: q,
-        current_sign: false,
+        current_sign: is_complement,
     });
-    parity_to_group.insert(parity, gi);
+    parity_to_group.insert(key, gi);
 }
 
 fn record_float(
@@ -176,38 +185,35 @@ fn record_float(
     skip: &mut [bool],
 ) {
     let parity = qubits[q];
+    let (key, is_complement) = canonical_parity(parity);
 
-    if let Some(&gi) = parity_to_group.get(&parity) {
+    if let Some(&gi) = parity_to_group.get(&key) {
         skip[live[gi].current_idx] = true;
-        live[gi].float_part += theta;
+        if is_complement {
+            live[gi].float_part -= theta;
+        } else {
+            live[gi].float_part += theta;
+        }
         live[gi].current_idx = idx;
         live[gi].qubit = q;
-        live[gi].current_sign = false;
+        live[gi].current_sign = is_complement;
         return;
     }
 
-    if let Some(&gi) = parity_to_group.get(&!parity) {
-        skip[live[gi].current_idx] = true;
-        live[gi].float_part -= theta;
-        live[gi].current_idx = idx;
-        live[gi].qubit = q;
-        live[gi].current_sign = true;
-        return;
-    }
-
+    let float_part = if is_complement { -theta } else { theta };
     let gi = live.len();
     live.push(LivePhase {
         int_part: 0,
-        float_part: theta,
+        float_part,
         current_idx: idx,
         qubit: q,
-        current_sign: false,
+        current_sign: is_complement,
     });
-    parity_to_group.insert(parity, gi);
+    parity_to_group.insert(key, gi);
 }
 
 /// Returns Some(k) if theta ≈ k · π/4 (mod 2π) within 1e-9, else None.
-fn classify_quarter_pi(theta: f64) -> Option<u8> {
+pub(crate) fn classify_quarter_pi(theta: f64) -> Option<u8> {
     let n = theta.rem_euclid(2.0 * PI);
     let q = PI / 4.0;
     let k = (n / q).round();
@@ -623,10 +629,10 @@ mod tests {
         let dec = DecomposeToffoli.run(&c);
         let dec_t = count_t_gates(&dec);
 
-        let folded = phase_fold_global(&dec, &ProgressBar::hidden());
+        let folded = phase_fold_rand(&dec, &ProgressBar::hidden());
         let folded_t = count_t_gates(&folded);
 
-        let folded2 = phase_fold_global(&folded, &ProgressBar::hidden());
+        let folded2 = phase_fold_rand(&folded, &ProgressBar::hidden());
         let folded2_t = count_t_gates(&folded2);
 
         println!("=== large circuit pipeline ===");
@@ -673,10 +679,10 @@ mod tests {
         let dec = DecomposeToffoli.run(&c);
         let dec_t = count_t_gates(&dec);
 
-        let folded = phase_fold_global(&dec, &ProgressBar::hidden());
+        let folded = phase_fold_rand(&dec, &ProgressBar::hidden());
         let folded_t = count_t_gates(&folded);
 
-        let folded2 = phase_fold_global(&folded, &ProgressBar::hidden());
+        let folded2 = phase_fold_rand(&folded, &ProgressBar::hidden());
         let folded2_t = count_t_gates(&folded2);
 
         println!("=== small circuit pipeline ===");
@@ -698,7 +704,7 @@ mod tests {
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(count_t_gates(&dec), 14);
 
-        let opt = phase_fold_global(&dec, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&dec, &ProgressBar::hidden());
         assert!(circuits_equiv(&c, &opt, 1e-10));
         assert_eq!(count_t_gates(&opt), 12);
     }
@@ -736,7 +742,7 @@ mod tests {
             let c = build(&skip);
             let dec = DecomposeToffoli.run(&c);
             let dec_t = count_t_gates(&dec);
-            let opt = phase_fold_global(&dec, &ProgressBar::hidden());
+            let opt = phase_fold_rand(&dec, &ProgressBar::hidden());
             let opt_t = count_t_gates(&opt);
             assert!(circuits_equiv(&dec, &opt, 1e-10));
             let removed: Vec<&str> = (0..4).filter(|&i| i != keep).map(|i| names[i]).collect();
@@ -749,7 +755,7 @@ mod tests {
         let mut c = Circuit::new(3);
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
         let dec = DecomposeToffoli.run(&c);
-        let opt = phase_fold_global(&dec, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&dec, &ProgressBar::hidden());
         let dec_phases = count_phase_gates(&dec);
         let opt_phases = count_phase_gates(&opt);
         assert!(opt_phases <= dec_phases);
@@ -761,7 +767,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::t(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(opt.gates[0], Gate::s(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -772,7 +778,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::t(0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -781,7 +787,7 @@ mod tests {
     fn four_t_merge_to_s_s() {
         let mut c = Circuit::new(1);
         for _ in 0..4 { c.apply(Gate::t(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -790,7 +796,7 @@ mod tests {
     fn eight_t_cancel() {
         let mut c = Circuit::new(1);
         for _ in 0..8 { c.apply(Gate::t(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -801,7 +807,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -812,7 +818,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::t(1));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -823,7 +829,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::h(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -834,7 +840,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::x(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // T·X·T = e^{iπ/4}·X, so both Ts fold into global phase.
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -846,7 +852,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::x(0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // T; X; Tdg ≡ Sdg·X up to global phase — one phase gate survives.
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -858,7 +864,7 @@ mod tests {
         c.apply(Gate::rz(0.3, 0));
         c.apply(Gate::x(0));
         c.apply(Gate::rz(0.7, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -870,7 +876,7 @@ mod tests {
         c.apply(Gate::rz(0.42, 0));
         c.apply(Gate::x(0));
         c.apply(Gate::rz(0.42, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -885,7 +891,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::x(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -898,7 +904,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::x(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // Both Ts fold to global phase; Xs stay because this pass doesn't cancel them.
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -911,7 +917,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::x(0));
         c.apply(Gate::rz(0.5, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -924,7 +930,7 @@ mod tests {
         c.apply(Gate::x(0));
         c.apply(Gate::z(0));
         c.apply(Gate::x(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -940,7 +946,7 @@ mod tests {
         c.apply(Gate::x(1));
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_t_gates(&opt), 0);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -957,7 +963,7 @@ mod tests {
         c.apply(Gate::x(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::t(1));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // Both Ts live on parities that are complements of each other,
         // so they fold (to a single phase gate on q1 — T + (−T) = 0, then X flips
         // the relationship, so the concrete count depends on the emitted rotation).
@@ -975,7 +981,7 @@ mod tests {
         c.apply(Gate::t(0));       // complement hit → int=0, sign=T
         c.apply(Gate::x(0));       // qubits[0] = p0
         c.apply(Gate::tdg(0));     // direct hit on p0 → int=(0-1)&7=7, sign=F
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -989,7 +995,7 @@ mod tests {
         c.apply(Gate::h(0));
         c.apply(Gate::x(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_t_gates(&opt), 2);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1002,7 +1008,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 2 });
         c.apply(Gate::t(0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1027,7 +1033,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 1 });
 
         let original_phases = count_phase_gates(&c);
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         let optimized_phases = count_phase_gates(&opt);
 
         println!("toffoli: {original_phases} phase gates -> {optimized_phases} phase gates");
@@ -1041,7 +1047,7 @@ mod tests {
         c.apply(Gate::h(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::x(1));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 3);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1051,7 +1057,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::rz(0.3, 0));
         c.apply(Gate::rz(0.7, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1066,7 +1072,7 @@ mod tests {
         c.apply(Gate::cnot { control: 1, target: 0 });
         c.apply(Gate::t(0));
 
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1081,7 +1087,7 @@ mod tests {
         c.apply(Gate::cnot { control: 1, target: 0 });
         c.apply(Gate::t(0));
 
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1098,7 +1104,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 2 });
         c.apply(Gate::rz(0.5, 2));
 
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1112,7 +1118,7 @@ mod tests {
         c.apply(Gate::cnot { control: 1, target: 0 });
         c.apply(Gate::rz(0.7, 0));
 
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1136,7 +1142,7 @@ mod tests {
         c.apply(Gate::tdg(0));
         c.apply(Gate::cnot { control: 2, target: 0 });
 
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         print_before_after("diagram circuit (T on y, T† on x)", &c, &opt);
 
         assert_eq!(count_phase_gates(&opt), 2);
@@ -1153,7 +1159,7 @@ mod tests {
         c.apply(Gate::tdg(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
 
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         print_before_after("cx T cx cx Tdg cx", &c, &opt);
 
         assert_eq!(count_phase_gates(&opt), 0);
@@ -1173,7 +1179,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::t(1));
 
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         print_before_after("T, SWAP, H, SWAP, T", &c, &opt);
 
         assert_eq!(count_phase_gates(&opt), 1);
@@ -1190,7 +1196,7 @@ mod tests {
         c1.apply(Gate::cnot { control: 0, target: 1 });
         c1.apply(Gate::cnot { control: 1, target: 0 });
         c1.apply(Gate::t(0));
-        let opt1 = phase_fold_global(&c1, &ProgressBar::hidden());
+        let opt1 = phase_fold_rand(&c1, &ProgressBar::hidden());
         print_before_after("cross-qubit merge (T on q0 + T on q1 -> S)", &c1, &opt1);
 
         let mut c2 = Circuit::new(2);
@@ -1200,7 +1206,7 @@ mod tests {
         c2.apply(Gate::cnot { control: 0, target: 1 });
         c2.apply(Gate::cnot { control: 1, target: 0 });
         c2.apply(Gate::t(0));
-        let opt2 = phase_fold_global(&c2, &ProgressBar::hidden());
+        let opt2 = phase_fold_rand(&c2, &ProgressBar::hidden());
         print_before_after("cross-qubit cancel (T on q0 + Tdg on q1 -> 0)", &c2, &opt2);
 
         let mut c3 = Circuit::new(3);
@@ -1212,7 +1218,7 @@ mod tests {
         c3.apply(Gate::cnot { control: 1, target: 2 });
         c3.apply(Gate::cnot { control: 0, target: 2 });
         c3.apply(Gate::rz(0.5, 2));
-        let opt3 = phase_fold_global(&c3, &ProgressBar::hidden());
+        let opt3 = phase_fold_rand(&c3, &ProgressBar::hidden());
         print_before_after("3-qubit merge (Rz on q2 twice, same parity)", &c3, &opt3);
 
         let mut c4 = Circuit::new(2);
@@ -1221,7 +1227,7 @@ mod tests {
         c4.apply(Gate::cnot { control: 0, target: 1 });
         c4.apply(Gate::cnot { control: 1, target: 0 });
         c4.apply(Gate::rz(0.7, 0));
-        let opt4 = phase_fold_global(&c4, &ProgressBar::hidden());
+        let opt4 = phase_fold_rand(&c4, &ProgressBar::hidden());
         print_before_after("Rz(0.3) on q1 + Rz(0.7) on q0 -> Rz(1.0)", &c4, &opt4);
     }
 
@@ -1231,7 +1237,7 @@ mod tests {
     fn z_is_phase_gate() {
         let mut c = Circuit::new(1);
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1240,7 +1246,7 @@ mod tests {
     fn sdg_is_phase_gate() {
         let mut c = Circuit::new(1);
         c.apply(Gate::sdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1250,7 +1256,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::z(0));
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1260,7 +1266,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::s(0));
         c.apply(Gate::sdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1270,7 +1276,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::sdg(0));
         c.apply(Gate::s(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1280,7 +1286,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::s(0));
         c.apply(Gate::s(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1291,7 +1297,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::sdg(0));
         c.apply(Gate::sdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1301,7 +1307,7 @@ mod tests {
     fn t_t_t_t_is_z() {
         let mut c = Circuit::new(1);
         for _ in 0..4 { c.apply(Gate::t(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1311,7 +1317,7 @@ mod tests {
     fn three_tdg_is_z_plus_t() {
         let mut c = Circuit::new(1);
         for _ in 0..3 { c.apply(Gate::tdg(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2); // Z + T (5π/4)
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1321,7 +1327,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::z(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2); // Z + T (5π/4)
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1331,7 +1337,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::z(0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2); // S + T (3π/4)
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1341,7 +1347,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::sdg(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::tdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1352,7 +1358,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::s(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2); // S + T (3π/4)
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1362,7 +1368,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::s(0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::t(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1373,7 +1379,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::sdg(0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2); // Z + T (5π/4)
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1383,7 +1389,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::z(0));
         c.apply(Gate::s(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1394,7 +1400,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::z(0));
         c.apply(Gate::sdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::s(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1404,7 +1410,7 @@ mod tests {
     fn six_t_is_sdg() {
         let mut c = Circuit::new(1);
         for _ in 0..6 { c.apply(Gate::t(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1414,7 +1420,7 @@ mod tests {
     fn seven_t_is_tdg() {
         let mut c = Circuit::new(1);
         for _ in 0..7 { c.apply(Gate::t(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::tdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1426,7 +1432,7 @@ mod tests {
         c.apply(Gate::z(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1437,7 +1443,7 @@ mod tests {
         c.apply(Gate::sdg(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::s(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1448,7 +1454,7 @@ mod tests {
         c.apply(Gate::z(0));
         c.apply(Gate::h(0));
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1459,7 +1465,7 @@ mod tests {
         c.apply(Gate::sdg(0));
         c.apply(Gate::h(0));
         c.apply(Gate::sdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1470,7 +1476,7 @@ mod tests {
         c.apply(Gate::z(0));
         c.apply(Gate::x(0));
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // Z·X·Z = −X — both Zs fold into global phase.
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1483,7 +1489,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::cnot { control: 1, target: 0 });
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
 
@@ -1495,7 +1501,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::cnot { control: 1, target: 0 });
         c.apply(Gate::s(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1507,8 +1513,8 @@ mod tests {
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
         c.apply(Gate::z(2));
         let dec = DecomposeToffoli.run(&c);
-        let pf1 = phase_fold_global(&dec, &ProgressBar::hidden());
-        let result = phase_fold_global(&pf1, &ProgressBar::hidden());
+        let pf1 = phase_fold_rand(&dec, &ProgressBar::hidden());
+        let result = phase_fold_rand(&pf1, &ProgressBar::hidden());
         assert!(circuits_equiv(&c, &result, 1e-10));
     }
 
@@ -1519,8 +1525,8 @@ mod tests {
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
         c.apply(Gate::s(1));
         let dec = DecomposeToffoli.run(&c);
-        let pf1 = phase_fold_global(&dec, &ProgressBar::hidden());
-        let result = phase_fold_global(&pf1, &ProgressBar::hidden());
+        let pf1 = phase_fold_rand(&dec, &ProgressBar::hidden());
+        let result = phase_fold_rand(&pf1, &ProgressBar::hidden());
         assert!(circuits_equiv(&c, &result, 1e-10));
     }
 
@@ -1531,7 +1537,7 @@ mod tests {
         c.apply(Gate::sdg(1));
         c.apply(Gate::s(0));
         c.apply(Gate::t(1));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1540,7 +1546,7 @@ mod tests {
     fn three_s_is_sdg() {
         let mut c = Circuit::new(1);
         for _ in 0..3 { c.apply(Gate::s(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1550,7 +1556,7 @@ mod tests {
     fn three_sdg_is_s() {
         let mut c = Circuit::new(1);
         for _ in 0..3 { c.apply(Gate::sdg(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::s(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1560,7 +1566,7 @@ mod tests {
     fn four_s_cancel() {
         let mut c = Circuit::new(1);
         for _ in 0..4 { c.apply(Gate::s(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1569,7 +1575,7 @@ mod tests {
     fn four_sdg_cancel() {
         let mut c = Circuit::new(1);
         for _ in 0..4 { c.apply(Gate::sdg(0)); }
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1580,7 +1586,7 @@ mod tests {
         c.apply(Gate::z(0));
         c.apply(Gate::t(0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1595,7 +1601,7 @@ mod tests {
         c.apply(Gate::sdg(0));
         c.apply(Gate::z(0));
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1611,7 +1617,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 2 });
         c.apply(Gate::s(0));
         c.apply(Gate::tdg(2));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert!(circuits_equiv(&c, &opt, 1e-10));
         assert!(count_phase_gates(&opt) <= count_phase_gates(&c));
     }
@@ -1621,7 +1627,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::s(0));
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1632,7 +1638,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::sdg(0));
         c.apply(Gate::z(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::s(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1642,7 +1648,7 @@ mod tests {
     fn rz_pi_folds_to_z() {
         let mut c = Circuit::new(1);
         c.apply(Gate::rz(PI, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1652,7 +1658,7 @@ mod tests {
     fn rz_neg_half_pi_folds_to_sdg() {
         let mut c = Circuit::new(1);
         c.apply(Gate::rz(-PI / 2.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1662,7 +1668,7 @@ mod tests {
     fn rz_three_half_pi_folds_to_sdg() {
         let mut c = Circuit::new(1);
         c.apply(Gate::rz(3.0 * PI / 2.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1676,7 +1682,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::sdg(1));
         c.apply(Gate::x(1));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert!(circuits_equiv(&c, &opt, 1e-10));
         let h_count = opt.gates.iter().filter(|g| matches!(g, Gate::h(_))).count();
         let x_count = opt.gates.iter().filter(|g| matches!(g, Gate::x(_))).count();
@@ -1695,8 +1701,8 @@ mod tests {
         c.apply(Gate::z(2));
         c.apply(Gate::s(1));
         let dec = DecomposeToffoli.run(&c);
-        let pf1 = phase_fold_global(&dec, &ProgressBar::hidden());
-        let result = phase_fold_global(&pf1, &ProgressBar::hidden());
+        let pf1 = phase_fold_rand(&dec, &ProgressBar::hidden());
+        let result = phase_fold_rand(&pf1, &ProgressBar::hidden());
         assert!(circuits_equiv(&c, &result, 1e-10));
     }
 
@@ -1711,7 +1717,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::t(0));
         c.apply(Gate::rz(PI / 4.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::s(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1723,7 +1729,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::s(0));
         c.apply(Gate::rz(PI / 2.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1735,7 +1741,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::rz(PI, 0));
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2); // S + T
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1747,7 +1753,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::tdg(0));
         c.apply(Gate::rz(PI / 4.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::t(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1760,7 +1766,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::t(0));
         c.apply(Gate::rz(0.3, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         match &opt.gates[0] {
             Gate::rz(theta, _) => {
@@ -1780,7 +1786,7 @@ mod tests {
         let mut c = Circuit::new(1);
         c.apply(Gate::t(0));
         c.apply(Gate::rz(-PI / 4.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // Either cancels entirely (both routed to int_part) or emits a
         // near-identity rz; equivalence check is authoritative.
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1797,7 +1803,7 @@ mod tests {
         c.apply(Gate::cnot { control: 1, target: 0 });      // q0 = X^Y, q1 = Y
         c.apply(Gate::cnot { control: 0, target: 1 });      // q1 = Y^(X^Y) = X
         c.apply(Gate::rz(0.3, 1));                          // parity X → merge
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         match opt.gates.iter().find(|g| matches!(g, Gate::rz(..))) {
             Some(Gate::rz(theta, _)) => {
@@ -1816,7 +1822,7 @@ mod tests {
         c.apply(Gate::s(0));
         c.apply(Gate::rz(PI / 4.0, 0));
         c.apply(Gate::rz(PI / 4.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1829,7 +1835,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::rz(0.3, 0));
         c.apply(Gate::rz(-0.3, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1841,7 +1847,7 @@ mod tests {
         c.apply(Gate::s(0));
         c.apply(Gate::t(0));
         c.apply(Gate::rz(PI, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::tdg(_)));
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1854,7 +1860,7 @@ mod tests {
         c.apply(Gate::sdg(0));
         c.apply(Gate::t(0));
         c.apply(Gate::rz(PI / 4.0, 0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1868,7 +1874,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // Both Ts must survive, measure must survive.
         assert_eq!(count_t_gates(&opt), 2);
         assert_eq!(opt.gates.len(), 3);
@@ -1882,7 +1888,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::reset(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_t_gates(&opt), 2);
         assert_eq!(opt.gates.len(), 3);
         assert!(matches!(&opt.gates[1], Gate::reset(0)));
@@ -1895,7 +1901,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::tdg(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 2);
         assert_eq!(opt.gates.len(), 3);
     }
@@ -1907,7 +1913,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::measure { qubit: 1, cbit: 0 });
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // T+T merge to S on q0.
         assert_eq!(count_t_gates(&opt), 0);
         assert_eq!(count_phase_gates(&opt), 1);
@@ -1922,7 +1928,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::reset(1));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
         assert!(opt.gates.iter().any(|g| matches!(g, Gate::reset(1))));
@@ -1935,7 +1941,7 @@ mod tests {
         c.apply(Gate::cnot { control: 0, target: 1 });
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::measure { qubit: 1, cbit: 1 });
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         assert_eq!(opt.gates.len(), 4);
         assert_eq!(opt.num_cbits, 2);
         assert!(opt.has_measurement);
@@ -1950,7 +1956,7 @@ mod tests {
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::t(0));
         c.apply(Gate::t(0));
-        let opt = phase_fold_global(&c, &ProgressBar::hidden());
+        let opt = phase_fold_rand(&c, &ProgressBar::hidden());
         // Expect: S, measure, S
         assert_eq!(opt.gates.len(), 3);
         assert!(matches!(&opt.gates[0], Gate::s(0)));

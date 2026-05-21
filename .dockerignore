@@ -1,0 +1,6 @@
+target/
+.venv/
+.git/
+qasm/
+compare_results*.csv
+scripts/__pycache__/

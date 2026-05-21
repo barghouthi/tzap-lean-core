@@ -70,7 +70,7 @@ hidden progress bar, so custom passes only need to supply `name` and
 | `DecomposeToffoli` | `tzap::decompose` | Breaks Toffoli gates into CNOT+T/Tdg |
 | `DecomposeRz` | `tzap::decompose_rz` | Decomposes Rz gates into Clifford+T via gridsynth |
 | `CancelPairs` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |
-| `PhaseFoldGlobal` | `tzap::phase_fold_global` | Merges T/Rz gates across the circuit via symbolic parity tracking |
+| `PhaseFoldRand` | `tzap::phase_fold_rand` | Merges T/Rz gates across the circuit via randomized parity tracking |
 
 ### Running passes
 
@@ -87,13 +87,13 @@ Run a pipeline:
 ```rust
 use tzap::decompose::DecomposeToffoli;
 use tzap::cancel::CancelPairs;
-use tzap::phase_fold_global::PhaseFoldGlobal;
+use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::pass::{Pass, PassResult, run_passes, count_t};
 
 let passes: Vec<&dyn Pass> = vec![
     &DecomposeToffoli,
     &CancelPairs,
-    &PhaseFoldGlobal,
+    &PhaseFoldRand,
 ];
 
 let result: PassResult = run_passes(&circuit, &passes);

@@ -8,7 +8,7 @@ mod tests {
     use crate::cancel::CancelPairs;
     use crate::decompose::DecomposeToffoli;
     use crate::pass::{Pass, count_t};
-    use crate::phase_fold_global::phase_fold_global;
+    use crate::phase_fold_rand::phase_fold_rand;
     use crate::unitary::circuits_equiv;
     struct Rng(u64);
 
@@ -66,6 +66,36 @@ mod tests {
         c
     }
 
+    /// Random circuit dominated by single-qubit H/X/S/Z gates — the regime
+    /// that drives the cancel pass's pair cancellation and Hadamard reduction.
+    /// A small tail of sdg/t/tdg/cnot also exercises the non-reducible
+    /// branches (a `t` makes a run non-Clifford, a `cnot` breaks a run).
+    fn random_hxsz_circuit(rng: &mut Rng, num_qubits: usize, num_gates: usize) -> Circuit {
+        let mut c = Circuit::new(num_qubits);
+        for _ in 0..num_gates {
+            let q = rng.range(num_qubits);
+            match rng.range(24) {
+                0..=4 => c.apply(Gate::h(q)),
+                5..=9 => c.apply(Gate::x(q)),
+                10..=14 => c.apply(Gate::s(q)),
+                15..=19 => c.apply(Gate::z(q)),
+                20 => c.apply(Gate::sdg(q)),
+                21 => c.apply(Gate::t(q)),
+                22 => c.apply(Gate::tdg(q)),
+                23 => {
+                    if num_qubits >= 2 {
+                        let t = (q + 1 + rng.range(num_qubits - 1)) % num_qubits;
+                        c.apply(Gate::cnot { control: q, target: t });
+                    } else {
+                        c.apply(Gate::z(q));
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        c
+    }
+
     /// Deterministic build for profiling (not random).
     fn build_circuit(num_qubits: usize, num_gates: usize) -> Circuit {
         let mut c = Circuit::new(num_qubits);
@@ -116,7 +146,7 @@ mod tests {
         println!("  circuit: {} gates", circuit.gates.len());
 
         let optimized = time("phase_fold", || {
-            phase_fold_global(&circuit, &ProgressBar::hidden())
+            phase_fold_rand(&circuit, &ProgressBar::hidden())
         });
         println!(
             "  result: {} -> {} gates",
@@ -129,7 +159,7 @@ mod tests {
 
     #[test]
     #[ignore] // long-running: 10k random circuits with unitary equivalence checks
-    fn fuzz_phase_fold_global() {
+    fn fuzz_phase_fold_rand() {
         let mut rng = Rng::new(0xDEAD_BEEF);
         let num_cases = 10_000;
         let mut total_t_before = 0;
@@ -142,7 +172,7 @@ mod tests {
             let circuit = random_circuit(&mut rng, num_qubits, num_gates);
             let decomposed = DecomposeToffoli.run(&circuit);
             let cancelled = CancelPairs.run(&decomposed);
-            let optimized = phase_fold_global(&cancelled, &ProgressBar::hidden());
+            let optimized = phase_fold_rand(&cancelled, &ProgressBar::hidden());
 
             assert!(
                 circuits_equiv(&circuit, &optimized, 1e-10),
@@ -186,6 +216,100 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // long-running: 10k single-qubit-heavy circuits through the cancel pass
+    fn fuzz_cancel_hadamard() {
+        // Stress the cancel pass (pair cancellation + Hadamard reduction) on
+        // circuits dominated by single-qubit H/X/S/Z sequences. Few qubits so
+        // gates pile up per wire, producing long reducible/cancellable runs.
+        let mut rng = Rng::new(0x4861_6441);
+        let num_cases = 10_000;
+        let count_h = |c: &Circuit| {
+            c.gates.iter().filter(|g| matches!(g, Gate::h(_))).count()
+        };
+        let mut gates_before = 0;
+        let mut gates_after = 0;
+        let mut h_before = 0;
+        let mut h_after = 0;
+
+        for i in 0..num_cases {
+            let num_qubits = rng.range(4) + 1; // 1..=4
+            let num_gates = rng.range(191) + 10; // 10..=200
+            let circuit = random_hxsz_circuit(&mut rng, num_qubits, num_gates);
+            let cancelled = CancelPairs.run(&circuit);
+
+            assert!(
+                circuits_equiv(&circuit, &cancelled, 1e-9),
+                "MISMATCH on case {i}: {num_qubits} qubits, {num_gates} gates\n{circuit}"
+            );
+            // The pass never grows the circuit or its Hadamard count.
+            assert!(
+                cancelled.gates.len() <= circuit.gates.len(),
+                "case {i}: gate count grew"
+            );
+            assert!(
+                count_h(&cancelled) <= count_h(&circuit),
+                "case {i}: Hadamard count grew"
+            );
+            // The pass runs to a fixpoint — a second run changes nothing.
+            let twice = CancelPairs.run(&cancelled);
+            assert_eq!(
+                twice.gates.len(),
+                cancelled.gates.len(),
+                "case {i}: cancel pass is not idempotent"
+            );
+
+            gates_before += circuit.gates.len();
+            gates_after += cancelled.gates.len();
+            h_before += count_h(&circuit);
+            h_after += count_h(&cancelled);
+        }
+
+        println!("\nfuzz cancel (H/X/S/Z): {num_cases} cases, all equivalent");
+        println!(
+            "gates: {gates_before} -> {gates_after} ({:.1}% removed)",
+            (1.0 - gates_after as f64 / gates_before as f64) * 100.0,
+        );
+        println!(
+            "H gates: {h_before} -> {h_after} ({:.1}% removed)",
+            (1.0 - h_after as f64 / h_before as f64) * 100.0,
+        );
+    }
+
+    #[test]
+    #[ignore] // long-running: unitary equivalence checks on benchmark circuits
+    fn verify_benchmark_circuits() {
+        // End-to-end soundness check on real (measurement-free) benchmark
+        // circuits, capped at qubit counts the full-unitary check can handle.
+        let names = [
+            "tof_3", "tof_4", "tof_5", "barenco_tof_3", "barenco_tof_4",
+            "barenco_tof_5", "mod5_4", "mod_mult_55", "vbe_adder_3", "grover_5",
+        ];
+        for name in names {
+            let path = format!("{}/qasm/{name}.qasm", env!("CARGO_MANIFEST_DIR"));
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let circuit = crate::qasm::parse(&src)
+                .unwrap_or_else(|e| panic!("parse {name}: {e}"));
+            let decomposed = DecomposeToffoli.run(&circuit);
+            let cancelled = CancelPairs.run(&decomposed);
+            let optimized = phase_fold_rand(&cancelled, &ProgressBar::hidden());
+            assert!(
+                circuits_equiv(&decomposed, &optimized, 1e-9),
+                "{name}: optimized circuit is not equivalent to the input"
+            );
+            assert!(
+                count_t(&optimized) <= count_t(&decomposed),
+                "{name}: T count increased"
+            );
+            println!(
+                "{name}: {} -> {} T",
+                count_t(&decomposed),
+                count_t(&optimized)
+            );
+        }
+    }
+
+    #[test]
     #[ignore] // long-running: 100 mutation detection tests
     fn fuzz_mutation_detected() {
         let mut rng = Rng::new(0xFEED_FACE);
@@ -196,7 +320,7 @@ mod tests {
             let num_qubits = rng.range(5) + 2;
             let num_gates = rng.range(91) + 10;
             let circuit = random_circuit(&mut rng, num_qubits, num_gates);
-            let mut optimized = phase_fold_global(&circuit, &ProgressBar::hidden());
+            let mut optimized = phase_fold_rand(&circuit, &ProgressBar::hidden());
 
             // inject a bug: append X q0
             optimized.apply(Gate::x(0));
@@ -231,8 +355,8 @@ mod tests {
             }
 
             // optimize both independently
-            let opt_a = phase_fold_global(&a, &ProgressBar::hidden());
-            let opt_b = phase_fold_global(&b, &ProgressBar::hidden());
+            let opt_a = phase_fold_rand(&a, &ProgressBar::hidden());
+            let opt_b = phase_fold_rand(&b, &ProgressBar::hidden());
 
             assert!(
                 !circuits_equiv(&opt_a, &opt_b, 1e-10),
