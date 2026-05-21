@@ -18,10 +18,9 @@ It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized O
 
 CLI usage or API usage (see [API.md](API.md)).
 
-```
+```bash
 tzap input.qasm                           # optimize, print stats only
 tzap input.qasm -o output.qasm            # write optimized circuit to file
-tzap input.qasm -o output.qasm --no-cancel # skip gate cancellation pass
 tzap input.qasm -o output.qasm --decompose-rz              # decompose Rz via gridsynth (epsilon=1e-10)
 tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6  # coarser approximation
 ```
@@ -30,7 +29,7 @@ Output is only written when `-o` is given.
 
 ### Example
 
-```
+```bash
 $ tzap qasm/barenco_tof_5.qasm
 
 ⚡️ tzap
