@@ -285,7 +285,7 @@ mod tests {
             "barenco_tof_5", "mod5_4", "mod_mult_55", "vbe_adder_3", "grover_5",
         ];
         for name in names {
-            let path = format!("{}/qasm/{name}.qasm", env!("CARGO_MANIFEST_DIR"));
+            let path = format!("{}/benchmarks/feynman/{name}.qasm", env!("CARGO_MANIFEST_DIR"));
             let src = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {path}: {e}"));
             let circuit = crate::qasm::parse(&src)

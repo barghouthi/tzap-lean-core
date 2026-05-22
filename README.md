@@ -30,10 +30,10 @@ Output is only written when `-o` is given.
 ### Example
 
 ```bash
-$ tzap qasm/barenco_tof_5.qasm
+$ tzap benchmarks/feynman/barenco_tof_5.qasm
 
 ⚡️ tzap
-  Parsing qasm/barenco_tof_5.qasm (0.0 MB)
+  Parsing benchmarks/feynman/barenco_tof_5.qasm (0.0 MB)
 	└─ 9 qubits · 50 gates · 0 T/Tdg · 0.000s
 
   Toffoli decomposition

@@ -3,6 +3,7 @@ use std::process::Command;
 
 const TEST_QASM: &str = "tests/fixtures/test.qasm";
 const TWO_CCX_QASM: &str = "tests/fixtures/two_ccx.qasm";
+const MOD5_4_QASM: &str = "benchmarks/feynman/mod5_4.qasm";
 
 fn tzap() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tzap"))
@@ -147,7 +148,7 @@ fn mod5_4_reduces_t_count() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    let out = tzap_run(&["qasm/mod5_4.qasm", "-o", out_path.to_str().unwrap()]);
+    let out = tzap_run(&[MOD5_4_QASM, "-o", out_path.to_str().unwrap()]);
     assert!(out.status.success());
 
     let content = fs::read_to_string(&out_path).unwrap();
@@ -167,7 +168,7 @@ fn mod5_4_idempotent() {
     let pass1 = dir.path().join("pass1.qasm");
     let pass2 = dir.path().join("pass2.qasm");
 
-    let out1 = tzap_run(&["qasm/mod5_4.qasm", pass1.to_str().unwrap()]);
+    let out1 = tzap_run(&[MOD5_4_QASM, pass1.to_str().unwrap()]);
     assert!(out1.status.success());
 
     let out2 = tzap_run(&[pass1.to_str().unwrap(), pass2.to_str().unwrap()]);
@@ -182,7 +183,7 @@ fn mod5_4_idempotent() {
 fn mod5_4_no_rz_in_output() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
-    let out = tzap_run(&["qasm/mod5_4.qasm", "-o", out_path.to_str().unwrap()]);
+    let out = tzap_run(&[MOD5_4_QASM, "-o", out_path.to_str().unwrap()]);
     assert!(out.status.success());
     let content = fs::read_to_string(&out_path).unwrap();
     for line in content.lines() {
