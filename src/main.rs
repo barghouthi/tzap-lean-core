@@ -13,8 +13,6 @@ use tzap::pass::{Pass, count_t};
 use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 
-/// Auto-enable parallel mode once a circuit has more than this many gates.
-const PARALLEL_GATE_THRESHOLD: usize = 1_000_000;
 /// Chunks (and rayon threads) per logical core.
 const CHUNK_MULTIPLIER: usize = 4;
 
@@ -60,7 +58,7 @@ struct Opts {
     expr: bool,
     decompose_rz: bool,
     rz_epsilon: f64,
-    parallel: Option<bool>,
+    parallel: bool,
     /// Explicit pass pipeline from `--passes` (overrides the default pipeline).
     passes: Option<Vec<PassName>>,
 }
@@ -237,7 +235,7 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], parallel: bool, num_chu
 /// Default pipeline: decompose ccx (and optionally Rz), then cancel + phase-fold.
 /// `--passes` overrides this with an explicit, user-ordered pipeline.
 fn run_optimize(circuit: Circuit, opts: &Opts) {
-    let parallel = opts.parallel.unwrap_or(circuit.gates.len() > PARALLEL_GATE_THRESHOLD);
+    let parallel = opts.parallel;
     let num_chunks = num_par_chunks();
 
     let decompose_toffoli = DecomposeToffoli;
@@ -327,8 +325,7 @@ fn print_help() {
     println!("    \x1b[1m-o\x1b[0m <file>        Write output to <file>");
     println!("    \x1b[1m--decompose-rz\x1b[0m   Decompose Rz gates into Clifford+T (gridsynth)");
     println!("    \x1b[1m--epsilon\x1b[0m <eps>  Approximation epsilon for --decompose-rz (default: 1e-10)");
-    println!("    \x1b[1m--parallel\x1b[0m       Force parallel mode");
-    println!("    \x1b[1m--no-parallel\x1b[0m    Force sequential mode");
+    println!("    \x1b[1m--parallel\x1b[0m       Enable parallel mode (off by default)");
     println!("    \x1b[1m--passes\x1b[0m <list>  Run these passes in order, overriding the default pipeline");
     println!("                     (see PASSES). Excludes --decompose-rz; --epsilon still");
     println!("                     configures DecomposeRz.");
@@ -347,7 +344,7 @@ fn parse_args(args: &[String]) -> Opts {
     let mut expr = false;
     let mut decompose_rz = false;
     let mut rz_epsilon: f64 = 1e-10;
-    let mut parallel = None;
+    let mut parallel = false;
     let mut passes: Option<Vec<PassName>> = None;
 
     let mut i = 1;
@@ -378,8 +375,7 @@ fn parse_args(args: &[String]) -> Opts {
                     .collect();
                 passes = Some(parsed);
             }
-            "--parallel" => parallel = Some(true),
-            "--no-parallel" => parallel = Some(false),
+            "--parallel" => parallel = true,
             "-o" => {
                 i += 1;
                 output_path = args.get(i).cloned();
@@ -400,7 +396,7 @@ fn parse_args(args: &[String]) -> Opts {
     }
 
     let Some(input_path) = input_path else {
-        eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--no-parallel]");
+        eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel]");
         process::exit(1);
     };
 
