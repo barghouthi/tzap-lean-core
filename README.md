@@ -21,10 +21,8 @@ CLI usage or API usage (see [API.md](API.md)).
 ```bash
 tzap input.qasm                           # optimize, print stats only
 tzap input.qasm -o output.qasm            # write optimized circuit to file
-tzap input.qasm output.qasm               # positional output also works
 tzap input.qasm -o output.qasm --decompose-rz              # decompose Rz via gridsynth (epsilon=1e-10)
 tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6  # coarser approximation
-tzap input.qasm -o output.qasm --parallel                  # chunk the circuit and optimize in parallel
 tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand  # explicit pass pipeline
 ```
 
