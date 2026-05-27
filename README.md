@@ -21,11 +21,20 @@ CLI usage or API usage (see [API.md](API.md)).
 ```bash
 tzap input.qasm                           # optimize, print stats only
 tzap input.qasm -o output.qasm            # write optimized circuit to file
+tzap input.qasm output.qasm               # positional output also works
 tzap input.qasm -o output.qasm --decompose-rz              # decompose Rz via gridsynth (epsilon=1e-10)
 tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6  # coarser approximation
+tzap input.qasm -o output.qasm --parallel                  # chunk the circuit and optimize in parallel
+tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand  # explicit pass pipeline
 ```
 
-Output is only written when `-o` is given.
+Output is written only when an output file is given (via `-o` or a positional argument).
+
+By default tzap decomposes Toffoli gates, then runs gate cancellation and phase
+folding. `--parallel` splits the circuit into chunks and runs the pipeline across
+cores. `--passes` overrides the default pipeline with an explicit, ordered list of
+passes (`DecomposeToffoli`, `DecomposeRz`, `CancelGates`, `PhaseFoldRand`,
+`PhaseFoldGlobalExpr`). Run `tzap --help` for the full list.
 
 ### Example
 
@@ -36,7 +45,7 @@ $ tzap benchmarks/feynman/barenco_tof_5.qasm
   Parsing benchmarks/feynman/barenco_tof_5.qasm (0.0 MB)
 	└─ 9 qubits · 218 gates · 84 T/Tdg · 0.000s
 
-  Pair cancellation
+  Gate cancellation
 	└─ 170 gates · 84 T · 0.000s
   Phase folding
 	└─ 146 gates · 40 T · 0.000s
