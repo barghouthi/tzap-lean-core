@@ -240,7 +240,7 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
 pub struct CancelGates;
 
 impl Pass for CancelGates {
-    fn name(&self) -> &str { "Pair cancellation" }
+    fn name(&self) -> &str { "Gate cancellation" }
     fn run(&self, circuit: &Circuit) -> Circuit {
         let n = circuit.num_qubits;
         // Cancel self-inverse pairs and shrink Hadamard barriers, alternating
