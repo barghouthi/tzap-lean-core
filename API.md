@@ -13,6 +13,9 @@ circuit.apply(Gate::cnot { control: 0, target: 1 });
 circuit.apply(Gate::t(0));
 ```
 
+To use `measure` gates, allocate classical bits with
+`Circuit::with_cbits(num_qubits, num_cbits)` instead of `Circuit::new`.
+
 ### Supported gates
 
 | Gate | Constructor |
@@ -27,6 +30,8 @@ circuit.apply(Gate::t(0));
 | Rz | `Gate::rz(angle, qubit)` |
 | CNOT | `Gate::cnot { control, target }` |
 | Toffoli | `Gate::ccx { control1, control2, target }` |
+| Measure | `Gate::measure { qubit, cbit }` |
+| Reset | `Gate::reset(qubit)` |
 
 ### QASM I/O
 
@@ -55,13 +60,10 @@ use tzap::pass::Pass;
 pub trait Pass: Sync {
     fn name(&self) -> &str;
     fn run(&self, circuit: &Circuit) -> Circuit;
-    fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit;
 }
 ```
 
-`run` has a default implementation that calls `run_with_progress` with a
-hidden progress bar, so custom passes only need to supply `name` and
-`run_with_progress`.
+A custom pass only needs to supply `name` and `run`.
 
 ### Available passes
 
@@ -69,7 +71,7 @@ hidden progress bar, so custom passes only need to supply `name` and
 |------|--------|-------------|
 | `DecomposeToffoli` | `tzap::decompose` | Breaks Toffoli gates into CNOT+T/Tdg |
 | `DecomposeRz` | `tzap::decompose_rz` | Decomposes Rz gates into Clifford+T via gridsynth |
-| `CancelPairs` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |
+| `CancelGates` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |
 | `PhaseFoldRand` | `tzap::phase_fold_rand` | Merges T/Rz gates across the circuit via randomized parity tracking |
 
 ### Running passes
@@ -86,13 +88,13 @@ Run a pipeline:
 
 ```rust
 use tzap::decompose::DecomposeToffoli;
-use tzap::cancel::CancelPairs;
+use tzap::cancel::CancelGates;
 use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::pass::{Pass, PassResult, run_passes, count_t};
 
 let passes: Vec<&dyn Pass> = vec![
     &DecomposeToffoli,
-    &CancelPairs,
+    &CancelGates,
     &PhaseFoldRand,
 ];
 

@@ -1,4 +1,3 @@
-use indicatif::ProgressBar;
 use crate::circuit::{Circuit, Gate};
 use crate::pass::Pass;
 
@@ -6,10 +5,9 @@ pub struct DecomposeToffoli;
 
 impl Pass for DecomposeToffoli {
     fn name(&self) -> &str { "Toffoli decomposition" }
-    fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
+    fn run(&self, circuit: &Circuit) -> Circuit {
         let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for gate in &circuit.gates {
-            pb.inc(1);
             match gate {
                 Gate::ccx { control1, control2, target } => {
                     let c0 = *control1;

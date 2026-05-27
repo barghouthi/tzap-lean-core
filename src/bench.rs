@@ -2,10 +2,8 @@
 mod tests {
     use std::time::Instant;
 
-    use indicatif::ProgressBar;
-
     use crate::circuit::{Circuit, Gate};
-    use crate::cancel::CancelPairs;
+    use crate::cancel::CancelGates;
     use crate::decompose::DecomposeToffoli;
     use crate::pass::{Pass, count_t};
     use crate::phase_fold_rand::phase_fold_rand;
@@ -146,7 +144,7 @@ mod tests {
         println!("  circuit: {} gates", circuit.gates.len());
 
         let optimized = time("phase_fold", || {
-            phase_fold_rand(&circuit, &ProgressBar::hidden())
+            phase_fold_rand(&circuit)
         });
         println!(
             "  result: {} -> {} gates",
@@ -171,8 +169,8 @@ mod tests {
             let num_gates = rng.range(991) + 10; // 10..=1000
             let circuit = random_circuit(&mut rng, num_qubits, num_gates);
             let decomposed = DecomposeToffoli.run(&circuit);
-            let cancelled = CancelPairs.run(&decomposed);
-            let optimized = phase_fold_rand(&cancelled, &ProgressBar::hidden());
+            let cancelled = CancelGates.run(&decomposed);
+            let optimized = phase_fold_rand(&cancelled);
 
             assert!(
                 circuits_equiv(&circuit, &optimized, 1e-10),
@@ -235,7 +233,7 @@ mod tests {
             let num_qubits = rng.range(4) + 1; // 1..=4
             let num_gates = rng.range(191) + 10; // 10..=200
             let circuit = random_hxsz_circuit(&mut rng, num_qubits, num_gates);
-            let cancelled = CancelPairs.run(&circuit);
+            let cancelled = CancelGates.run(&circuit);
 
             assert!(
                 circuits_equiv(&circuit, &cancelled, 1e-9),
@@ -251,7 +249,7 @@ mod tests {
                 "case {i}: Hadamard count grew"
             );
             // The pass runs to a fixpoint — a second run changes nothing.
-            let twice = CancelPairs.run(&cancelled);
+            let twice = CancelGates.run(&cancelled);
             assert_eq!(
                 twice.gates.len(),
                 cancelled.gates.len(),
@@ -291,8 +289,8 @@ mod tests {
             let circuit = crate::qasm::parse(&src)
                 .unwrap_or_else(|e| panic!("parse {name}: {e}"));
             let decomposed = DecomposeToffoli.run(&circuit);
-            let cancelled = CancelPairs.run(&decomposed);
-            let optimized = phase_fold_rand(&cancelled, &ProgressBar::hidden());
+            let cancelled = CancelGates.run(&decomposed);
+            let optimized = phase_fold_rand(&cancelled);
             assert!(
                 circuits_equiv(&decomposed, &optimized, 1e-9),
                 "{name}: optimized circuit is not equivalent to the input"
@@ -320,7 +318,7 @@ mod tests {
             let num_qubits = rng.range(5) + 2;
             let num_gates = rng.range(91) + 10;
             let circuit = random_circuit(&mut rng, num_qubits, num_gates);
-            let mut optimized = phase_fold_rand(&circuit, &ProgressBar::hidden());
+            let mut optimized = phase_fold_rand(&circuit);
 
             // inject a bug: append X q0
             optimized.apply(Gate::x(0));
@@ -355,8 +353,8 @@ mod tests {
             }
 
             // optimize both independently
-            let opt_a = phase_fold_rand(&a, &ProgressBar::hidden());
-            let opt_b = phase_fold_rand(&b, &ProgressBar::hidden());
+            let opt_a = phase_fold_rand(&a);
+            let opt_b = phase_fold_rand(&b);
 
             assert!(
                 !circuits_equiv(&opt_a, &opt_b, 1e-10),

@@ -1,7 +1,5 @@
 //! OpenQASM 2.0 parser and serializer.
 
-use std::io::BufRead;
-
 use crate::circuit::{Circuit, Gate};
 
 pub fn parse(qasm: &str) -> Result<Circuit, String> {
@@ -28,12 +26,12 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
         {
             continue;
         }
-        if line.starts_with("qreg") {
+        if let Some(rest) = line.strip_prefix("qreg") {
             if seen_gate {
                 return Err(format!("line {line_num}: qreg declaration after gate"));
             }
             // parse "qreg name[size]"
-            let rest = line[4..].trim();
+            let rest = rest.trim();
             if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
                 let name = rest[..bracket].trim().to_string();
                 let size: usize = rest[bracket + 1..end].parse()
@@ -41,11 +39,11 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                 registers.push((name, num_qubits, size));
                 num_qubits += size;
             }
-        } else if line.starts_with("creg") {
+        } else if let Some(rest) = line.strip_prefix("creg") {
             if seen_gate {
                 return Err(format!("line {line_num}: creg declaration after gate"));
             }
-            let rest = line[4..].trim();
+            let rest = rest.trim();
             if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
                 let name = rest[..bracket].trim().to_string();
                 let size: usize = rest[bracket + 1..end].parse()
@@ -132,15 +130,6 @@ pub fn serialize(circuit: &Circuit) -> String {
     s
 }
 
-/// Serialize just the gate lines (no header) for streaming output.
-pub fn serialize_gates(gates: &[Gate]) -> String {
-    let mut s = String::new();
-    for gate in gates {
-        write_gate(&mut s, gate);
-    }
-    s
-}
-
 fn write_gate(s: &mut String, gate: &Gate) {
     use std::fmt::Write;
     match gate {
@@ -159,229 +148,6 @@ fn write_gate(s: &mut String, gate: &Gate) {
         Gate::measure { qubit, cbit } => writeln!(s, "measure q[{qubit}] -> c[{cbit}];"),
         Gate::reset(q) => writeln!(s, "reset q[{q}];"),
     }.unwrap();
-}
-
-fn parse_gate_stmt(
-    line: &str,
-    line_num: usize,
-    registers: &[(String, usize, usize)],
-    cregisters: &[(String, usize, usize)],
-    gates: &mut Vec<Gate>,
-) -> Result<(), String> {
-    if let Some(rest) = line.strip_prefix("measure ") {
-        for (qubit, cbit) in parse_measure(rest, registers, cregisters, line_num)? {
-            gates.push(Gate::measure { qubit, cbit });
-        }
-    } else if let Some(rest) = line.strip_prefix("reset ") {
-        for q in expand_qubit_operand(rest, registers, line_num)? {
-            gates.push(Gate::reset(q));
-        }
-    } else if let Some(rest) = line.strip_prefix("cx ") {
-        let qubits = resolve_qubits(rest, registers, line_num)?;
-        gates.push(Gate::cnot { control: qubits[0], target: qubits[1] });
-    } else if let Some(rest) = line.strip_prefix("ccx ") {
-        let qubits = resolve_qubits(rest, registers, line_num)?;
-        gates.push(Gate::ccx { control1: qubits[0], control2: qubits[1], target: qubits[2] });
-    } else if let Some(rest) = line.strip_prefix("cz ") {
-        let qubits = resolve_qubits(rest, registers, line_num)?;
-        gates.push(Gate::h(qubits[1]));
-        gates.push(Gate::cnot { control: qubits[0], target: qubits[1] });
-        gates.push(Gate::h(qubits[1]));
-    } else if let Some(rest) = line.strip_prefix("h ") {
-        gates.push(Gate::h(resolve_qubits(rest, registers, line_num)?[0]));
-    } else if let Some(rest) = line.strip_prefix("x ") {
-        gates.push(Gate::x(resolve_qubits(rest, registers, line_num)?[0]));
-    } else if let Some(rest) = line.strip_prefix("s ") {
-        gates.push(Gate::s(resolve_qubits(rest, registers, line_num)?[0]));
-    } else if let Some(rest) = line.strip_prefix("tdg ") {
-        gates.push(Gate::tdg(resolve_qubits(rest, registers, line_num)?[0]));
-    } else if let Some(rest) = line.strip_prefix("z ") {
-        gates.push(Gate::z(resolve_qubits(rest, registers, line_num)?[0]));
-    } else if let Some(rest) = line.strip_prefix("sdg ") {
-        gates.push(Gate::sdg(resolve_qubits(rest, registers, line_num)?[0]));
-    } else if let Some(rest) = line.strip_prefix("t ") {
-        gates.push(Gate::t(resolve_qubits(rest, registers, line_num)?[0]));
-    } else if let Some(rest) = line.strip_prefix("rz(") {
-        if let Some(paren_end) = find_matching_paren(rest) {
-            let theta = parse_angle(&rest[..paren_end], line_num)?;
-            let qubits = resolve_qubits(&rest[paren_end + 1..], registers, line_num)?;
-            gates.push(Gate::rz(theta, qubits[0]));
-        }
-    } else {
-        return Err(format!("line {line_num}: unsupported: {line}"));
-    }
-    Ok(())
-}
-
-/// Streaming QASM reader that yields gates in batches without loading the whole file into memory.
-pub struct StreamingReader<R: BufRead> {
-    reader: R,
-    pub num_qubits: usize,
-    pub num_cbits: usize,
-    registers: Vec<(String, usize, usize)>,
-    cregisters: Vec<(String, usize, usize)>,
-    line_num: usize,
-    in_block_comment: bool,
-    done: bool,
-    leftover: Vec<Gate>,
-}
-
-impl<R: BufRead> StreamingReader<R> {
-    /// Create a streaming reader, consuming the QASM header (OPENQASM, include, qreg, creg lines).
-    pub fn new(mut reader: R) -> Result<Self, String> {
-        let mut num_qubits = 0usize;
-        let mut num_cbits = 0usize;
-        let mut registers: Vec<(String, usize, usize)> = Vec::new();
-        let mut cregisters: Vec<(String, usize, usize)> = Vec::new();
-        let mut line_num = 0;
-        let mut in_block_comment = false;
-        let mut line_buf = String::new();
-
-        loop {
-            line_buf.clear();
-            let bytes = reader.read_line(&mut line_buf)
-                .map_err(|e| format!("I/O error: {e}"))?;
-            if bytes == 0 {
-                if registers.is_empty() {
-                    return Err("no qreg declaration found".into());
-                }
-                return Ok(StreamingReader {
-                    reader, num_qubits, num_cbits, registers, cregisters, line_num,
-                    in_block_comment, done: true, leftover: Vec::new(),
-                });
-            }
-            line_num += 1;
-
-            let line = Self::strip_block_comment_line(&line_buf, &mut in_block_comment);
-            let line = line.trim().to_string();
-            if line.is_empty() { continue; }
-
-            let mut leftover = Vec::new();
-            let mut hit_gate = false;
-
-            for stmt in line.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                let stmt = match stmt.find("//") {
-                    Some(pos) => stmt[..pos].trim(),
-                    None => stmt,
-                };
-                if stmt.is_empty()
-                    || stmt.starts_with("//")
-                    || stmt.starts_with("OPENQASM")
-                    || stmt.starts_with("include")
-                    || stmt.starts_with("barrier")
-                {
-                    continue;
-                }
-                if !hit_gate && stmt.starts_with("qreg") {
-                    let rest = stmt[4..].trim();
-                    if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
-                        let name = rest[..bracket].trim().to_string();
-                        let size: usize = rest[bracket + 1..end].parse()
-                            .map_err(|e| format!("line {line_num}: bad qreg size: {e}"))?;
-                        registers.push((name, num_qubits, size));
-                        num_qubits += size;
-                    }
-                    continue;
-                }
-                if !hit_gate && stmt.starts_with("creg") {
-                    let rest = stmt[4..].trim();
-                    if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
-                        let name = rest[..bracket].trim().to_string();
-                        let size: usize = rest[bracket + 1..end].parse()
-                            .map_err(|e| format!("line {line_num}: bad creg size: {e}"))?;
-                        cregisters.push((name, num_cbits, size));
-                        num_cbits += size;
-                    }
-                    continue;
-                }
-                hit_gate = true;
-                parse_gate_stmt(stmt, line_num, &registers, &cregisters, &mut leftover)?;
-            }
-
-            if hit_gate {
-                if registers.is_empty() {
-                    return Err("no qreg declaration found".into());
-                }
-                return Ok(StreamingReader {
-                    reader, num_qubits, num_cbits, registers, cregisters, line_num,
-                    in_block_comment, done: false, leftover,
-                });
-            }
-        }
-    }
-
-    /// Read the next batch of up to `batch_size` gates. Returns `None` at EOF.
-    pub fn next_batch(&mut self, batch_size: usize) -> Result<Option<Vec<Gate>>, String> {
-        if self.done {
-            return Ok(None);
-        }
-        let mut gates = if !self.leftover.is_empty() {
-            std::mem::take(&mut self.leftover)
-        } else {
-            Vec::with_capacity(batch_size.min(1_000_000))
-        };
-        let mut line_buf = String::new();
-
-        while gates.len() < batch_size {
-            line_buf.clear();
-            let bytes = self.reader.read_line(&mut line_buf)
-                .map_err(|e| format!("I/O error: {e}"))?;
-            if bytes == 0 {
-                self.done = true;
-                break;
-            }
-            self.line_num += 1;
-            let line_num = self.line_num;
-
-            let line = Self::strip_block_comment_line(&line_buf, &mut self.in_block_comment);
-            let line = line.trim().to_string();
-            if line.is_empty() { continue; }
-
-            for stmt in line.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                let stmt = match stmt.find("//") {
-                    Some(pos) => stmt[..pos].trim(),
-                    None => stmt,
-                };
-                if stmt.is_empty()
-                    || stmt.starts_with("//")
-                    || stmt.starts_with("OPENQASM")
-                    || stmt.starts_with("include")
-                    || stmt.starts_with("barrier")
-                    || stmt.starts_with("qreg")
-                    || stmt.starts_with("creg")
-                {
-                    continue;
-                }
-                parse_gate_stmt(stmt, line_num, &self.registers, &self.cregisters, &mut gates)?;
-            }
-        }
-
-        if gates.is_empty() { Ok(None) } else { Ok(Some(gates)) }
-    }
-
-    /// Strip block comments from a single line, tracking cross-line comment state.
-    fn strip_block_comment_line(line: &str, in_comment: &mut bool) -> String {
-        let mut out = String::with_capacity(line.len());
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if *in_comment {
-                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    *in_comment = false;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                *in_comment = true;
-                i += 2;
-            } else {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
-        }
-        out
-    }
 }
 
 fn strip_block_comments(s: &str) -> String {
@@ -510,11 +276,9 @@ fn parse_term(tokens: &[Token], pos: &mut usize) -> Result<f64, String> {
 
 // unary = '-' unary | atom
 fn parse_unary(tokens: &[Token], pos: &mut usize) -> Result<f64, String> {
-    if *pos < tokens.len() {
-        if let Token::Minus = tokens[*pos] {
-            *pos += 1;
-            return Ok(-parse_unary(tokens, pos)?);
-        }
+    if *pos < tokens.len() && matches!(tokens[*pos], Token::Minus) {
+        *pos += 1;
+        return Ok(-parse_unary(tokens, pos)?);
     }
     parse_atom(tokens, pos)
 }
@@ -943,10 +707,10 @@ t q[0];
 
     #[test]
     fn rz_plain_float() {
-        let qasm = "OPENQASM 2.0;\nqreg q[1];\nrz(0.785398163) q[0];\n";
+        let qasm = "OPENQASM 2.0;\nqreg q[1];\nrz(0.123456789) q[0];\n";
         let c = parse(qasm).unwrap();
         if let Gate::rz(theta, 0) = &c.gates[0] {
-            assert!((theta - 0.785398163).abs() < 1e-10);
+            assert!((theta - 0.123456789).abs() < 1e-10);
         } else { panic!("expected rz"); }
     }
 
@@ -1348,19 +1112,6 @@ measure q[1] -> c[1];
         assert!(matches!(&c.gates[1], Gate::reset(0)));
     }
 
-    #[test]
-    fn streaming_reader_with_creg() {
-        use std::io::Cursor;
-        let qasm = "OPENQASM 2.0;\nqreg q[1];\ncreg c[1];\nh q[0];\nmeasure q[0] -> c[0];\n";
-        let mut r = StreamingReader::new(Cursor::new(qasm.as_bytes())).unwrap();
-        assert_eq!(r.num_qubits, 1);
-        assert_eq!(r.num_cbits, 1);
-        let batch = r.next_batch(10).unwrap().unwrap();
-        assert_eq!(batch.len(), 2);
-        assert!(matches!(&batch[0], Gate::h(0)));
-        assert!(matches!(&batch[1], Gate::measure { qubit: 0, cbit: 0 }));
-    }
-
     // --- multiple creg tests ---
 
     #[test]
@@ -1444,23 +1195,6 @@ measure q[1] -> c[1];
         assert_eq!(c2.gates.len(), c.gates.len());
         assert!(matches!(&c2.gates[0], Gate::measure { qubit: 0, cbit: 0 }));
         assert!(matches!(&c2.gates[1], Gate::measure { qubit: 1, cbit: 2 }));
-    }
-
-    #[test]
-    fn multi_creg_streaming_reader() {
-        use std::io::Cursor;
-        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg a[1];\ncreg b[2];\n\
-                    h q[0];\n\
-                    measure q[0] -> a[0];\n\
-                    measure q[1] -> b[1];\n";
-        let mut r = StreamingReader::new(Cursor::new(qasm.as_bytes())).unwrap();
-        assert_eq!(r.num_qubits, 2);
-        assert_eq!(r.num_cbits, 3);
-        let batch = r.next_batch(10).unwrap().unwrap();
-        assert_eq!(batch.len(), 3);
-        // a[0] → 0, b[1] → 1 + 1 = 2
-        assert!(matches!(&batch[1], Gate::measure { qubit: 0, cbit: 0 }));
-        assert!(matches!(&batch[2], Gate::measure { qubit: 1, cbit: 2 }));
     }
 
     #[test]
@@ -1570,42 +1304,6 @@ measure q[1] -> c[1];
         let err = parse(qasm).unwrap_err();
         assert!(err.contains("unknown register"));
         assert!(err.contains("'nope'"));
-    }
-
-    #[test]
-    fn measure_broadcast_via_streaming_reader() {
-        use std::io::Cursor;
-        let qasm = "OPENQASM 2.0;\nqreg q[2];\ncreg c[2];\nh q[0];\nmeasure q -> c;\n";
-        let mut r = StreamingReader::new(Cursor::new(qasm.as_bytes())).unwrap();
-        let batch = r.next_batch(10).unwrap().unwrap();
-        assert_eq!(batch.len(), 3);
-        assert!(matches!(&batch[0], Gate::h(0)));
-        assert!(matches!(&batch[1], Gate::measure { qubit: 0, cbit: 0 }));
-        assert!(matches!(&batch[2], Gate::measure { qubit: 1, cbit: 1 }));
-    }
-
-    #[test]
-    fn reset_broadcast_via_streaming_reader() {
-        use std::io::Cursor;
-        let qasm = "OPENQASM 2.0;\nqreg q[3];\nreset q;\n";
-        let mut r = StreamingReader::new(Cursor::new(qasm.as_bytes())).unwrap();
-        let batch = r.next_batch(10).unwrap().unwrap();
-        assert_eq!(batch.len(), 3);
-        for (i, g) in batch.iter().enumerate() {
-            assert!(matches!(g, Gate::reset(q) if *q == i));
-        }
-    }
-
-    #[test]
-    fn streaming_reader_reset() {
-        use std::io::Cursor;
-        let qasm = "OPENQASM 2.0;\nqreg q[2];\nh q[0];\nreset q[1];\n";
-        let mut r = StreamingReader::new(Cursor::new(qasm.as_bytes())).unwrap();
-        assert_eq!(r.num_qubits, 2);
-        assert_eq!(r.num_cbits, 0);
-        let batch = r.next_batch(10).unwrap().unwrap();
-        assert_eq!(batch.len(), 2);
-        assert!(matches!(&batch[1], Gate::reset(1)));
     }
 
     // --- multiple quantum register tests ---

@@ -12,7 +12,6 @@ categories = ["science", "command-line-utilities"]
 readme = "README.md"
 
 [dependencies]
-indicatif = "0.17"
 rayon = "1"
 rsgridsynth = "0.2"
 rustc-hash = "2"

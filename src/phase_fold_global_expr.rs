@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
-use indicatif::ProgressBar;
-
 use crate::circuit::{Circuit, Gate};
 use crate::pass::Pass;
 
@@ -78,12 +76,12 @@ pub struct PhaseFoldGlobalExpr;
 
 impl Pass for PhaseFoldGlobalExpr {
     fn name(&self) -> &str { "Phase folding (expr)" }
-    fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
-        phase_fold_global_expr(circuit, pb)
+    fn run(&self, circuit: &Circuit) -> Circuit {
+        phase_fold_global_expr(circuit)
     }
 }
 
-pub fn phase_fold_global_expr(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
+pub fn phase_fold_global_expr(circuit: &Circuit) -> Circuit {
     let n = circuit.num_qubits;
     let mut next_var = 0usize;
     let mut fresh = || { let v = next_var; next_var += 1; ParityExpr::fresh(v) };
@@ -94,7 +92,6 @@ pub fn phase_fold_global_expr(circuit: &Circuit, pb: &ProgressBar) -> Circuit {
     let mut emit_at: Vec<Option<(usize, f64)>> = vec![None; circuit.gates.len()];
 
     for (idx, gate) in circuit.gates.iter().enumerate() {
-        if idx & 0xFFF == 0 { pb.inc(0x1000); }
         match gate {
             Gate::t(q) => record_phase(&qubits, *q, PI / 4.0, idx, &mut groups),
             Gate::tdg(q) => record_phase(&qubits, *q, -PI / 4.0, idx, &mut groups),
@@ -229,7 +226,7 @@ mod tests {
     }
 
     fn run(c: &Circuit) -> Circuit {
-        phase_fold_global_expr(c, &ProgressBar::hidden())
+        phase_fold_global_expr(c)
     }
 
     // --- Expr equivalence tests ---
@@ -474,13 +471,12 @@ mod tests {
         c.apply(Gate::t(1));
         c.apply(Gate::tdg(1));
         c.apply(Gate::s(0));
-        let hash_out = phase_fold_rand(&c, &ProgressBar::hidden());
+        let hash_out = phase_fold_rand(&c);
         let expr_out = run(&c);
         assert_eq!(hash_out.gates.len(), expr_out.gates.len());
         assert!(circuits_equiv(&hash_out, &expr_out, TOL));
     }
 
-    #[test]
     // --- measurement / reset barrier tests ---
 
     #[test]
@@ -549,7 +545,7 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::h(1));
         c.apply(Gate::t(1));
-        let hash_out = phase_fold_rand(&c, &ProgressBar::hidden());
+        let hash_out = phase_fold_rand(&c);
         let expr_out = run(&c);
         // Both passes canonicalize parity over X (negation), so they should
         // produce equal-sized outputs that are semantically equivalent.

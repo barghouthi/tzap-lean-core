@@ -1,13 +1,8 @@
-use indicatif::ProgressBar;
-
 use crate::circuit::{Circuit, Gate};
 
 pub trait Pass: Sync {
     fn name(&self) -> &str;
-    fn run(&self, circuit: &Circuit) -> Circuit {
-        self.run_with_progress(circuit, &ProgressBar::hidden())
-    }
-    fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit;
+    fn run(&self, circuit: &Circuit) -> Circuit;
 }
 
 pub struct PassResult {

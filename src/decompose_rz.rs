@@ -1,4 +1,3 @@
-use indicatif::ProgressBar;
 use rayon::prelude::*;
 
 use crate::circuit::{Circuit, Gate};
@@ -21,12 +20,12 @@ impl Pass for DecomposeRz {
         "Rz → Clifford+T decomposition"
     }
 
-    fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
+    fn run(&self, circuit: &Circuit) -> Circuit {
         let epsilon = self.epsilon;
 
         // Synthesize all Rz gates in parallel.
         let expanded: Vec<Vec<Gate>> = circuit.gates.par_iter().map(|gate| {
-            let result = match gate {
+            match gate {
                 Gate::rz(theta, q) => {
                     let q = *q;
                     let chars = synthesize_rz(*theta, epsilon);
@@ -44,9 +43,7 @@ impl Pass for DecomposeRz {
                     gates
                 }
                 other => vec![other.clone()],
-            };
-            pb.inc(1);
-            result
+            }
         }).collect();
 
         let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);

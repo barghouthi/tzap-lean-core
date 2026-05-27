@@ -1,5 +1,3 @@
-use indicatif::ProgressBar;
-
 use crate::circuit::{Circuit, Gate, Qubit};
 use crate::pass::Pass;
 use crate::phase_fold_rand::classify_quarter_pi;
@@ -12,15 +10,13 @@ use crate::phase_fold_rand::classify_quarter_pi;
 /// scanning backward through the entire result list.
 /// Gates are tracked by index into the original slice — only surviving gates
 /// are cloned at the end.
-fn cancel_pairs(gates: &[Gate], num_qubits: usize, pb: &ProgressBar) -> Vec<Gate> {
+fn cancel_pairs(gates: &[Gate], num_qubits: usize) -> Vec<Gate> {
     let len = gates.len();
     let mut skip = vec![false; len];
     // Per-qubit stack of gate indices — tracks the most recent gate on each qubit.
     let mut qubit_stacks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
 
     for (i, gate) in gates.iter().enumerate() {
-        pb.inc(1);
-
         if is_self_inverse(gate) {
             let (n, qs) = qubits_of(gate);
             // The blocker is the latest gate touching any of this gate's qubits.
@@ -33,17 +29,17 @@ fn cancel_pairs(gates: &[Gate], num_qubits: usize, pb: &ProgressBar) -> Vec<Gate
                     });
                 }
             }
-            if let Some(block_idx) = blocker {
-                if gates_equal(&gates[block_idx], gate) {
-                    // Cancel both gates; pop the blocker from all relevant qubit stacks.
-                    skip[block_idx] = true;
-                    skip[i] = true;
-                    for j in 0..n {
-                        debug_assert_eq!(*qubit_stacks[qs[j]].last().unwrap(), block_idx);
-                        qubit_stacks[qs[j]].pop();
-                    }
-                    continue;
+            if let Some(block_idx) = blocker
+                && gates_equal(&gates[block_idx], gate)
+            {
+                // Cancel both gates; pop the blocker from all relevant qubit stacks.
+                skip[block_idx] = true;
+                skip[i] = true;
+                for j in 0..n {
+                    debug_assert_eq!(*qubit_stacks[qs[j]].last().unwrap(), block_idx);
+                    qubit_stacks[qs[j]].pop();
                 }
+                continue;
             }
         }
 
@@ -160,8 +156,7 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
     let mut replace: Vec<Option<Gate>> = vec![None; gates.len()];
     let mut changed = false;
 
-    for q in 0..num_qubits {
-        let track = &tracks[q];
+    for (q, track) in tracks.iter().enumerate() {
         let mut p = 0;
         while p < track.len() {
             let io = track[p];
@@ -192,7 +187,7 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
                     None => break,
                 }
             }
-            if j < track.len() && is_h(&gates[track[j]], q) && !dirty && k % 2 == 0 {
+            if j < track.len() && is_h(&gates[track[j]], q) && !dirty && k.is_multiple_of(2) {
                 let ic = track[j];
                 let run = &track[p + 1..j];
                 match k {
@@ -242,22 +237,21 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
     Some(out)
 }
 
-pub struct CancelPairs;
+pub struct CancelGates;
 
-impl Pass for CancelPairs {
+impl Pass for CancelGates {
     fn name(&self) -> &str { "Pair cancellation" }
-    fn run_with_progress(&self, circuit: &Circuit, pb: &ProgressBar) -> Circuit {
+    fn run(&self, circuit: &Circuit) -> Circuit {
         let n = circuit.num_qubits;
         // Cancel self-inverse pairs and shrink Hadamard barriers, alternating
         // to a combined fixpoint: each step can expose work for the other —
         // cancelling gates between two H's exposes a reducible run, and a
         // rewrite that emits an X or Z exposes a new cancellable pair.
-        let mut gates = cancel_pairs(&circuit.gates, n, pb);
-        let quiet = ProgressBar::hidden();
+        let mut gates = cancel_pairs(&circuit.gates, n);
         loop {
             let (reduced, reduce_changed) = reduce_hadamards(&gates, n);
             let before = reduced.len();
-            gates = cancel_pairs(&reduced, n, &quiet);
+            gates = cancel_pairs(&reduced, n);
             let cancel_changed = gates.len() != before;
             if !reduce_changed && !cancel_changed {
                 break;
@@ -292,7 +286,7 @@ mod tests {
     #[test]
     fn hh_cancel() {
         let c = make_circuit(1, vec![Gate::h(0), Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -300,7 +294,7 @@ mod tests {
     #[test]
     fn xx_cancel() {
         let c = make_circuit(1, vec![Gate::x(0), Gate::x(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -311,7 +305,7 @@ mod tests {
             Gate::cnot { control: 0, target: 1 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -321,7 +315,7 @@ mod tests {
     #[test]
     fn hh_cancel_different_qubit() {
         let c = make_circuit(4, vec![Gate::h(3), Gate::h(3)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -330,7 +324,7 @@ mod tests {
     fn hh_cancel_skips_unrelated_gate() {
         // H q0; T q1; H q0 — T on different qubit doesn't block
         let c = make_circuit(2, vec![Gate::h(0), Gate::t(1), Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::t(1)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -340,7 +334,7 @@ mod tests {
     fn hh_cancel_blocked_by_same_qubit() {
         // H q0; T q0; H q0 — T on same qubit blocks HH cancel
         let c = make_circuit(1, vec![Gate::h(0), Gate::t(0), Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         // Should not cancel as HH; instead rule #1/#2 may or may not apply
         // T is not S or Sdg so no hadamard reduction either — unchanged
         assert_eq!(r.gates.len(), 3);
@@ -352,7 +346,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::h(0), Gate::h(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -363,7 +357,7 @@ mod tests {
         let c = make_circuit(2, vec![
             Gate::h(0), Gate::h(1), Gate::h(0), Gate::h(1),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -373,7 +367,7 @@ mod tests {
     #[test]
     fn xx_cancel_different_qubit() {
         let c = make_circuit(3, vec![Gate::x(2), Gate::x(2)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -381,7 +375,7 @@ mod tests {
     #[test]
     fn xx_cancel_skips_unrelated_gate() {
         let c = make_circuit(2, vec![Gate::x(0), Gate::h(1), Gate::x(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::h(1)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -390,7 +384,7 @@ mod tests {
     #[test]
     fn xx_cancel_blocked_by_same_qubit() {
         let c = make_circuit(1, vec![Gate::x(0), Gate::z(0), Gate::x(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -400,7 +394,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::x(0), Gate::x(0), Gate::x(0), Gate::x(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -413,7 +407,7 @@ mod tests {
             Gate::cnot { control: 3, target: 4 },
             Gate::cnot { control: 3, target: 4 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -426,7 +420,7 @@ mod tests {
             Gate::t(2),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::t(2)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -439,7 +433,7 @@ mod tests {
             Gate::t(0),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -451,7 +445,7 @@ mod tests {
             Gate::t(1),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -463,7 +457,7 @@ mod tests {
             Gate::cnot { control: 0, target: 1 },
             Gate::cnot { control: 1, target: 0 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -476,7 +470,7 @@ mod tests {
             Gate::cnot { control: 0, target: 1 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -488,7 +482,7 @@ mod tests {
         let c = make_circuit(2, vec![
             Gate::t(0), Gate::s(1), Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -496,7 +490,7 @@ mod tests {
     #[test]
     fn single_h_preserved() {
         let c = make_circuit(1, vec![Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::h(0)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -505,7 +499,7 @@ mod tests {
     #[test]
     fn empty_circuit() {
         let c = Circuit::new(2);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
     }
 
@@ -514,7 +508,7 @@ mod tests {
     #[test]
     fn zz_cancel() {
         let c = make_circuit(1, vec![Gate::z(0), Gate::z(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -522,7 +516,7 @@ mod tests {
     #[test]
     fn zz_cancel_skips_unrelated_gate() {
         let c = make_circuit(2, vec![Gate::z(0), Gate::t(1), Gate::z(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::t(1)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -531,7 +525,7 @@ mod tests {
     #[test]
     fn zz_cancel_blocked_by_same_qubit() {
         let c = make_circuit(1, vec![Gate::z(0), Gate::h(0), Gate::z(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -544,7 +538,7 @@ mod tests {
             Gate::ccx { control1: 0, control2: 1, target: 2 },
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -556,7 +550,7 @@ mod tests {
             Gate::t(3),
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::t(3)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -569,7 +563,7 @@ mod tests {
             Gate::h(0),
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -581,7 +575,7 @@ mod tests {
             Gate::h(1),
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -593,7 +587,7 @@ mod tests {
             Gate::h(2),
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -604,7 +598,7 @@ mod tests {
             Gate::ccx { control1: 0, control2: 1, target: 3 },
             Gate::ccx { control1: 0, control2: 2, target: 3 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -615,7 +609,7 @@ mod tests {
             Gate::ccx { control1: 0, control2: 1, target: 2 },
             Gate::ccx { control1: 0, control2: 1, target: 3 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -628,7 +622,7 @@ mod tests {
             Gate::ccx { control1: 0, control2: 1, target: 2 },
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -641,7 +635,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::h(0), Gate::h(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -651,7 +645,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::h(0), Gate::h(0), Gate::h(0), Gate::h(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -661,7 +655,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::h(0), Gate::h(0), Gate::h(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -675,7 +669,7 @@ mod tests {
             Gate::cnot { control: 0, target: 1 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -687,7 +681,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::x(0), Gate::h(0), Gate::x(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(matches!(r.gates[0], Gate::z(0)));
         assert!(matches!(r.gates[1], Gate::x(0)));
@@ -700,7 +694,7 @@ mod tests {
         let c = make_circuit(2, vec![
             Gate::h(0), Gate::h(1), Gate::h(1), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -711,7 +705,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::x(0), Gate::z(0), Gate::z(0), Gate::x(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -722,7 +716,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::t(0), Gate::h(0), Gate::x(0), Gate::x(0), Gate::h(0), Gate::t(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(matches!(&r.gates[0], Gate::t(0)));
         assert!(matches!(&r.gates[1], Gate::t(0)));
@@ -738,7 +732,7 @@ mod tests {
             Gate::cnot { control: 0, target: 1 },
             Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -751,7 +745,7 @@ mod tests {
         let c = make_circuit(4, vec![
             Gate::h(0), Gate::t(1), Gate::s(2), Gate::tdg(3), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -764,7 +758,7 @@ mod tests {
             Gate::h(2), Gate::t(3),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -777,7 +771,7 @@ mod tests {
             Gate::h(3), Gate::t(4),
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -790,7 +784,7 @@ mod tests {
             Gate::h(0),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r1 = CancelPairs.run(&c1);
+        let r1 = CancelGates.run(&c1);
         assert_eq!(r1.gates.len(), 3);
         assert!(circuits_equiv(&c1, &r1, 1e-10));
 
@@ -800,7 +794,7 @@ mod tests {
             Gate::h(1),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r2 = CancelPairs.run(&c2);
+        let r2 = CancelGates.run(&c2);
         assert_eq!(r2.gates.len(), 3);
         assert!(circuits_equiv(&c2, &r2, 1e-10));
 
@@ -810,7 +804,7 @@ mod tests {
             Gate::h(2),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r3 = CancelPairs.run(&c3);
+        let r3 = CancelGates.run(&c3);
         assert_eq!(r3.gates.len(), 1);
         assert!(circuits_equiv(&c3, &r3, 1e-10));
     }
@@ -820,7 +814,7 @@ mod tests {
     #[test]
     fn t_t_no_cancel() {
         let c = make_circuit(1, vec![Gate::t(0), Gate::t(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -828,7 +822,7 @@ mod tests {
     #[test]
     fn tdg_tdg_no_cancel() {
         let c = make_circuit(1, vec![Gate::tdg(0), Gate::tdg(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -836,7 +830,7 @@ mod tests {
     #[test]
     fn s_s_no_cancel() {
         let c = make_circuit(1, vec![Gate::s(0), Gate::s(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -844,7 +838,7 @@ mod tests {
     #[test]
     fn sdg_sdg_no_cancel() {
         let c = make_circuit(1, vec![Gate::sdg(0), Gate::sdg(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -853,7 +847,7 @@ mod tests {
     fn t_tdg_no_cancel() {
         // T and Tdg are inverses of each other but cancel_pairs only handles self-inverse
         let c = make_circuit(1, vec![Gate::t(0), Gate::tdg(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -861,7 +855,7 @@ mod tests {
     #[test]
     fn s_sdg_no_cancel() {
         let c = make_circuit(1, vec![Gate::s(0), Gate::sdg(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -872,7 +866,7 @@ mod tests {
             Gate::rz(std::f64::consts::PI / 4.0, 0),
             Gate::rz(std::f64::consts::PI / 4.0, 0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -886,7 +880,7 @@ mod tests {
             Gate::h(0), Gate::h(1), Gate::h(2), Gate::h(3), Gate::h(4),
             Gate::h(4), Gate::h(3), Gate::h(2), Gate::h(1), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -899,7 +893,7 @@ mod tests {
             Gate::t(1),
             Gate::h(0), Gate::h(1), Gate::x(2),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3); // H(1), T(1), H(1) remain
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -910,7 +904,7 @@ mod tests {
         let c = make_circuit(2, vec![
             Gate::h(0), Gate::x(1), Gate::h(0), Gate::x(1),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -925,7 +919,7 @@ mod tests {
             Gate::cnot { control: 0, target: 1 },
             Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -938,7 +932,7 @@ mod tests {
             Gate::cnot { control: 1, target: 2 },
             Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -951,7 +945,7 @@ mod tests {
                 Gate::ccx { control1: 0, control2: 1, target: 2 },
                 Gate::h(blocked_q),
             ]);
-            let r = CancelPairs.run(&c);
+            let r = CancelGates.run(&c);
             assert_eq!(r.gates.len(), 3, "H({}) should be blocked by CCX", blocked_q);
             assert!(circuits_equiv(&c, &r, 1e-10));
         }
@@ -961,7 +955,7 @@ mod tests {
             Gate::ccx { control1: 0, control2: 1, target: 2 },
             Gate::h(3),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -977,7 +971,7 @@ mod tests {
             Gate::x(2), Gate::x(2), // cancels
             Gate::tdg(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(matches!(&r.gates[0], Gate::t(0)));
         assert!(matches!(&r.gates[1], Gate::s(0)));
@@ -991,7 +985,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::t(0), Gate::h(0), Gate::h(0), Gate::s(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(matches!(&r.gates[0], Gate::t(0)));
         assert!(matches!(&r.gates[1], Gate::s(0)));
@@ -1005,7 +999,7 @@ mod tests {
         // 100 H-H pairs on q0
         let gates: Vec<Gate> = (0..200).map(|_| Gate::h(0)).collect();
         let c = make_circuit(1, gates);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1014,7 +1008,7 @@ mod tests {
     fn many_pairs_odd_leaves_one() {
         let gates: Vec<Gate> = (0..201).map(|_| Gate::h(0)).collect();
         let c = make_circuit(1, gates);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1026,7 +1020,7 @@ mod tests {
             Gate::h(0), Gate::h(0), Gate::t(0),
             Gate::h(0), Gate::h(0), Gate::t(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(matches!(&r.gates[0], Gate::t(0)));
         assert!(matches!(&r.gates[1], Gate::t(0)));
@@ -1040,7 +1034,7 @@ mod tests {
             Gate::h(0), Gate::x(0), Gate::z(0), Gate::h(0),
             Gate::h(0), Gate::z(0), Gate::x(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1053,7 +1047,7 @@ mod tests {
             Gate::h(3), Gate::h(3), // cancels
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(r.has_toffoli);
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -1065,7 +1059,7 @@ mod tests {
             Gate::ccx { control1: 0, control2: 1, target: 2 },
             Gate::ccx { control1: 0, control2: 1, target: 2 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(!r.has_toffoli);
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -1081,7 +1075,7 @@ mod tests {
             Gate::ccx { control1: 1, control2: 2, target: 3 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1094,7 +1088,7 @@ mod tests {
             Gate::ccx { control1: 2, control2: 3, target: 4 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1108,7 +1102,7 @@ mod tests {
             Gate::cnot { control: 2, target: 3 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1123,7 +1117,7 @@ mod tests {
             Gate::z(2),
             Gate::cnot { control: 3, target: 4 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 4);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1136,7 +1130,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::t(0), Gate::x(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         // X is the blocker, not H — X != H so no cancel
         assert_eq!(r.gates.len(), 4);
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -1150,7 +1144,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::t(0), Gate::h(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(matches!(&r.gates[0], Gate::h(0)));
         assert!(matches!(&r.gates[1], Gate::t(0)));
@@ -1168,7 +1162,7 @@ mod tests {
         let c = make_circuit(2, vec![
             Gate::t(1), Gate::h(0), Gate::x(1), Gate::h(0), Gate::x(1), Gate::t(1),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
         assert!(matches!(&r.gates[0], Gate::t(1)));
         assert!(matches!(&r.gates[1], Gate::t(1)));
@@ -1192,7 +1186,7 @@ mod tests {
             Gate::measure { qubit: 0, cbit: 0 },
             Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(r.has_measurement);
         assert_eq!(r.num_cbits, 1);
@@ -1203,7 +1197,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::reset(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(r.has_measurement);
     }
@@ -1215,7 +1209,7 @@ mod tests {
             Gate::measure { qubit: 1, cbit: 0 },
             Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::measure { qubit: 1, cbit: 0 }));
     }
@@ -1225,7 +1219,7 @@ mod tests {
         let c = make_circuit(2, vec![
             Gate::h(0), Gate::reset(1), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::reset(1)));
     }
@@ -1237,7 +1231,7 @@ mod tests {
             Gate::measure { qubit: 0, cbit: 0 },
             Gate::x(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
     }
 
@@ -1248,7 +1242,7 @@ mod tests {
             Gate::measure { qubit: 0, cbit: 0 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
     }
 
@@ -1259,7 +1253,7 @@ mod tests {
             Gate::measure { qubit: 1, cbit: 0 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
     }
 
@@ -1270,7 +1264,7 @@ mod tests {
             Gate::measure { qubit: 2, cbit: 0 },
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(&r.gates[0], Gate::measure { qubit: 2, cbit: 0 }));
     }
@@ -1282,7 +1276,7 @@ mod tests {
             Gate::reset(1),
             Gate::cnot { control: 0, target: 1 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
     }
 
@@ -1294,7 +1288,7 @@ mod tests {
                 Gate::measure { qubit: blocked_q, cbit: 0 },
                 Gate::ccx { control1: 0, control2: 1, target: 2 },
             ]);
-            let r = CancelPairs.run(&c);
+            let r = CancelGates.run(&c);
             assert_eq!(r.gates.len(), 3, "measure q{} should block CCX pair", blocked_q);
         }
     }
@@ -1306,14 +1300,14 @@ mod tests {
             Gate::measure { qubit: 0, cbit: 0 },
             Gate::measure { qubit: 0, cbit: 0 },
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
 
         let c = make_circuit(1, vec![
             Gate::reset(0),
             Gate::reset(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 2);
     }
 
@@ -1322,7 +1316,7 @@ mod tests {
         let c = make_circuit_with_cbits(1, 3, vec![
             Gate::h(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert_eq!(r.num_cbits, 3);
     }
@@ -1336,7 +1330,7 @@ mod tests {
             Gate::h(0), Gate::x(0), Gate::z(0),
             Gate::z(0), Gate::x(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
 
@@ -1345,13 +1339,13 @@ mod tests {
             Gate::h(0), Gate::x(0), Gate::z(0), Gate::x(0), Gate::h(0),
             Gate::h(0), Gate::x(0), Gate::z(0), Gate::x(0), Gate::h(0),
         ]);
-        let r2 = CancelPairs.run(&c2);
+        let r2 = CancelGates.run(&c2);
         assert_eq!(r2.gates.len(), 0);
         assert!(circuits_equiv(&c2, &r2, 1e-10));
     }
 
     // --- Hadamard-reduction tests ---
-    // CancelPairs also collapses H barriers via local Clifford identities, so
+    // CancelGates also collapses H barriers via local Clifford identities, so
     // the downstream phase-folding pass sees longer Hadamard-free sections.
 
     fn count_h(c: &Circuit) -> usize {
@@ -1361,7 +1355,7 @@ mod tests {
     #[test]
     fn hxh_becomes_z() {
         let c = make_circuit(1, vec![Gate::h(0), Gate::x(0), Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(r.gates[0], Gate::z(0)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -1370,7 +1364,7 @@ mod tests {
     #[test]
     fn hzh_becomes_x() {
         let c = make_circuit(1, vec![Gate::h(0), Gate::z(0), Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 1);
         assert!(matches!(r.gates[0], Gate::x(0)));
         assert!(circuits_equiv(&c, &r, 1e-10));
@@ -1380,7 +1374,7 @@ mod tests {
     fn hsh_drops_one_hadamard() {
         // H·S·H = Sdg·H·Sdg — still three gates, but one fewer Hadamard.
         let c = make_circuit(1, vec![Gate::h(0), Gate::s(0), Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(count_h(&r), 1);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1391,7 +1385,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::s(0), Gate::h(0), Gate::s(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(count_h(&r), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1402,7 +1396,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::h(0), Gate::sdg(0), Gate::s(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1414,7 +1408,7 @@ mod tests {
         let c = make_circuit(3, vec![
             Gate::h(0), Gate::x(0), Gate::cnot { control: 1, target: 2 }, Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(count_h(&r), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1426,7 +1420,7 @@ mod tests {
         let c = make_circuit(2, vec![
             Gate::h(0), Gate::cnot { control: 0, target: 1 }, Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1435,7 +1429,7 @@ mod tests {
     fn hadamard_run_with_t_is_not_reducible() {
         // H·T·H carries a genuine T — not a Clifford run, both H's survive.
         let c = make_circuit(1, vec![Gate::h(0), Gate::t(0), Gate::h(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(count_h(&r), 2);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1443,7 +1437,7 @@ mod tests {
     #[test]
     fn lone_hadamard_is_kept() {
         let c = make_circuit(1, vec![Gate::t(0), Gate::h(0), Gate::t(0)]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1454,7 +1448,7 @@ mod tests {
         c.apply(Gate::h(0));
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::h(0));
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 3);
         assert!(matches!(r.gates[1], Gate::measure { .. }));
     }
@@ -1466,7 +1460,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::z(0), Gate::h(0), Gate::x(0), Gate::h(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
@@ -1478,7 +1472,7 @@ mod tests {
         let c = make_circuit(1, vec![
             Gate::t(0), Gate::h(0), Gate::x(0), Gate::x(0), Gate::h(0), Gate::t(0),
         ]);
-        let r = CancelPairs.run(&c);
+        let r = CancelGates.run(&c);
         assert_eq!(count_h(&r), 0);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }

@@ -12,7 +12,7 @@ It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized O
 **Gate handling:**
 
 - **Toffoli (`ccx`)** gates are automatically decomposed into Clifford+T before optimization.
-- **Rz** gates are left as-is by default. Pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth). `--to-cliffordt` also decomposes Rz gates. Use `--epsilon <eps>` with either flag to control the approximation precision (default: `1e-10`; accepts scientific notation).
+- **Rz** gates are left as-is by default. Pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth). Use `--epsilon <eps>` to control the approximation precision (default: `1e-10`; accepts scientific notation).
 
 ## Usage
 
@@ -34,10 +34,10 @@ $ tzap benchmarks/feynman/barenco_tof_5.qasm
 
 ⚡️ tzap
   Parsing benchmarks/feynman/barenco_tof_5.qasm (0.0 MB)
-	└─ 9 qubits · 50 gates · 0 T/Tdg · 0.000s
+	└─ 9 qubits · 218 gates · 84 T/Tdg · 0.000s
 
-  Toffoli decomposition
-	└─ 218 gates · 84 T · 0.000s
+  Pair cancellation
+	└─ 170 gates · 84 T · 0.000s
   Phase folding
 	└─ 146 gates · 40 T · 0.000s
 

@@ -70,27 +70,6 @@ fn output_is_valid_qasm() {
 }
 
 #[test]
-fn no_cancel_skips_adjacent_gate_cancellation() {
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join("hh.qasm");
-    let output = dir.path().join("out.qasm");
-    fs::write(&input, "\
-OPENQASM 2.0;
-include \"qelib1.inc\";
-qreg q[1];
-h q[0];
-h q[0];
-").unwrap();
-
-    let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "--no-cancel"]);
-    assert!(out.status.success());
-
-    let content = fs::read_to_string(&output).unwrap();
-    let gates = gate_lines_from(&content);
-    assert_eq!(gates, vec!["h q[0];", "h q[0];"]);
-}
-
-#[test]
 fn writes_to_output_file() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
@@ -424,26 +403,100 @@ fn coarser_epsilon_produces_fewer_t_gates_than_finer() {
         "coarser epsilon should need <= T gates: coarse={t_coarse}, fine={t_fine}");
 }
 
+// --- --passes pipeline override ---
+
+const HHTT_QASM: &str = "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nh q[0];\nh q[0];\nt q[0];\nt q[0];\n";
+
 #[test]
-fn to_cliffordt_with_epsilon_produces_cliffordt() {
+fn passes_runs_only_the_listed_pass() {
+    // CancelGates alone removes the H·H pair but does not fold T·T (that is the
+    // phase-folding pass), so the two T gates survive.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "--passes", "CancelGates"]);
+    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    let gates = gate_lines_from(&fs::read_to_string(&output).unwrap());
+    assert_eq!(gates, vec!["t q[0];", "t q[0];"]);
+}
+
+#[test]
+fn passes_run_in_the_given_order() {
+    // CancelGates removes H·H leaving T·T, then PhaseFoldRand folds T·T into S.
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(), "-o", output.to_str().unwrap(),
+        "--passes", "CancelGates,PhaseFoldRand",
+    ]);
+    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    let gates = gate_lines_from(&fs::read_to_string(&output).unwrap());
+    assert_eq!(gates, vec!["s q[0];"]);
+}
+
+#[test]
+fn passes_allows_decompose_rz_with_epsilon() {
+    // --epsilon is permitted with --passes and configures the DecomposeRz pass.
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("rz.qasm");
     let output = dir.path().join("out.qasm");
     fs::write(&input, rz_qasm("pi/5")).unwrap();
 
     let out = tzap_run(&[
-        input.to_str().unwrap(),
-        "-o", output.to_str().unwrap(),
-        "--to-cliffordt",
+        input.to_str().unwrap(), "-o", output.to_str().unwrap(),
+        "--passes", "DecomposeRz,CancelGates,PhaseFoldRand",
         "--epsilon", "1e-3",
     ]);
     assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
 
-    let content = fs::read_to_string(&output).unwrap();
-    let gates = gate_lines_from(&content);
+    let gates = gate_lines_from(&fs::read_to_string(&output).unwrap());
     assert!(!gates.iter().any(|g| g.starts_with("rz(")),
         "no rz gates should remain, got: {gates:?}");
     assert!(!gates.is_empty());
+}
+
+#[test]
+fn passes_conflicts_with_decompose_rz() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[input.to_str().unwrap(), "--passes", "CancelGates", "--decompose-rz"]);
+    assert!(!out.status.success(), "should reject --passes with --decompose-rz");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot be combined"), "got: {stderr}");
+}
+
+#[test]
+fn passes_conflicts_with_expr() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[input.to_str().unwrap(), "--passes", "CancelGates", "--expr"]);
+    assert!(!out.status.success(), "should reject --passes with --expr");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot be combined"), "got: {stderr}");
+}
+
+#[test]
+fn passes_unknown_name_errors_with_valid_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[input.to_str().unwrap(), "--passes", "Foo,CancelGates"]);
+    assert!(!out.status.success(), "unknown pass should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Unknown pass 'Foo'"), "got: {stderr}");
+    assert!(stderr.contains("CancelGates"), "error should list valid passes, got: {stderr}");
 }
 
 fn gate_lines_from(stdout: &str) -> Vec<String> {
