@@ -61,6 +61,8 @@ struct Opts {
     parallel: bool,
     /// Explicit pass pipeline from `--passes` (overrides the default pipeline).
     passes: Option<Vec<PassName>>,
+    /// Re-run the optimization pipeline until gate count stops decreasing.
+    fixpoint: bool,
 }
 
 fn fmt_num<N: std::fmt::Display>(n: N) -> String {
@@ -118,12 +120,13 @@ fn build_passes<'a>(
 }
 
 /// Run one pass with timing and a result line. Returns the transformed circuit
-/// and how long the pass took.
-fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> (Circuit, Duration) {
+/// and how long the pass took. `indent` is prepended to every log line so the
+/// caller can nest output under a header.
+fn run_logged(pass: &dyn Pass, circuit: &Circuit, indent: &str) -> (Circuit, Duration) {
     let start = Instant::now();
     let c = pass.run(circuit);
     let elapsed = start.elapsed();
-    eprintln!("  {}\n\t└─ {} gates · {} T · {:.3}s",
+    eprintln!("{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
         pass.name(), fmt_num(c.gates.len()), fmt_num(count_t(&c)), elapsed.as_secs_f64());
     (c, elapsed)
 }
@@ -157,6 +160,7 @@ fn run_passes_parallel_logged(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     num_chunks: usize,
+    indent: &str,
 ) -> (Circuit, Duration) {
     let mut chunks = split_chunks(circuit, num_chunks);
     let mut total = Duration::ZERO;
@@ -168,7 +172,7 @@ fn run_passes_parallel_logged(
 
         let gates: usize = chunks.iter().map(|c| c.gates.len()).sum();
         let t: usize = chunks.iter().map(count_t).sum();
-        eprintln!("  {}\n\t└─ {} gates · {} T · {:.3}s",
+        eprintln!("{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
             p.name(), fmt_num(gates), fmt_num(t), elapsed.as_secs_f64());
     }
     (stitch(circuit.num_qubits, circuit.num_cbits, &chunks), total)
@@ -215,21 +219,50 @@ fn read_circuit(path: &str) -> Circuit {
 
 /// Run a pass pipeline (parallel chunked or sequential), with per-pass logging.
 /// Returns the result and the total pass time.
-fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], parallel: bool, num_chunks: usize) -> (Circuit, Duration) {
+fn run_pipeline(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    parallel: bool,
+    num_chunks: usize,
+    indent: &str,
+) -> (Circuit, Duration) {
     if parallel {
-        eprintln!("  Parallel mode: {} chunks / {} threads\n",
+        eprintln!("{indent}  Parallel mode: {} chunks / {} threads\n",
             fmt_num(num_chunks), fmt_num(rayon::current_num_threads()));
-        run_passes_parallel_logged(circuit, passes, num_chunks)
+        run_passes_parallel_logged(circuit, passes, num_chunks, indent)
     } else {
         let mut c = circuit.clone();
         let mut total = Duration::ZERO;
         for p in passes {
-            let (next, elapsed) = run_logged(*p, &c);
+            let (next, elapsed) = run_logged(*p, &c, indent);
             c = next;
             total += elapsed;
         }
         (c, total)
     }
+}
+
+/// Repeatedly run `passes` until a sweep fails to reduce the gate count.
+/// Returns the result, total pass time, and how many sweeps ran.
+fn run_to_fixpoint(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    parallel: bool,
+    num_chunks: usize,
+) -> (Circuit, Duration, usize) {
+    let mut c = circuit.clone();
+    let mut total = Duration::ZERO;
+    let mut round = 0;
+    loop {
+        round += 1;
+        let before = c.gates.len();
+        eprintln!("  \u{25C7} Iteration {round}");
+        let (next, elapsed) = run_pipeline(&c, passes, parallel, num_chunks, "\t");
+        c = next;
+        total += elapsed;
+        if c.gates.len() >= before { break; }
+    }
+    (c, total, round)
 }
 
 /// Default pipeline: decompose ccx (and optionally Rz), then cancel + phase-fold.
@@ -261,7 +294,13 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         }).collect();
         let baseline_gates = circuit.gates.len();
         let baseline_t = count_t(&circuit);
-        let (result, total) = run_pipeline(&circuit, &passes, parallel, num_chunks);
+        let (result, total) = if opts.fixpoint {
+            let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
+            eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+            (r, t)
+        } else {
+            run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+        };
         print_result(baseline_gates, result.gates.len(), baseline_t, count_t(&result),
             total.as_secs_f64());
         write_output(&opts.output_path, &result);
@@ -274,7 +313,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
 
     // Decompose Toffoli eagerly so post-decomp counts form the baseline.
     let circuit = if circuit.has_toffoli {
-        run_logged(&decompose_toffoli, &circuit).0
+        run_logged(&decompose_toffoli, &circuit, "").0
     } else {
         circuit
     };
@@ -290,7 +329,13 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         passes.extend(build_passes(&cancel_pass, &global, &global_expr, opts.expr));
     }
 
-    let (result, total_pass_time) = run_pipeline(&circuit, &passes, parallel, num_chunks);
+    let (result, total_pass_time) = if opts.fixpoint {
+        let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
+        eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+        (r, t)
+    } else {
+        run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+    };
 
     print_result(baseline_gates, result.gates.len(), baseline_t, count_t(&result),
         total_pass_time.as_secs_f64());
@@ -329,6 +374,7 @@ fn print_help() {
     println!("    \x1b[1m--passes\x1b[0m <list>  Run these passes in order, overriding the default pipeline");
     println!("                     (see PASSES). Excludes --decompose-rz; --epsilon still");
     println!("                     configures DecomposeRz.");
+    println!("    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing");
     println!("    \x1b[1m-h, --help\x1b[0m       Print this help message");
     println!();
     println!("  \x1b[1;33mPASSES\x1b[0m (names for --passes)");
@@ -346,6 +392,7 @@ fn parse_args(args: &[String]) -> Opts {
     let mut rz_epsilon: f64 = 1e-10;
     let mut parallel = false;
     let mut passes: Option<Vec<PassName>> = None;
+    let mut fixpoint = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -376,6 +423,7 @@ fn parse_args(args: &[String]) -> Opts {
                 passes = Some(parsed);
             }
             "--parallel" => parallel = true,
+            "--fixpoint" => fixpoint = true,
             "-o" => {
                 i += 1;
                 output_path = args.get(i).cloned();
@@ -396,7 +444,7 @@ fn parse_args(args: &[String]) -> Opts {
     }
 
     let Some(input_path) = input_path else {
-        eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel]");
+        eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]");
         process::exit(1);
     };
 
@@ -407,7 +455,7 @@ fn parse_args(args: &[String]) -> Opts {
 
     Opts {
         input_path, output_path, expr, decompose_rz,
-        rz_epsilon, parallel, passes,
+        rz_epsilon, parallel, passes, fixpoint,
     }
 }
 
@@ -440,7 +488,7 @@ mod tests {
 
         let cancel = CancelGates;
         let passes: Vec<&dyn Pass> = vec![&cancel];
-        let par = run_passes_parallel_logged(&c, &passes, 4).0;
+        let par = run_passes_parallel_logged(&c, &passes, 4, "").0;
 
         assert_eq!(par.num_cbits, 1, "parallel reconstruction must preserve num_cbits");
 
@@ -457,7 +505,7 @@ mod tests {
     fn parallel_mode_handles_empty_circuit() {
         let empty = Circuit::new(1);
         let passes: Vec<&dyn Pass> = vec![];
-        let out = run_passes_parallel_logged(&empty, &passes, 4).0;
+        let out = run_passes_parallel_logged(&empty, &passes, 4, "").0;
         assert!(out.gates.is_empty());
     }
 }
