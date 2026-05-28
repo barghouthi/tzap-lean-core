@@ -237,23 +237,143 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
     Some(out)
 }
 
+/// Cancel CNOT pairs that aren't necessarily adjacent — for each CNOT,
+/// scan forward through gates that commute past it (diagonals on the
+/// control wire, X on the target wire, other CNOTs sharing the control
+/// or target, and disjoint-qubit gates). If a matching CNOT(c, t) is
+/// reached, drop both. The gates in between are unaffected: each one
+/// commutes past a single CNOT(c, t), so removing both CNOTs preserves
+/// the circuit's unitary.
+///
+/// This extends what `cancel_pairs` already does for CNOTs: `cancel_pairs`
+/// only cancels if every gate touching c or t in between is on a strictly
+/// disjoint set of qubits, which misses common cases like `CNOT(c, t) ·
+/// Rz(c) · CNOT(c, t)` and `CNOT(c, t) · CNOT(c, u) · CNOT(c, t)`.
+fn cancel_cnot(input: &[Gate], num_qubits: usize) -> (Vec<Gate>, bool) {
+    let mut gates = input.to_vec();
+    let mut changed = false;
+    while let Some(next) = cancel_cnot_pass(&gates, num_qubits) {
+        gates = next;
+        changed = true;
+    }
+    (gates, changed)
+}
+
+/// One sweep of CNOT-pair lookahead cancellation. Walks per-qubit tracks
+/// for the two wires of each starting CNOT so gates on other qubits are
+/// skipped entirely — the inner walk is bounded by the lengths of the
+/// control's and target's tracks rather than the whole gate list.
+fn cancel_cnot_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>> {
+    // Per-qubit list of gate indices touching that qubit, in original order.
+    let mut tracks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
+    for (i, g) in gates.iter().enumerate() {
+        let (n, qs) = qubits_of(g);
+        for &q in &qs[..n] {
+            tracks[q].push(i);
+        }
+    }
+
+    let mut delete = vec![false; gates.len()];
+    let mut fired = false;
+
+    for i in 0..gates.len() {
+        if delete[i] { continue; }
+        let (c, t) = match gates[i] {
+            Gate::cnot { control, target } => (control, target),
+            _ => continue,
+        };
+
+        // Position of the propagating CNOT in each of its tracks. Both
+        // lookups must succeed since i was pushed during track building.
+        let pc_start = tracks[c].binary_search(&i).expect("CNOT missing from control track");
+        let pt_start = tracks[t].binary_search(&i).expect("CNOT missing from target track");
+
+        // Merge-walk the two tracks forward in original-order: at each step
+        // visit the gate with the lower index from either track. Gates that
+        // touch both c and t (the rare CNOT(c, t')/CNOT(c', t) cases plus
+        // any matching CNOT(c, t)) appear in both and are visited once.
+        let mut pc = pc_start + 1;
+        let mut pt = pt_start + 1;
+        let mut cancel_at: Option<usize> = None;
+
+        loop {
+            while pc < tracks[c].len() && delete[tracks[c][pc]] { pc += 1; }
+            while pt < tracks[t].len() && delete[tracks[t][pt]] { pt += 1; }
+            let nc_idx = tracks[c].get(pc).copied();
+            let nt_idx = tracks[t].get(pt).copied();
+            let j = match (nc_idx, nt_idx) {
+                (None, None) => break,
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (Some(a), Some(b)) => a.min(b),
+            };
+
+            if matches!(gates[j], Gate::cnot { control, target } if control == c && target == t) {
+                cancel_at = Some(j);
+                break;
+            }
+            if !commutes_past_cnot(&gates[j], c, t) { break; }
+            if nc_idx == Some(j) { pc += 1; }
+            if nt_idx == Some(j) { pt += 1; }
+        }
+
+        if let Some(j) = cancel_at {
+            delete[i] = true;
+            delete[j] = true;
+            fired = true;
+        }
+    }
+
+    if !fired { return None; }
+    Some(gates.iter().enumerate().filter_map(|(i, g)| {
+        if delete[i] { None } else { Some(g.clone()) }
+    }).collect())
+}
+
+/// True if `g` commutes past `CNOT(c, t)` so that the CNOT can hop over
+/// it without changing the unitary. Covers:
+///   - X on the target wire (X(t)·CNOT = CNOT·X(t)).
+///   - Diagonal on the control wire (D(c)·CNOT = CNOT·D(c)).
+///   - Anything on qubits disjoint from {c, t}.
+///   - Another CNOT(c2, t2) provided c2 ≠ t and t2 ≠ c (covers same
+///     control / same target / fully-disjoint cases).
+/// Hadamard, X on control, diagonal on target, CCX touching c or t,
+/// measurement, and reset all block.
+fn commutes_past_cnot(g: &Gate, c: Qubit, t: Qubit) -> bool {
+    match g {
+        Gate::x(q) => *q != c,
+        Gate::h(q) => *q != c && *q != t,
+        Gate::s(q) | Gate::sdg(q) | Gate::z(q)
+        | Gate::t(q) | Gate::tdg(q) | Gate::rz(_, q) => *q != t,
+        Gate::cnot { control: c2, target: t2 } => *c2 != t && *t2 != c,
+        Gate::ccx { control1, control2, target } => {
+            ![*control1, *control2, *target].iter().any(|&q| q == c || q == t)
+        }
+        Gate::measure { qubit, .. } => *qubit != c && *qubit != t,
+        Gate::reset(q) => *q != c && *q != t,
+    }
+}
+
 pub struct CancelGates;
 
 impl Pass for CancelGates {
     fn name(&self) -> &str { "Gate cancellation" }
     fn run(&self, circuit: &Circuit) -> Circuit {
         let n = circuit.num_qubits;
-        // Cancel self-inverse pairs and shrink Hadamard barriers, alternating
-        // to a combined fixpoint: each step can expose work for the other —
-        // cancelling gates between two H's exposes a reducible run, and a
-        // rewrite that emits an X or Z exposes a new cancellable pair.
+        // Cancel self-inverse pairs, shrink Hadamard barriers, and cancel
+        // CNOT pairs across commuting gates — alternated to a combined
+        // fixpoint. Each step can expose work for the others: dropping
+        // gates between two H's or two CNOTs exposes new reducible runs,
+        // and a rewrite that emits an X or Z exposes a new cancellable
+        // pair.
         let mut gates = cancel_pairs(&circuit.gates, n);
         loop {
             let (reduced, reduce_changed) = reduce_hadamards(&gates, n);
-            let before = reduced.len();
-            gates = cancel_pairs(&reduced, n);
+            let (cnot_reduced, cnot_changed) = cancel_cnot(&reduced, n);
+            let before = cnot_reduced.len();
+            gates = cancel_pairs(&cnot_reduced, n);
             let cancel_changed = gates.len() != before;
-            if !reduce_changed && !cancel_changed {
+            if !reduce_changed && !cnot_changed && !cancel_changed {
                 break;
             }
         }
@@ -427,10 +547,164 @@ mod tests {
     }
 
     #[test]
-    fn cnot_cancel_blocked_by_gate_on_control() {
+    fn cnot_cancels_through_diagonal_on_control() {
+        // T on the control commutes with CNOT(0,1), so the two CNOTs cancel
+        // and only the T survives. Caught by the lookahead pass, not by
+        // adjacent pair cancellation.
         let c = make_circuit(2, vec![
             Gate::cnot { control: 0, target: 1 },
             Gate::t(0),
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(r.gates[0], Gate::t(0)));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    // --- cancel_cnot (lookahead CNOT cancellation) tests ---
+
+    #[test]
+    fn cnots_cancel_through_diagonal_run_on_control() {
+        // CNOT · T · S · Tdg · CNOT — all diagonals on q0 (control) commute
+        // past the CNOT, so the two CNOTs annihilate and T·S·Tdg survives.
+        let c = make_circuit(2, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::t(0), Gate::s(0), Gate::tdg(0),
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        // Result has no CNOTs.
+        assert!(!r.gates.iter().any(|g| matches!(g, Gate::cnot { .. })));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnots_cancel_through_x_on_target() {
+        // X on target commutes with CNOT.
+        let c = make_circuit(2, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::x(1),
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(r.gates[0], Gate::x(1)));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnots_cancel_through_sharing_control_cnot() {
+        // CNOT(0,1) · CNOT(0,2) · CNOT(0,1): the middle CNOT shares the
+        // control with the outer ones, so they all commute past it. The
+        // two outer CNOTs cancel.
+        let c = make_circuit(3, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::cnot { control: 0, target: 2 },
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(r.gates[0], Gate::cnot { control: 0, target: 2 }));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnots_cancel_through_sharing_target_cnot() {
+        // CNOT(0,2) · CNOT(1,2) · CNOT(0,2): the middle CNOT shares the
+        // target, so the outer ones cancel through it.
+        let c = make_circuit(3, vec![
+            Gate::cnot { control: 0, target: 2 },
+            Gate::cnot { control: 1, target: 2 },
+            Gate::cnot { control: 0, target: 2 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert_eq!(r.gates.len(), 1);
+        assert!(matches!(r.gates[0], Gate::cnot { control: 1, target: 2 }));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnots_blocked_by_cnot_with_swapped_endpoints() {
+        // CNOT(0,1) · CNOT(1,0) · CNOT(0,1) — the middle CNOT has q1 as
+        // control and q0 as target, which overlaps with the propagating
+        // CNOT's qubits in a way that doesn't commute.
+        let c = make_circuit(2, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::cnot { control: 1, target: 0 },
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnots_blocked_by_diagonal_on_target() {
+        // T on the target doesn't commute with CNOT.
+        let c = make_circuit(2, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::t(1),
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnots_blocked_by_x_on_control() {
+        // X on control doesn't commute with CNOT (it'd add an X on target).
+        let c = make_circuit(2, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::x(0),
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert_eq!(r.gates.len(), 3);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnots_cancel_through_long_mixed_run() {
+        // A mix of commuting things in between: Rz on control, X on target,
+        // disjoint-qubit gate, sharing-control CNOT. Outer two should cancel.
+        let c = make_circuit(4, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::t(0),
+            Gate::x(1),
+            Gate::h(3),
+            Gate::cnot { control: 0, target: 2 },
+            Gate::rz(0.31, 0),
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        assert!(!r.gates.iter().any(|g|
+            matches!(g, Gate::cnot { control: 0, target: 1 })));
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnot_lookahead_idempotent() {
+        // A second run after CancelGates changes nothing.
+        let c = make_circuit(3, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::t(0),
+            Gate::cnot { control: 0, target: 2 },
+            Gate::cnot { control: 0, target: 1 },
+        ]);
+        let r = CancelGates.run(&c);
+        let r2 = CancelGates.run(&r);
+        assert_eq!(r.gates.len(), r2.gates.len());
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn cnot_cancel_blocked_by_hadamard_on_control() {
+        // H is not diagonal — does not commute past CNOT on either wire.
+        let c = make_circuit(2, vec![
+            Gate::cnot { control: 0, target: 1 },
+            Gate::h(0),
             Gate::cnot { control: 0, target: 1 },
         ]);
         let r = CancelGates.run(&c);
