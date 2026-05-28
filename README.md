@@ -5,14 +5,11 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 [![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
-A fast, Rust-based T-gate optimizer for large Clifford+T circuits. tzap (pronounced *T-zap*) applies phase folding that is O(n) in the number of gates, based on [this paper](https://arxiv.org/abs/2605.13929).
-
+A super fast, Rust-based optimizer for large Clifford+T circuits. 
+- tzap minimizes T-count with a novel phase folding technique that is O(n) in circuit size, based on [this paper](https://arxiv.org/abs/2605.13929).
+- tzap also implements standard optimizations for gate cancellation.
+  
 It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized OpenQASM 2.0.
-
-**Gate handling:**
-
-- **Toffoli (`ccx`)** gates are automatically decomposed into Clifford+T before optimization.
-- **Rz** gates are left as-is by default. Pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth). Use `--epsilon <eps>` to control the approximation precision (default: `1e-10`; accepts scientific notation).
 
 ## Usage
 
@@ -26,13 +23,9 @@ tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6  # coarser approxim
 tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand  # explicit pass pipeline
 ```
 
-Output is written only when an output file is given (via `-o` or a positional argument).
+Output is written only when an output file is given (via `-o`).
 
-By default tzap decomposes Toffoli gates, then runs gate cancellation and phase
-folding. `--parallel` splits the circuit into chunks and runs the pipeline across
-cores. `--passes` overrides the default pipeline with an explicit, ordered list of
-passes (`DecomposeToffoli`, `DecomposeRz`, `CancelGates`, `PhaseFoldRand`,
-`PhaseFoldGlobalExpr`). Run `tzap --help` for the full list.
+**Gate handling:** Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. `Rz` gates are left as-is by default; pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth), and `--epsilon <eps>` to control the approximation precision (default: `1e-10`; accepts scientific notation).
 
 ### Example
 
