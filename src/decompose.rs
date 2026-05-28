@@ -1,5 +1,17 @@
+//! Gate-decomposition passes:
+//!   * `DecomposeToffoli` — rewrites every `ccx` into the canonical 15-gate
+//!     Clifford+T circuit.
+//!   * `DecomposeRz` — synthesizes each `rz(θ)` into Clifford+T via
+//!     gridsynth (`rsgridsynth`), in parallel across the gate list.
+
+use rayon::prelude::*;
+
 use crate::circuit::{Circuit, Gate};
 use crate::pass::Pass;
+use rsgridsynth::config::config_from_theta_epsilon;
+use rsgridsynth::gridsynth::gridsynth_gates;
+
+// --- Toffoli decomposition --------------------------------------------------
 
 pub struct DecomposeToffoli;
 
@@ -36,13 +48,77 @@ impl Pass for DecomposeToffoli {
     }
 }
 
+// --- Rz decomposition via gridsynth -----------------------------------------
+
+pub struct DecomposeRz {
+    pub epsilon: f64,
+}
+
+impl Default for DecomposeRz {
+    fn default() -> Self {
+        Self { epsilon: 1e-10 }
+    }
+}
+
+impl Pass for DecomposeRz {
+    fn name(&self) -> &str {
+        "Rz → Clifford+T decomposition"
+    }
+
+    fn run(&self, circuit: &Circuit) -> Circuit {
+        let epsilon = self.epsilon;
+
+        // Synthesize all Rz gates in parallel.
+        let expanded: Vec<Vec<Gate>> = circuit.gates.par_iter().map(|gate| {
+            match gate {
+                Gate::rz(theta, q) => {
+                    let q = *q;
+                    let chars = synthesize_rz(*theta, epsilon);
+                    let mut gates = Vec::with_capacity(chars.len());
+                    for g in chars {
+                        match g {
+                            'H' => gates.push(Gate::h(q)),
+                            'T' => gates.push(Gate::t(q)),
+                            'S' => gates.push(Gate::s(q)),
+                            'X' => gates.push(Gate::x(q)),
+                            'I' | 'W' => {} // identity / global phase, skip
+                            c => eprintln!("warning: unknown gridsynth gate '{c}'"),
+                        }
+                    }
+                    gates
+                }
+                other => vec![other.clone()],
+            }
+        }).collect();
+
+        let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
+        for gates in expanded {
+            for g in gates {
+                output.apply(g);
+            }
+        }
+        output
+    }
+}
+
+fn synthesize_rz(theta: f64, epsilon: f64) -> Vec<char> {
+    let mut config = config_from_theta_epsilon(theta, epsilon, 0, false, true);
+    let result = gridsynth_gates(&mut config);
+    result.gates.chars().collect()
+}
+
+// --- Tests ------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::unitary::circuits_equiv;
+    use std::f64::consts::PI;
+
+    // --- Toffoli decomposition tests ---
 
     #[test]
-    fn single() {
+    fn toffoli_single() {
         let mut c = Circuit::new(3);
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
         let dec = DecomposeToffoli.run(&c);
@@ -52,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_non_ccx() {
+    fn toffoli_preserves_non_ccx() {
         let mut c = Circuit::new(3);
         c.apply(Gate::h(0));
         c.apply(Gate::cnot { control: 0, target: 1 });
@@ -63,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple() {
+    fn toffoli_multiple() {
         let mut c = Circuit::new(3);
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
@@ -75,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn different_qubits() {
+    fn toffoli_different_qubits() {
         let mut c = Circuit::new(3);
         c.apply(Gate::ccx { control1: 2, control2: 0, target: 1 });
         let dec = DecomposeToffoli.run(&c);
@@ -84,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_circuit() {
+    fn toffoli_mixed_circuit() {
         let mut c = Circuit::new(3);
         c.apply(Gate::h(2));
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
@@ -96,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn four_qubit() {
+    fn toffoli_four_qubit() {
         let mut c = Circuit::new(4);
         c.apply(Gate::h(3));
         c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
@@ -106,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn empty() {
+    fn toffoli_empty() {
         let c = Circuit::new(3);
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(dec.gates.len(), 0);
@@ -114,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_z_sdg() {
+    fn toffoli_preserves_z_sdg() {
         let mut c = Circuit::new(3);
         c.apply(Gate::z(0));
         c.apply(Gate::sdg(1));
@@ -128,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_measure() {
+    fn toffoli_preserves_measure() {
         let mut c = Circuit::with_cbits(2, 2);
         c.apply(Gate::h(0));
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
@@ -140,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_reset() {
+    fn toffoli_preserves_reset() {
         let mut c = Circuit::new(2);
         c.apply(Gate::reset(0));
         c.apply(Gate::h(1));
@@ -164,5 +240,79 @@ mod tests {
         assert!(matches!(&dec.gates[0], Gate::reset(0)));
         assert!(matches!(dec.gates.last().unwrap(), Gate::measure { qubit: 2, cbit: 0 }));
         assert_eq!(dec.num_cbits, 1);
+    }
+
+    // --- Rz decomposition tests ---
+
+    #[test]
+    fn rz_decomposes_into_clifford_t() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::rz(PI / 5.0, 0));
+        let dec = DecomposeRz { epsilon: 1e-3 }.run(&c);
+        assert!(!dec.gates.iter().any(|g| matches!(g, Gate::rz(..))));
+        assert!(!dec.gates.is_empty());
+        for g in &dec.gates {
+            assert!(matches!(g, Gate::h(_) | Gate::t(_) | Gate::s(_) | Gate::x(_)));
+        }
+    }
+
+    #[test]
+    fn rz_preserves_non_rz() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::h(0));
+        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::t(0));
+        let dec = DecomposeRz::default().run(&c);
+        assert_eq!(dec.gates.len(), 3);
+    }
+
+    #[test]
+    fn rz_mixed_circuit() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::h(0));
+        c.apply(Gate::rz(PI / 3.0, 0));
+        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::rz(PI / 7.0, 1));
+        let dec = DecomposeRz { epsilon: 1e-3 }.run(&c);
+        assert!(!dec.gates.iter().any(|g| matches!(g, Gate::rz(..))));
+    }
+
+    #[test]
+    fn rz_empty_circuit() {
+        let c = Circuit::new(1);
+        let dec = DecomposeRz::default().run(&c);
+        assert_eq!(dec.gates.len(), 0);
+    }
+
+    #[test]
+    fn rz_default_epsilon_is_1e_10() {
+        assert_eq!(DecomposeRz::default().epsilon, 1e-10);
+    }
+
+    #[test]
+    fn rz_preserves_measure_and_reset() {
+        let mut c = Circuit::with_cbits(2, 1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::rz(PI / 5.0, 0));
+        c.apply(Gate::measure { qubit: 1, cbit: 0 });
+        let dec = DecomposeRz { epsilon: 1e-3 }.run(&c);
+        // No rz survives; reset and measure both still there.
+        assert!(!dec.gates.iter().any(|g| matches!(g, Gate::rz(..))));
+        assert!(dec.gates.iter().any(|g| matches!(g, Gate::reset(0))));
+        assert!(dec.gates.iter().any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 })));
+        assert_eq!(dec.num_cbits, 1);
+        assert!(dec.has_measurement);
+    }
+
+    #[test]
+    fn rz_coarser_epsilon_produces_fewer_or_equal_t_gates() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::rz(PI / 5.0, 0));
+        let fine = DecomposeRz { epsilon: 1e-4 }.run(&c);
+        let coarse = DecomposeRz { epsilon: 1e-2 }.run(&c);
+        let t_fine = fine.gates.iter().filter(|g| matches!(g, Gate::t(_))).count();
+        let t_coarse = coarse.gates.iter().filter(|g| matches!(g, Gate::t(_))).count();
+        assert!(t_coarse <= t_fine,
+            "coarser epsilon should not require more T gates ({t_coarse} > {t_fine})");
     }
 }

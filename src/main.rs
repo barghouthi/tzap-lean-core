@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use tzap::circuit::{Circuit, Gate};
-use tzap::decompose::DecomposeToffoli;
-use tzap::decompose_rz::DecomposeRz;
+use tzap::decompose::{DecomposeRz, DecomposeToffoli};
 use tzap::cancel::CancelGates;
 use tzap::pass::{Pass, count_t};
 use tzap::phase_fold_rand::PhaseFoldRand;
