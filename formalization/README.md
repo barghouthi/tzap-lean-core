@@ -1,4 +1,4 @@
-# TZap: A Lean 4 Formalization
+# tzap-lean: A Lean 4 Formalization of tzap
 
 A machine-checked formalization, in Lean 4 with Mathlib, of the semantics,
 static analysis, and optimization algorithm from the TZap paper on phase

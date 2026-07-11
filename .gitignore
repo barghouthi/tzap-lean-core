@@ -1,6 +1,11 @@
 /target
 Cargo.lock
 
+# Local experiments / scratch work
+/experiments/
+
+# Python
+__pycache__/
 
 # Added by cargo
 #
