@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml/badge.svg)](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
+![Lean 4](https://img.shields.io/badge/Lean_4-black?logo=lean&logoColor=white)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 [![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
@@ -70,6 +71,10 @@ Install [Rust](https://github.com/qqq-wisc/tzap.git) then
 ```
 cargo install --path .
 ```
+
+## Formalization
+
+A Lean 4 formalization of the core randomized phase folding algorithm is available in [`formalization/`](formalization/).
 
 ## Citation
 
