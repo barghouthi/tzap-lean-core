@@ -6,11 +6,12 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 [![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
-A super fast, Rust-based optimizer for large Clifford+T circuits. 
+A super fast, Rust-based optimizer for large Clifford+T circuits.
 - tzap minimizes T-count with a novel phase folding technique that is O(n) in circuit size, based on [this paper](https://arxiv.org/abs/2605.13929).
 - tzap also implements standard optimizations for gate cancellation.
-  
-It takes OpenQASM 2.0 circuits as input, optimizes them, and outputs optimized OpenQASM 2.0.
+- The core randomized phase folding algorithm is fully formalized in Lean under [`formalization`](formalization/).
+
+tzap accepts OpenQASM 2.0 circuits.
 
 ## Usage
 
@@ -71,10 +72,6 @@ Install [Rust](https://github.com/qqq-wisc/tzap.git) then
 ```
 cargo install --path .
 ```
-
-## Formalization
-
-A Lean 4 formalization of the core randomized phase folding algorithm is available in [`formalization/`](formalization/).
 
 ## Citation
 
