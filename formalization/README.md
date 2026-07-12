@@ -13,7 +13,7 @@ correctness theorems.
 | Theorem | File | Statement (informal) |
 |---|---|---|
 | `Algorithm.fold_correct` | `TZap/Algorithm.lean` | The exact Algorithm 1 preserves circuit semantics: `⟦fold C⟧ = ⟦C⟧`. |
-| `RandomizedAlgorithm.randomized_fold_correct` | `TZap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `t² · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
+| `RandomizedAlgorithm.randomized_fold_correct` | `TZap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
 | `PhaseFolding.phase_folding` | `TZap/PhaseFolding.lean` | The single-merge rewrite: if the parity condition holds, merging two rotations preserves semantics. |
 | `Soundness.parity_equality_sound` | `TZap/Soundness.lean` | Every parity equality claimed by the symbolic analysis holds on every supported transition. |
 | `Collision.affine_collision_bound` | `TZap/Collision.lean` | Two distinct affine parities collide under uniform `k`-bit hashing with probability at most `2⁻ᵏ`. |
@@ -100,10 +100,12 @@ The modules, in dependency order:
   a constant plus an `𝔽₂`-coefficient vector (`Finsupp`); `normalize` maps
   parity expressions to forms, commuting with evaluation.
 
-- **`TZap/FiniteProbability.lean`** — Elementary exact probability over finite
-  uniform sample spaces (`ℚ`-valued counting measure): congruence,
-  monotonicity, the finite union bound (`uniformProbability_exists_le`), and
-  uniformity of fibers of surjective group homomorphisms.
+- **`TZap/FiniteProbability.lean`** — The probability layer, built directly on
+  Mathlib's `PMF.uniformOfFintype` with event probabilities as `ℝ≥0∞`
+  outer-measure masses. The one project-specific result is
+  `uniform_fiber_of_surjective`: every fiber of a surjective additive
+  homomorphism between finite groups has probability `|B|⁻¹` under the uniform
+  PMF — the group-theoretic engine behind the collision bound.
 
 - **`TZap/Randomized.lean`** — The randomized analysis: each variable draws a
   uniform `k`-bit string, and every qubit carries the 𝔽₂-sum of its parity's
@@ -138,30 +140,30 @@ The modules, in dependency order:
     `foldR draws C = fold C`; correctness on faithful samples follows from
     `fold_correct` (`foldR_correct_of_faithful`). The converse direction is
     free: hashing factors through normalization.
-  - `collides_probability_le`: a union bound over the `t × t` pairs of
+  - `collides_probability_le`: a union bound over the `C(t,2)` pairs of
     compared parities bounds the probability of an unfaithful sample by
-    `t² · 2⁻ᵏ`.
+    `C(t,2) · 2⁻ᵏ`.
   - `randomized_fold_correct`: therefore the randomized optimizer returns a
-    non-equivalent circuit with probability at most `t² · 2⁻ᵏ`:
+    non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`:
 
     ```lean
     theorem randomized_fold_correct {n k : Nat} (C : Circuit n) :
-        uniformProbability
-            (fun sample : Sample (Symbolic.analyze C).nextFresh k =>
-              ¬ PhaseFolding.Equivalent (foldR (liftSample sample) C) C) ≤
-          (((rzParities C).length : ℚ)) ^ 2 * (1 / 2) ^ k
+        (PMF.uniformOfFintype
+            (Sample (Symbolic.analyze C).nextFresh k)).toOuterMeasure
+            {sample | ¬ PhaseFolding.Equivalent (foldR (liftSample sample) C) C} ≤
+          ((rzParities C).length.choose 2 : ℝ≥0∞) * ((2 : ℝ≥0∞)⁻¹) ^ k
     ```
 
 ## Design notes
 
 - **Exact, not approximate.** All semantics are exact complex amplitudes
-  (no floating point), probabilities are exact rationals over finite sample
-  spaces, and equivalence is equality of weighted relations — a stronger
-  property than equality up to global phase.
+  (no floating point), probabilities are exact `ℝ≥0∞` masses of Mathlib's
+  uniform PMF over finite sample spaces, and equivalence is equality of
+  weighted relations — a stronger property than equality up to global phase.
 - **Randomness as an explicit sample.** The randomized analysis is a
   deterministic function of an explicit draw stream; probabilistic statements
-  quantify over the finite space `Sample m k = Fin m → Fin k → 𝔽₂` with the
-  uniform counting measure. No measure theory is needed.
+  quantify over the finite space `Sample m k = Fin m → Fin k → 𝔽₂` under
+  `PMF.uniformOfFintype`, with events measured by its outer measure.
 - **Parity comparison up to normal form.** The algorithms compare parities by
   their canonical affine form (`Affine.normalize`), matching the paper's set
   membership `p ∈ S` and making the exact and randomized algorithms agree
