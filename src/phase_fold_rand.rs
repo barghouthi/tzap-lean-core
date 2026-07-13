@@ -84,12 +84,15 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
                 // AND-based parity — opaque, just refresh the target.
                 qubits[*target] = fresh();
             }
-            Gate::measure { qubit, .. } | Gate::reset(qubit) => {
-                // Measurement / reset destroys coherent phase on `qubit`: a fresh
-                // parity tag prevents post-measure rotations from merging with
-                // pre-measure rotations on the same wire. Other qubits' tags
-                // remain valid (Rz on wire w commutes with measure on wire q ≠ w).
-                qubits[*qubit] = fresh();
+            Gate::measure { .. } => {
+                // Computational-basis measurement preserves the measured basis
+                // value, so its classical transfer is x' = x. Diagonal rotations
+                // commute with the measurement projectors and may still fold
+                // across the measurement.
+            }
+            Gate::reset(qubit) => {
+                // Reset overwrites the computational-basis value with |0⟩.
+                qubits[*qubit] = 0;
             }
         }
     }
@@ -146,6 +149,12 @@ fn record_int(
     skip: &mut [bool],
 ) {
     let parity = qubits[q];
+    if parity == 0 || parity == ParityHash::MAX {
+        // A rotation conditioned on a known |0⟩ is the identity; on a known
+        // |1⟩ it contributes only a global phase. Neither needs to be emitted.
+        skip[idx] = true;
+        return;
+    }
     let (key, is_complement) = canonical_parity(parity);
 
     if let Some(&gi) = parity_to_group.get(&key) {
@@ -188,6 +197,12 @@ fn record_float(
     skip: &mut [bool],
 ) {
     let parity = qubits[q];
+    if parity == 0 || parity == ParityHash::MAX {
+        // See record_int: rotations on known computational-basis constants are
+        // observationally irrelevant.
+        skip[idx] = true;
+        return;
+    }
     let (key, is_complement) = canonical_parity(parity);
 
     if let Some(&gi) = parity_to_group.get(&key) {
@@ -1868,45 +1883,47 @@ mod tests {
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
 
-    // --- measurement / reset barrier tests ---
+    // --- measurement / reset transfer tests ---
 
     #[test]
-    fn measure_blocks_t_t_merge() {
-        // T q0; measure q0 -> c0; T q0 — must NOT merge into S.
+    fn measure_preserves_parity_for_t_t_merge() {
+        // Measurement has transfer x' = x, so the two T gates fold into S.
         let mut c = Circuit::with_cbits(1, 1);
         c.apply(Gate::t(0));
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
-        // Both Ts must survive, measure must survive.
-        assert_eq!(count_t_gates(&opt), 2);
-        assert_eq!(opt.gates.len(), 3);
-        assert!(matches!(&opt.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
+        assert_eq!(count_t_gates(&opt), 0);
+        assert_eq!(count_phase_gates(&opt), 1);
+        assert!(matches!(opt.gates.as_slice(), [
+            Gate::measure { qubit: 0, cbit: 0 }, Gate::s(0)
+        ]));
         assert!(opt.has_measurement);
     }
 
     #[test]
-    fn reset_blocks_t_t_merge() {
+    fn reset_sets_zero_and_eliminates_following_phase() {
         let mut c = Circuit::new(1);
         c.apply(Gate::t(0));
         c.apply(Gate::reset(0));
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
-        assert_eq!(count_t_gates(&opt), 2);
-        assert_eq!(opt.gates.len(), 3);
+        assert_eq!(count_t_gates(&opt), 1);
+        assert_eq!(opt.gates.len(), 2);
         assert!(matches!(&opt.gates[1], Gate::reset(0)));
     }
 
     #[test]
-    fn measure_blocks_t_tdg_cancel() {
-        // T q0; measure q0 -> c0; Tdg q0 — must NOT cancel.
+    fn measure_preserves_parity_for_t_tdg_cancel() {
         let mut c = Circuit::with_cbits(1, 1);
         c.apply(Gate::t(0));
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::tdg(0));
         let opt = phase_fold_rand(&c);
-        assert_eq!(count_phase_gates(&opt), 2);
-        assert_eq!(opt.gates.len(), 3);
+        assert_eq!(count_phase_gates(&opt), 0);
+        assert!(matches!(opt.gates.as_slice(), [
+            Gate::measure { qubit: 0, cbit: 0 }
+        ]));
     }
 
     #[test]
@@ -1951,8 +1968,7 @@ mod tests {
     }
 
     #[test]
-    fn measure_then_fresh_t_chain_folds_independently() {
-        // Pre-measure T+T should merge; post-measure T+T should merge separately.
+    fn measure_keeps_one_phase_group_across_both_sides() {
         let mut c = Circuit::with_cbits(1, 1);
         c.apply(Gate::t(0));
         c.apply(Gate::t(0));
@@ -1960,11 +1976,60 @@ mod tests {
         c.apply(Gate::t(0));
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
-        // Expect: S, measure, S
-        assert_eq!(opt.gates.len(), 3);
-        assert!(matches!(&opt.gates[0], Gate::s(0)));
-        assert!(matches!(&opt.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
-        assert!(matches!(&opt.gates[2], Gate::s(0)));
+        assert_eq!(count_phase_gates(&opt), 1);
+        assert!(matches!(opt.gates.as_slice(), [
+            Gate::measure { qubit: 0, cbit: 0 }, Gate::z(0)
+        ]));
+    }
+
+    #[test]
+    fn reset_eliminates_integer_and_float_phases_on_known_zero() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::t(0));
+        c.apply(Gate::s(0));
+        c.apply(Gate::z(0));
+        c.apply(Gate::rz(0.123, 0));
+        let opt = phase_fold_rand(&c);
+        assert!(matches!(opt.gates.as_slice(), [Gate::reset(0)]));
+    }
+
+    #[test]
+    fn reset_then_x_eliminates_phase_on_known_one() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::x(0));
+        c.apply(Gate::t(0));
+        let opt = phase_fold_rand(&c);
+        assert!(matches!(opt.gates.as_slice(), [Gate::reset(0), Gate::x(0)]));
+    }
+
+    #[test]
+    fn reset_zero_propagates_through_cnot() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::reset(1));
+        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::t(0));
+        c.apply(Gate::t(1));
+        let opt = phase_fold_rand(&c);
+        assert!(matches!(opt.gates.as_slice(), [
+            Gate::reset(1),
+            Gate::cnot { control: 0, target: 1 },
+            Gate::s(1)
+        ]));
+    }
+
+    #[test]
+    fn hadamard_after_reset_makes_phase_nonconstant() {
+        let mut c = Circuit::new(1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::h(0));
+        c.apply(Gate::t(0));
+        let opt = phase_fold_rand(&c);
+        assert_eq!(count_t_gates(&opt), 1);
+        assert!(matches!(opt.gates.as_slice(), [
+            Gate::reset(0), Gate::h(0), Gate::t(0)
+        ]));
     }
 
     #[test]
