@@ -29,6 +29,7 @@ To use `measure` gates, allocate classical bits with
 | Tdg | `Gate::tdg(qubit)` |
 | Rz | `Gate::rz(angle, qubit)` |
 | CNOT | `Gate::cnot { control, target }` |
+| CZ | `Gate::cz { control, target }` |
 | Toffoli | `Gate::ccx { control1, control2, target }` |
 | Measure | `Gate::measure { qubit, cbit }` |
 | Reset | `Gate::reset(qubit)` |
@@ -70,6 +71,7 @@ A custom pass only needs to supply `name` and `run`.
 | Pass | Import | Description |
 |------|--------|-------------|
 | `DecomposeToffoli` | `tzap::decompose` | Breaks Toffoli gates into CNOT+T/Tdg |
+| `DecomposeCz` | `tzap::decompose` | Explicitly lowers CZ gates to H+CX+H |
 | `DecomposeRz` | `tzap::decompose_rz` | Decomposes Rz gates into Clifford+T via gridsynth |
 | `CancelGates` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |
 | `PhaseFoldRand` | `tzap::phase_fold_rand` | Merges T/Rz gates across the circuit via randomized parity tracking |

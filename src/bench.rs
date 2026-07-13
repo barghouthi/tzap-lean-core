@@ -4,7 +4,7 @@ mod tests {
 
     use crate::circuit::{Circuit, Gate};
     use crate::cancel::CancelGates;
-    use crate::decompose::DecomposeToffoli;
+    use crate::decompose::{DecomposeCz, DecomposeToffoli};
     use crate::pass::{Pass, count_t};
     use crate::phase_fold_rand::phase_fold_rand;
     use crate::unitary::circuits_equiv;
@@ -25,6 +25,11 @@ mod tests {
         }
     }
 
+    fn other_qubit(rng: &mut Rng, q: usize, num_qubits: usize) -> usize {
+        debug_assert!(num_qubits >= 2);
+        (q + 1 + rng.range(num_qubits - 1)) % num_qubits
+    }
+
     fn random_circuit(rng: &mut Rng, num_qubits: usize, num_gates: usize) -> Circuit {
         let mut c = Circuit::new(num_qubits);
         for _ in 0..num_gates {
@@ -37,14 +42,18 @@ mod tests {
                 rng.range(24)
             };
             match kind {
-                0..=5 => {
-                    let t = (q + 1 + rng.range(num_qubits - 1)) % num_qubits;
+                0..=4 => {
+                    let t = other_qubit(rng, q, num_qubits);
                     c.apply(Gate::cnot { control: q, target: t });
+                }
+                5 => {
+                    let other = other_qubit(rng, q, num_qubits);
+                    c.apply(Gate::cz { control: q, target: other });
                 }
                 6..=7 => c.apply(Gate::rz(0.1 * rng.range(60) as f64, q)),
                 8..=9 => {
                     let mut qs = [q, 0, 0];
-                    qs[1] = (q + 1 + rng.range(num_qubits - 1)) % num_qubits;
+                    qs[1] = other_qubit(rng, q, num_qubits);
                     loop {
                         qs[2] = rng.range(num_qubits);
                         if qs[2] != qs[0] && qs[2] != qs[1] { break; }
@@ -82,12 +91,49 @@ mod tests {
                 22 => c.apply(Gate::tdg(q)),
                 23 => {
                     if num_qubits >= 2 {
-                        let t = (q + 1 + rng.range(num_qubits - 1)) % num_qubits;
-                        c.apply(Gate::cnot { control: q, target: t });
+                        let t = other_qubit(rng, q, num_qubits);
+                        if rng.range(2) == 0 {
+                            c.apply(Gate::cnot { control: q, target: t });
+                        } else {
+                            c.apply(Gate::cz { control: q, target: t });
+                        }
                     } else {
                         c.apply(Gate::z(q));
                     }
                 }
+                _ => unreachable!(),
+            }
+        }
+        c
+    }
+
+    /// Random circuits with a deliberately high CZ density. This stresses
+    /// symmetric CZ matching, lookahead cancellation through commuting gates,
+    /// conservative blockers, phase folding through CZ, and explicit lowering.
+    fn random_cz_circuit(rng: &mut Rng, num_qubits: usize, num_gates: usize) -> Circuit {
+        debug_assert!(num_qubits >= 2);
+        let mut c = Circuit::new(num_qubits);
+        for _ in 0..num_gates {
+            let q = rng.range(num_qubits);
+            let other = other_qubit(rng, q, num_qubits);
+            match rng.range(24) {
+                0..=7 => {
+                    // Reverse half the emitted operand orders to exercise CZ symmetry.
+                    if rng.range(2) == 0 {
+                        c.apply(Gate::cz { control: q, target: other });
+                    } else {
+                        c.apply(Gate::cz { control: other, target: q });
+                    }
+                }
+                8..=10 => c.apply(Gate::cnot { control: q, target: other }),
+                11 | 12 => c.apply(Gate::h(q)),
+                13 | 14 => c.apply(Gate::x(q)),
+                15 | 16 => c.apply(Gate::t(q)),
+                17 => c.apply(Gate::tdg(q)),
+                18 => c.apply(Gate::s(q)),
+                19 => c.apply(Gate::sdg(q)),
+                20 => c.apply(Gate::z(q)),
+                21..=23 => c.apply(Gate::rz(0.05 * rng.range(80) as f64, q)),
                 _ => unreachable!(),
             }
         }
@@ -271,6 +317,72 @@ mod tests {
             "H gates: {h_before} -> {h_after} ({:.1}% removed)",
             (1.0 - h_after as f64 / h_before as f64) * 100.0,
         );
+    }
+
+    #[test]
+    #[ignore] // long-running: 10k CZ-dense circuits through the full native-CZ pipeline
+    fn fuzz_cz_pipeline() {
+        let mut rng = Rng::new(0xC2_C2_C2_C2);
+        let num_cases = 10_000;
+        let mut total_cz_before = 0;
+        let mut total_cz_after = 0;
+
+        for i in 0..num_cases {
+            let num_qubits = rng.range(4) + 2; // 2..=5
+            let num_gates = rng.range(111) + 10; // 10..=120
+            let circuit = random_cz_circuit(&mut rng, num_qubits, num_gates);
+            let label = format!("case {i}: {num_qubits} qubits, {num_gates} gates");
+            let cancelled = check_cz_pipeline_case(&circuit, &label);
+
+            total_cz_before += count_cz(&circuit);
+            total_cz_after += count_cz(&cancelled);
+        }
+
+        println!(
+            "\nfuzz CZ pipeline: {num_cases} cases, CZ {total_cz_before} -> {total_cz_after}, all equivalent"
+        );
+    }
+
+    #[test]
+    fn cz_pipeline_fuzz_smoke() {
+        let mut rng = Rng::new(0xC2_5A_0C_E5);
+        for i in 0..256 {
+            let num_qubits = rng.range(3) + 2; // 2..=4
+            let num_gates = rng.range(31) + 10; // 10..=40
+            let circuit = random_cz_circuit(&mut rng, num_qubits, num_gates);
+            check_cz_pipeline_case(&circuit, &format!("smoke case {i}"));
+        }
+    }
+
+    fn count_cz(circuit: &Circuit) -> usize {
+        circuit.gates.iter().filter(|g| matches!(g, Gate::cz { .. })).count()
+    }
+
+    fn check_cz_pipeline_case(circuit: &Circuit, label: &str) -> Circuit {
+        let cancelled = CancelGates.run(circuit);
+        let optimized = phase_fold_rand(&cancelled);
+        let decomposed = DecomposeCz.run(&optimized);
+
+        for (stage, result) in [
+            ("cancellation", &cancelled),
+            ("phase folding", &optimized),
+            ("CZ decomposition", &decomposed),
+        ] {
+            assert!(
+                circuits_equiv(circuit, result, 1e-9),
+                "{stage} mismatch on {label}\n{circuit}"
+            );
+        }
+        assert!(cancelled.gates.len() <= circuit.gates.len(), "{label}: cancellation grew the circuit");
+        assert!(count_cz(&cancelled) <= count_cz(circuit), "{label}: cancellation increased the CZ count");
+        assert!(
+            !decomposed.gates.iter().any(|g| matches!(g, Gate::cz { .. })),
+            "{label}: DecomposeCz left a native CZ"
+        );
+
+        let twice = CancelGates.run(&cancelled);
+        assert_eq!(twice.to_qasm(), cancelled.to_qasm(), "{label}: CZ cancellation is not idempotent");
+        cancelled
     }
 
     #[test]

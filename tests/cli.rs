@@ -782,3 +782,57 @@ tdg q[2];
     let c2 = fs::read_to_string(&pass2).unwrap();
     assert_eq!(c1, c2, "output should be idempotent with z/sdg gates");
 }
+
+#[test]
+fn native_cz_is_preserved_by_default() {
+    let (gates, _) = run_qasm("\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+cz q[0],q[1];
+");
+    assert_eq!(gates, vec!["cz q[0],q[1];"]);
+}
+
+#[test]
+fn phase_fold_through_native_cz_on_second_operand() {
+    let (gates, _) = run_qasm("\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+t q[1];
+cz q[0],q[1];
+t q[1];
+");
+    assert_eq!(gates.len(), 2, "expected native CZ plus folded S: {gates:?}");
+    assert_eq!(gates[0], "cz q[0],q[1];");
+    assert_eq!(gates[1], "s q[1];");
+}
+
+#[test]
+fn explicit_decompose_cz_pass_emits_h_cx_h() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("cz.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+cz q[1],q[0];
+").unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "DecomposeCz",
+    ]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let content = fs::read_to_string(output).unwrap();
+    assert!(!content.lines().any(|line| line.starts_with("cz ")));
+    let gates: Vec<_> = content.lines()
+        .filter(|line| line.starts_with("h ") || line.starts_with("cx "))
+        .collect();
+    assert_eq!(gates, vec!["h q[0];", "cx q[1],q[0];", "h q[0];"]);
+}

@@ -17,6 +17,7 @@ pub enum Gate {
     tdg(Qubit),
     rz(f64, Qubit),
     cnot { control: Qubit, target: Qubit },
+    cz { control: Qubit, target: Qubit },
     ccx { control1: Qubit, control2: Qubit, target: Qubit },
     measure { qubit: Qubit, cbit: CBit },
     reset(Qubit),
@@ -82,6 +83,7 @@ impl fmt::Display for Gate {
             Gate::tdg(q) => write!(f, "tdg q{q}"),
             Gate::rz(theta, q) => write!(f, "rz({theta:.4}) q{q}"),
             Gate::cnot { control, target } => write!(f, "cnot q{control}, q{target}"),
+            Gate::cz { control, target } => write!(f, "cz q{control}, q{target}"),
             Gate::ccx { control1, control2, target } => {
                 write!(f, "ccx q{control1}, q{control2}, q{target}")
             }
@@ -106,7 +108,9 @@ pub fn qubits_of(gate: &Gate) -> Vec<Qubit> {
     match gate {
         Gate::x(q) | Gate::h(q) | Gate::s(q) | Gate::sdg(q) | Gate::z(q)
         | Gate::t(q) | Gate::tdg(q) | Gate::rz(_, q) | Gate::reset(q) => vec![*q],
-        Gate::cnot { control, target } => vec![*control, *target],
+        Gate::cnot { control, target } | Gate::cz { control, target } => {
+            vec![*control, *target]
+        }
         Gate::ccx { control1, control2, target } => vec![*control1, *control2, *target],
         Gate::measure { qubit, .. } => vec![*qubit],
     }
@@ -126,6 +130,7 @@ pub fn remap_gate(gate: &Gate, qubits: &[Qubit]) -> Gate {
         Gate::tdg(q) => Gate::tdg(m(q)),
         Gate::rz(theta, q) => Gate::rz(*theta, m(q)),
         Gate::cnot { control, target } => Gate::cnot { control: m(control), target: m(target) },
+        Gate::cz { control, target } => Gate::cz { control: m(control), target: m(target) },
         Gate::ccx { control1, control2, target } => Gate::ccx {
             control1: m(control1),
             control2: m(control2),
@@ -231,6 +236,37 @@ mod tests {
         c.apply(Gate::sdg(0));
         let s = format!("{c}");
         assert!(s.contains("sdg q0"));
+    }
+
+    #[test]
+    fn cz_gate_display_and_metadata() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::cz { control: 2, target: 0 });
+        assert!(format!("{c}").contains("cz q2, q0"));
+        assert!(!c.has_toffoli);
+        assert!(!c.has_measurement);
+    }
+
+    #[test]
+    fn cz_qubits_of_preserves_operand_order() {
+        let g = Gate::cz { control: 4, target: 1 };
+        assert_eq!(qubits_of(&g), vec![4, 1]);
+    }
+
+    #[test]
+    fn cz_remap() {
+        let g = Gate::cz { control: 7, target: 3 };
+        let remapped = remap_gate(&g, &[3, 7]);
+        assert!(matches!(remapped, Gate::cz { control: 1, target: 0 }));
+    }
+
+    #[test]
+    fn cz_remap_subcircuit() {
+        let gates = vec![Gate::t(8), Gate::cz { control: 8, target: 2 }];
+        let remapped = remap_subcircuit(&gates, &[2, 8]);
+        assert_eq!(remapped.num_qubits, 2);
+        assert!(matches!(remapped.gates[0], Gate::t(1)));
+        assert!(matches!(remapped.gates[1], Gate::cz { control: 1, target: 0 }));
     }
 
     #[test]

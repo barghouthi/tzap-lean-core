@@ -72,9 +72,8 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
         } else if let Some(rest) = line.strip_prefix("cz ") {
             seen_gate = true;
             let qubits = resolve_qubits(rest, &registers, line_num)?;
-            gates.push(Gate::h(qubits[1]));
-            gates.push(Gate::cnot { control: qubits[0], target: qubits[1] });
-            gates.push(Gate::h(qubits[1]));
+            require_arity("cz", &qubits, 2, line_num)?;
+            gates.push(Gate::cz { control: qubits[0], target: qubits[1] });
         } else if let Some(rest) = line.strip_prefix("h ") {
             seen_gate = true;
             gates.push(Gate::h(resolve_qubits(rest, &registers, line_num)?[0]));
@@ -142,12 +141,29 @@ fn write_gate(s: &mut String, gate: &Gate) {
         Gate::tdg(q) => writeln!(s, "tdg q[{q}];"),
         Gate::rz(theta, q) => writeln!(s, "rz({theta}) q[{q}];"),
         Gate::cnot { control, target } => writeln!(s, "cx q[{control}],q[{target}];"),
+        Gate::cz { control, target } => writeln!(s, "cz q[{control}],q[{target}];"),
         Gate::ccx { control1, control2, target } => {
             writeln!(s, "ccx q[{control1}],q[{control2}],q[{target}];")
         }
         Gate::measure { qubit, cbit } => writeln!(s, "measure q[{qubit}] -> c[{cbit}];"),
         Gate::reset(q) => writeln!(s, "reset q[{q}];"),
     }.unwrap();
+}
+
+fn require_arity(
+    gate: &str,
+    qubits: &[usize],
+    expected: usize,
+    line_num: usize,
+) -> Result<(), String> {
+    if qubits.len() == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "line {line_num}: {gate} expects {expected} qubit operands, got {}",
+            qubits.len()
+        ))
+    }
 }
 
 fn strip_block_comments(s: &str) -> String {
@@ -1379,11 +1395,66 @@ measure q[1] -> c[1];
         let qasm = "OPENQASM 2.0;\nqreg a[1];\nqreg b[1];\ncz a[0],b[0];\n";
         let c = parse(qasm).unwrap();
         assert_eq!(c.num_qubits, 2);
-        // cz decomposes to h, cnot, h
-        assert_eq!(c.gates.len(), 3);
-        assert!(matches!(&c.gates[0], Gate::h(1)));
-        assert!(matches!(&c.gates[1], Gate::cnot { control: 0, target: 1 }));
-        assert!(matches!(&c.gates[2], Gate::h(1)));
+        assert_eq!(c.gates.len(), 1);
+        assert!(matches!(&c.gates[0], Gate::cz { control: 0, target: 1 }));
+    }
+
+    #[test]
+    fn cz_round_trip_stays_native() {
+        let input = "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[3];\ncz q[2],q[0];\n";
+        let parsed = parse(input).unwrap();
+        assert_eq!(parsed.gates.len(), 1);
+        assert!(matches!(parsed.gates[0], Gate::cz { control: 2, target: 0 }));
+
+        let serialized = serialize(&parsed);
+        assert!(serialized.contains("cz q[2],q[0];"));
+        assert!(!serialized.lines().any(|line| line.starts_with("cx ")));
+        assert!(!serialized.lines().any(|line| line.starts_with("h ")));
+
+        let reparsed = parse(&serialized).unwrap();
+        assert_eq!(reparsed.gates.len(), 1);
+        assert!(matches!(reparsed.gates[0], Gate::cz { control: 2, target: 0 }));
+    }
+
+    #[test]
+    fn serialize_programmatic_cz() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::cz { control: 1, target: 0 });
+        let qasm = serialize(&c);
+        assert!(qasm.ends_with("cz q[1],q[0];\n"));
+    }
+
+    #[test]
+    fn cz_rejects_wrong_operand_count() {
+        for (operands, count) in [("q[0]", 1), ("q[0],q[1],q[2]", 3)] {
+            let qasm = format!("OPENQASM 2.0;\nqreg q[3];\ncz {operands};\n");
+            let err = parse(&qasm).unwrap_err();
+            assert!(err.contains(&format!("cz expects 2 qubit operands, got {count}")), "{err}");
+        }
+    }
+
+    #[test]
+    fn multiple_cz_gates_on_one_line_stay_native() {
+        let qasm = "OPENQASM 2.0;\nqreg q[3];\ncz q[0],q[1]; cz q[2],q[0];\n";
+        let c = parse(qasm).unwrap();
+        assert_eq!(c.gates.len(), 2);
+        assert!(matches!(c.gates[0], Gate::cz { control: 0, target: 1 }));
+        assert!(matches!(c.gates[1], Gate::cz { control: 2, target: 0 }));
+        let serialized = serialize(&c);
+        assert_eq!(serialized.lines().filter(|line| line.starts_with("cz ")).count(), 2);
+    }
+
+    #[test]
+    fn cz_with_comments_and_mixed_gates_round_trips() {
+        let qasm = "OPENQASM 2.0;\nqreg q[3];\nh q[0];\ncz q[0],q[2]; // native\nt q[2];\n/* keep this one too */ cz q[1],q[2];\n";
+        let c = parse(qasm).unwrap();
+        assert_eq!(c.gates.len(), 4);
+        assert!(matches!(c.gates[1], Gate::cz { control: 0, target: 2 }));
+        assert!(matches!(c.gates[3], Gate::cz { control: 1, target: 2 }));
+        let reparsed = parse(&serialize(&c)).unwrap();
+        assert_eq!(reparsed.gates.len(), 4);
+        assert!(matches!(reparsed.gates[1], Gate::cz { control: 0, target: 2 }));
+        assert!(matches!(reparsed.gates[3], Gate::cz { control: 1, target: 2 }));
     }
 
     #[test]

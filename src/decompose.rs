@@ -1,6 +1,7 @@
 //! Gate-decomposition passes:
 //!   * `DecomposeToffoli` — rewrites every `ccx` into the canonical 15-gate
 //!     Clifford+T circuit.
+//!   * `DecomposeCz` — rewrites every `cz` into `H · CNOT · H`.
 //!   * `DecomposeRz` — synthesizes each `rz(θ)` into Clifford+T via
 //!     gridsynth (`rsgridsynth`), in parallel across the gate list.
 
@@ -40,6 +41,36 @@ impl Pass for DecomposeToffoli {
                     output.apply(Gate::t(c0));
                     output.apply(Gate::tdg(c1));
                     output.apply(Gate::cnot { control: c0, target: c1 });
+                }
+                other => output.apply(other.clone()),
+            }
+        }
+        output
+    }
+}
+
+// --- CZ decomposition --------------------------------------------------------
+
+/// Explicitly lower CZ gates for backends that only accept H and CNOT.
+/// CZ remains native unless this pass is requested.
+pub struct DecomposeCz;
+
+impl Pass for DecomposeCz {
+    fn name(&self) -> &str {
+        "CZ decomposition"
+    }
+
+    fn run(&self, circuit: &Circuit) -> Circuit {
+        let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
+        for gate in &circuit.gates {
+            match gate {
+                Gate::cz { control, target } => {
+                    output.apply(Gate::h(*target));
+                    output.apply(Gate::cnot {
+                        control: *control,
+                        target: *target,
+                    });
+                    output.apply(Gate::h(*target));
                 }
                 other => output.apply(other.clone()),
             }
@@ -240,6 +271,89 @@ mod tests {
         assert!(matches!(&dec.gates[0], Gate::reset(0)));
         assert!(matches!(dec.gates.last().unwrap(), Gate::measure { qubit: 2, cbit: 0 }));
         assert_eq!(dec.num_cbits, 1);
+    }
+
+    // --- CZ decomposition tests ---
+
+    #[test]
+    fn cz_decomposes_to_h_cnot_h() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::cz { control: 0, target: 1 });
+        let dec = DecomposeCz.run(&c);
+        assert_eq!(dec.gates.len(), 3);
+        assert!(matches!(dec.gates[0], Gate::h(1)));
+        assert!(matches!(dec.gates[1], Gate::cnot { control: 0, target: 1 }));
+        assert!(matches!(dec.gates[2], Gate::h(1)));
+        assert!(circuits_equiv(&c, &dec, 1e-10));
+    }
+
+    #[test]
+    fn cz_decomposition_respects_operand_order() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::cz { control: 2, target: 0 });
+        let dec = DecomposeCz.run(&c);
+        assert!(matches!(dec.gates[0], Gate::h(0)));
+        assert!(matches!(dec.gates[1], Gate::cnot { control: 2, target: 0 }));
+        assert!(matches!(dec.gates[2], Gate::h(0)));
+        assert!(circuits_equiv(&c, &dec, 1e-10));
+    }
+
+    #[test]
+    fn cz_decomposes_multiple_and_preserves_other_gates() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::t(0));
+        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::x(2));
+        c.apply(Gate::cz { control: 2, target: 1 });
+        let dec = DecomposeCz.run(&c);
+        assert_eq!(dec.gates.len(), 8);
+        assert!(!dec.gates.iter().any(|g| matches!(g, Gate::cz { .. })));
+        assert!(matches!(dec.gates[0], Gate::t(0)));
+        assert!(matches!(dec.gates[4], Gate::x(2)));
+        assert!(circuits_equiv(&c, &dec, 1e-10));
+    }
+
+    #[test]
+    fn cz_decomposition_preserves_measurement_metadata() {
+        let mut c = Circuit::with_cbits(2, 1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::measure { qubit: 1, cbit: 0 });
+        let dec = DecomposeCz.run(&c);
+        assert_eq!(dec.num_cbits, 1);
+        assert!(dec.has_measurement);
+        assert!(matches!(dec.gates[0], Gate::reset(0)));
+        assert!(matches!(dec.gates.last(), Some(Gate::measure { qubit: 1, cbit: 0 })));
+    }
+
+    #[test]
+    fn other_decomposers_preserve_native_cz() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::cz { control: 0, target: 2 });
+        let toffoli = DecomposeToffoli.run(&c);
+        let rz = DecomposeRz::default().run(&c);
+        assert!(matches!(toffoli.gates.as_slice(), [Gate::cz { control: 0, target: 2 }]));
+        assert!(matches!(rz.gates.as_slice(), [Gate::cz { control: 0, target: 2 }]));
+    }
+
+    #[test]
+    fn cz_decomposition_empty_circuit() {
+        let c = Circuit::new(2);
+        let dec = DecomposeCz.run(&c);
+        assert!(dec.gates.is_empty());
+        assert_eq!(dec.num_qubits, 2);
+    }
+
+    #[test]
+    fn cz_decomposition_is_idempotent() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::cz { control: 0, target: 2 });
+        c.apply(Gate::t(1));
+        c.apply(Gate::cz { control: 2, target: 1 });
+        let once = DecomposeCz.run(&c);
+        let twice = DecomposeCz.run(&once);
+        assert_eq!(once.to_qasm(), twice.to_qasm());
+        assert!(circuits_equiv(&c, &twice, 1e-10));
     }
 
     // --- Rz decomposition tests ---

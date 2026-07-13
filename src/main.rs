@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use tzap::circuit::{Circuit, Gate};
-use tzap::decompose::{DecomposeRz, DecomposeToffoli};
+use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use tzap::cancel::CancelGates;
 use tzap::pass::{Pass, count_t};
 use tzap::phase_fold_rand::PhaseFoldRand;
@@ -19,6 +19,7 @@ const CHUNK_MULTIPLIER: usize = 4;
 #[derive(Clone, Copy)]
 enum PassName {
     DecomposeToffoli,
+    DecomposeCz,
     DecomposeRz,
     CancelGates,
     PhaseFoldRand,
@@ -27,9 +28,11 @@ enum PassName {
 
 impl PassName {
     /// All passes — `(name, variant, description)` — in the order shown by `--help`.
-    const ALL: [(&'static str, PassName, &'static str); 5] = [
+    const ALL: [(&'static str, PassName, &'static str); 6] = [
         ("DecomposeToffoli", PassName::DecomposeToffoli,
             "Decompose ccx (Toffoli) gates into Clifford+T"),
+        ("DecomposeCz", PassName::DecomposeCz,
+            "Decompose cz gates into H+CX+H"),
         ("DecomposeRz", PassName::DecomposeRz,
             "Decompose Rz gates into Clifford+T (gridsynth; see --epsilon)"),
         ("CancelGates", PassName::CancelGates,
@@ -271,6 +274,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
     let num_chunks = num_par_chunks();
 
     let decompose_toffoli = DecomposeToffoli;
+    let decompose_cz = DecomposeCz;
     let rz_decompose = DecomposeRz { epsilon: opts.rz_epsilon };
     let cancel_pass = CancelGates;
     let global = PhaseFoldRand;
@@ -285,6 +289,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         let passes: Vec<&dyn Pass> = names.iter().map(|p| -> &dyn Pass {
             match p {
                 PassName::DecomposeToffoli => &decompose_toffoli,
+                PassName::DecomposeCz => &decompose_cz,
                 PassName::DecomposeRz => &rz_decompose,
                 PassName::CancelGates => &cancel_pass,
                 PassName::PhaseFoldRand => &global,

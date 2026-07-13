@@ -75,6 +75,11 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
             Gate::cnot { control, target } => {
                 qubits[*target] ^= qubits[*control];
             }
+            Gate::cz { .. } => {
+                // CZ is diagonal: it changes phase but leaves both computational-basis
+                // bits, and therefore both tracked parities, unchanged. The gate itself
+                // remains in the reconstructed circuit.
+            }
             Gate::ccx { control1: _, control2: _, target } => {
                 // AND-based parity — opaque, just refresh the target.
                 qubits[*target] = fresh();
@@ -1960,5 +1965,129 @@ mod tests {
         assert!(matches!(&opt.gates[0], Gate::s(0)));
         assert!(matches!(&opt.gates[1], Gate::measure { qubit: 0, cbit: 0 }));
         assert!(matches!(&opt.gates[2], Gate::s(0)));
+    }
+
+    #[test]
+    fn cz_preserved_without_rotations() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::cz { control: 0, target: 1 });
+        let opt = phase_fold_rand(&c);
+        assert!(matches!(opt.gates.as_slice(), [Gate::cz { control: 0, target: 1 }]));
+        assert!(circuits_equiv(&c, &opt, 1e-10));
+    }
+
+    #[test]
+    fn t_pair_folds_through_either_cz_operand() {
+        for q in 0..2 {
+            let mut c = Circuit::new(2);
+            c.apply(Gate::t(q));
+            c.apply(Gate::cz { control: 0, target: 1 });
+            c.apply(Gate::t(q));
+            let opt = phase_fold_rand(&c);
+            assert_eq!(opt.gates.len(), 2, "operand {q}");
+            assert!(matches!(opt.gates[0], Gate::cz { control: 0, target: 1 }), "operand {q}");
+            assert!(matches!(opt.gates[1], Gate::s(p) if p == q), "operand {q}");
+            assert!(circuits_equiv(&c, &opt, 1e-10), "operand {q}");
+        }
+    }
+
+    #[test]
+    fn opposite_phases_cancel_through_cz_on_both_operands() {
+        for q in 0..2 {
+            let mut c = Circuit::new(2);
+            c.apply(Gate::t(q));
+            c.apply(Gate::cz { control: 0, target: 1 });
+            c.apply(Gate::tdg(q));
+            let opt = phase_fold_rand(&c);
+            assert!(matches!(opt.gates.as_slice(), [Gate::cz { control: 0, target: 1 }]));
+            assert!(circuits_equiv(&c, &opt, 1e-10));
+        }
+    }
+
+    #[test]
+    fn arbitrary_rz_folds_through_cz() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::rz(0.37, 1));
+        c.apply(Gate::cz { control: 1, target: 0 });
+        c.apply(Gate::rz(-0.12, 1));
+        let opt = phase_fold_rand(&c);
+        assert_eq!(opt.gates.len(), 2);
+        assert!(matches!(opt.gates[0], Gate::cz { control: 1, target: 0 }));
+        match opt.gates[1] {
+            Gate::rz(theta, 1) => assert!((theta - 0.25).abs() < 1e-12),
+            ref other => panic!("expected merged Rz, got {other:?}"),
+        }
+        assert!(circuits_equiv(&c, &opt, 1e-10));
+    }
+
+    #[test]
+    fn cz_does_not_hide_real_hadamard_boundary() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::t(0));
+        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::h(0));
+        c.apply(Gate::t(0));
+        let opt = phase_fold_rand(&c);
+        assert_eq!(count_t_gates(&opt), 2);
+        assert_eq!(opt.gates.len(), 4);
+        assert!(circuits_equiv(&c, &opt, 1e-10));
+    }
+
+    #[test]
+    fn phases_on_both_wires_fold_independently_across_cz_chain() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::t(0));
+        c.apply(Gate::tdg(1));
+        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cz { control: 1, target: 0 });
+        c.apply(Gate::t(0));
+        c.apply(Gate::t(1));
+        let opt = phase_fold_rand(&c);
+        assert_eq!(count_t_gates(&opt), 0);
+        assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
+        assert!(!opt.gates.iter().any(|g| matches!(g, Gate::t(1) | Gate::tdg(1))));
+        assert!(circuits_equiv(&c, &opt, 1e-10));
+    }
+
+    #[test]
+    fn cz_and_cnot_control_preserve_phase_parity_together() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::t(0));
+        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cnot { control: 0, target: 2 });
+        c.apply(Gate::cz { control: 2, target: 1 });
+        c.apply(Gate::t(0));
+        let opt = phase_fold_rand(&c);
+        assert_eq!(count_t_gates(&opt), 0);
+        assert!(matches!(opt.gates.last(), Some(Gate::s(0))));
+        assert!(circuits_equiv(&c, &opt, 1e-10));
+    }
+
+    #[test]
+    fn cz_does_not_mask_cnot_target_parity_change() {
+        let mut c = Circuit::new(2);
+        c.apply(Gate::t(1));
+        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cz { control: 1, target: 0 });
+        c.apply(Gate::t(1));
+        let opt = phase_fold_rand(&c);
+        assert_eq!(count_t_gates(&opt), 2);
+        assert!(circuits_equiv(&c, &opt, 1e-10));
+    }
+
+    #[test]
+    fn phase_fold_preserves_cz_count_and_operand_order() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::t(2));
+        c.apply(Gate::cz { control: 2, target: 0 });
+        c.apply(Gate::cz { control: 1, target: 2 });
+        c.apply(Gate::t(2));
+        let opt = phase_fold_rand(&c);
+        let czs: Vec<_> = opt.gates.iter().filter(|g| matches!(g, Gate::cz { .. })).collect();
+        assert_eq!(czs.len(), 2);
+        assert!(matches!(czs[0], Gate::cz { control: 2, target: 0 }));
+        assert!(matches!(czs[1], Gate::cz { control: 1, target: 2 }));
+        assert!(circuits_equiv(&c, &opt, 1e-10));
     }
 }

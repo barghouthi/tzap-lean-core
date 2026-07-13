@@ -119,6 +119,20 @@ impl Mat {
         }
     }
 
+    /// Apply a controlled-Z: negate amplitudes where both operand bits are set.
+    fn apply_cz(&mut self, control: usize, target: usize, num_qubits: usize) {
+        let cb = 1 << (num_qubits - 1 - control);
+        let tb = 1 << (num_qubits - 1 - target);
+        let minus_one = C::new(-1.0, 0.0);
+        for col in 0..self.dim {
+            for row in 0..self.dim {
+                if row & cb != 0 && row & tb != 0 {
+                    self.set(row, col, minus_one * self.get(row, col));
+                }
+            }
+        }
+    }
+
     /// Apply a Toffoli: flip target bit when both control bits are set.
     fn apply_ccx(&mut self, c1: usize, c2: usize, target: usize, num_qubits: usize) {
         let c1b = 1 << (num_qubits - 1 - c1);
@@ -187,6 +201,7 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
             Gate::tdg(q) => mat.apply_single(gate_matrix_tdg(), *q, n),
             Gate::rz(theta, q) => mat.apply_single(gate_matrix_rz(*theta), *q, n),
             Gate::cnot { control, target } => mat.apply_cnot(*control, *target, n),
+            Gate::cz { control, target } => mat.apply_cz(*control, *target, n),
             Gate::ccx { control1, control2, target } => {
                 mat.apply_ccx(*control1, *control2, *target, n)
             }
@@ -635,6 +650,82 @@ mod tests {
         let mut b = Circuit::new(2);
         b.apply(Gate::cnot { control: 0, target: 1 });
         b.apply(Gate::z(1));
+        assert!(!circuits_equiv(&a, &b, 1e-10));
+    }
+
+    #[test]
+    fn cz_equals_h_cnot_h() {
+        let mut native = Circuit::new(2);
+        native.apply(Gate::cz { control: 0, target: 1 });
+
+        let mut decomposed = Circuit::new(2);
+        decomposed.apply(Gate::h(1));
+        decomposed.apply(Gate::cnot { control: 0, target: 1 });
+        decomposed.apply(Gate::h(1));
+        assert!(circuits_equiv(&native, &decomposed, 1e-10));
+    }
+
+    #[test]
+    fn cz_is_symmetric() {
+        let mut a = Circuit::new(3);
+        a.apply(Gate::cz { control: 0, target: 2 });
+        let mut b = Circuit::new(3);
+        b.apply(Gate::cz { control: 2, target: 0 });
+        assert!(circuits_equiv(&a, &b, 1e-10));
+    }
+
+    #[test]
+    fn cz_squared_is_identity() {
+        let mut a = Circuit::new(2);
+        a.apply(Gate::cz { control: 0, target: 1 });
+        a.apply(Gate::cz { control: 1, target: 0 });
+        assert!(circuits_equiv(&a, &Circuit::new(2), 1e-10));
+    }
+
+    #[test]
+    fn cz_commutes_with_diagonals_on_both_operands() {
+        let mut a = Circuit::new(2);
+        a.apply(Gate::t(0));
+        a.apply(Gate::sdg(1));
+        a.apply(Gate::cz { control: 0, target: 1 });
+
+        let mut b = Circuit::new(2);
+        b.apply(Gate::cz { control: 1, target: 0 });
+        b.apply(Gate::t(0));
+        b.apply(Gate::sdg(1));
+        assert!(circuits_equiv(&a, &b, 1e-10));
+    }
+
+    #[test]
+    fn cz_does_not_commute_with_x_on_operand() {
+        let mut a = Circuit::new(2);
+        a.apply(Gate::x(0));
+        a.apply(Gate::cz { control: 0, target: 1 });
+        let mut b = Circuit::new(2);
+        b.apply(Gate::cz { control: 0, target: 1 });
+        b.apply(Gate::x(0));
+        assert!(!circuits_equiv(&a, &b, 1e-10));
+    }
+
+    #[test]
+    fn cz_commutes_with_cnot_when_target_is_outside_operands() {
+        let mut a = Circuit::new(3);
+        a.apply(Gate::cz { control: 0, target: 1 });
+        a.apply(Gate::cnot { control: 0, target: 2 });
+        let mut b = Circuit::new(3);
+        b.apply(Gate::cnot { control: 0, target: 2 });
+        b.apply(Gate::cz { control: 0, target: 1 });
+        assert!(circuits_equiv(&a, &b, 1e-10));
+    }
+
+    #[test]
+    fn cz_does_not_commute_with_cnot_targeting_operand() {
+        let mut a = Circuit::new(3);
+        a.apply(Gate::cz { control: 0, target: 1 });
+        a.apply(Gate::cnot { control: 2, target: 1 });
+        let mut b = Circuit::new(3);
+        b.apply(Gate::cnot { control: 2, target: 1 });
+        b.apply(Gate::cz { control: 0, target: 1 });
         assert!(!circuits_equiv(&a, &b, 1e-10));
     }
 

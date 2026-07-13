@@ -27,7 +27,7 @@ tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand  # explicit pa
 
 Output is written only when an output file is given (via `-o`).
 
-**Gate handling:** Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. `Rz` gates are left as-is by default; pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth), and `--epsilon <eps>` to control the approximation precision (default: `1e-10`; accepts scientific notation).
+**Gate handling:** Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is by default; pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth), and `--epsilon <eps>` to control the approximation precision (default: `1e-10`; accepts scientific notation).
 
 ### Example
 

@@ -105,6 +105,9 @@ pub fn phase_fold_global_expr(circuit: &Circuit) -> Circuit {
                 let ctrl = qubits[*control].clone();
                 qubits[*target] = qubits[*target].xor(&ctrl);
             }
+            // CZ is diagonal and does not change either tracked parity. Keep the gate
+            // in the output, but do not introduce an artificial analysis boundary.
+            Gate::cz { .. } => {}
             Gate::ccx { control1: _, control2: _, target } => {
                 // AND-based parity — opaque, just refresh the target.
                 qubits[*target] = fresh();
