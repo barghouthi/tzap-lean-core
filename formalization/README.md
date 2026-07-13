@@ -12,8 +12,9 @@ correctness theorems.
 
 | Theorem | File | Statement (informal) |
 |---|---|---|
-| `Algorithm.fold_correct` | `TZap/Algorithm.lean` | The exact Algorithm 1 preserves circuit semantics: `⟦fold C⟧ = ⟦C⟧`. |
 | `RandomizedAlgorithm.randomized_fold_correct` | `TZap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
+| `RandomizedSoundness.randomized_analysis_sound` | `TZap/RandomizedSoundness.lean` | A semantically false equality reported by the randomized analysis with `k`-bit hashes has probability at most `2⁻ᵏ`. |
+| `Algorithm.fold_correct` | `TZap/Algorithm.lean` | The exact Algorithm 1 preserves circuit semantics: `⟦fold C⟧ = ⟦C⟧`. |
 | `PhaseFolding.phase_folding` | `TZap/PhaseFolding.lean` | The single-merge rewrite: if the parity condition holds, merging two rotations preserves semantics. |
 | `Soundness.parity_equality_sound` | `TZap/Soundness.lean` | Every parity equality claimed by the symbolic analysis holds on every supported transition. |
 | `Collision.affine_collision_bound` | `TZap/Collision.lean` | Two distinct affine parities collide under uniform `k`-bit hashing with probability at most `2⁻ᵏ`. |
