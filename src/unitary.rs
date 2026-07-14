@@ -17,7 +17,10 @@ impl C {
     }
 
     fn polar(r: f64, theta: f64) -> C {
-        C { re: r * theta.cos(), im: r * theta.sin() }
+        C {
+            re: r * theta.cos(),
+            im: r * theta.sin(),
+        }
     }
 
     fn norm_sq(self) -> f64 {
@@ -25,21 +28,30 @@ impl C {
     }
 
     fn conj(self) -> C {
-        C { re: self.re, im: -self.im }
+        C {
+            re: self.re,
+            im: -self.im,
+        }
     }
 }
 
 impl std::ops::Add for C {
     type Output = C;
     fn add(self, rhs: C) -> C {
-        C { re: self.re + rhs.re, im: self.im + rhs.im }
+        C {
+            re: self.re + rhs.re,
+            im: self.im + rhs.im,
+        }
     }
 }
 
 impl std::ops::Sub for C {
     type Output = C;
     fn sub(self, rhs: C) -> C {
-        C { re: self.re - rhs.re, im: self.im - rhs.im }
+        C {
+            re: self.re - rhs.re,
+            im: self.im - rhs.im,
+        }
     }
 }
 
@@ -56,7 +68,10 @@ impl std::ops::Mul for C {
 impl std::ops::Mul<f64> for C {
     type Output = C;
     fn mul(self, rhs: f64) -> C {
-        C { re: self.re * rhs, im: self.im * rhs }
+        C {
+            re: self.re * rhs,
+            im: self.im * rhs,
+        }
     }
 }
 
@@ -184,7 +199,10 @@ fn gate_matrix_tdg() -> [[C; 2]; 2] {
 }
 
 fn gate_matrix_rz(theta: f64) -> [[C; 2]; 2] {
-    [[C::polar(1.0, -theta / 2.0), C::ZERO], [C::ZERO, C::polar(1.0, theta / 2.0)]]
+    [
+        [C::polar(1.0, -theta / 2.0), C::ZERO],
+        [C::ZERO, C::polar(1.0, theta / 2.0)],
+    ]
 }
 
 pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
@@ -202,11 +220,14 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
             Gate::rz(theta, q) => mat.apply_single(gate_matrix_rz(*theta), *q, n),
             Gate::cnot { control, target } => mat.apply_cnot(*control, *target, n),
             Gate::cz { control, target } => mat.apply_cz(*control, *target, n),
-            Gate::ccx { control1, control2, target } => {
-                mat.apply_ccx(*control1, *control2, *target, n)
+            Gate::ccx {
+                control1,
+                control2,
+                target,
+            } => mat.apply_ccx(*control1, *control2, *target, n),
+            Gate::measure { .. } | Gate::reset(_) => {
+                panic!("circuit_unitary: measurement/reset is not a unitary operation")
             }
-            Gate::measure { .. } | Gate::reset(_) =>
-                panic!("circuit_unitary: measurement/reset is not a unitary operation"),
         }
     }
     // convert to Vec<Vec<C>> for external use
@@ -214,7 +235,6 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
         .map(|r| (0..mat.dim).map(|c| mat.get(r, c)).collect())
         .collect()
 }
-
 
 /// Check if two unitaries are equal up to a global phase.
 /// Finds the phase from the first nonzero entry, then checks all entries.
@@ -224,10 +244,14 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
 /// compare circuits with measurements should split off the unitary prefix.
 pub fn circuits_equiv(a: &Circuit, b: &Circuit, tol: f64) -> bool {
     assert_eq!(a.num_qubits, b.num_qubits);
-    assert!(!a.has_measurement,
-        "circuits_equiv: left circuit contains measurement/reset — not a unitary");
-    assert!(!b.has_measurement,
-        "circuits_equiv: right circuit contains measurement/reset — not a unitary");
+    assert!(
+        !a.has_measurement,
+        "circuits_equiv: left circuit contains measurement/reset — not a unitary"
+    );
+    assert!(
+        !b.has_measurement,
+        "circuits_equiv: right circuit contains measurement/reset — not a unitary"
+    );
     let ua = circuit_unitary(a);
     let ub = circuit_unitary(b);
     let dim = ua.len();
@@ -333,9 +357,18 @@ mod tests {
     fn cnot_swap_decomposition() {
         // SWAP = CNOT(0,1) CNOT(1,0) CNOT(0,1)
         let mut a = Circuit::new(2);
-        a.apply(Gate::cnot { control: 0, target: 1 });
-        a.apply(Gate::cnot { control: 1, target: 0 });
-        a.apply(Gate::cnot { control: 0, target: 1 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         // build SWAP directly: |00⟩→|00⟩, |01⟩→|10⟩, |10⟩→|01⟩, |11⟩→|11⟩
         let u = circuit_unitary(&a);
@@ -372,24 +405,46 @@ mod tests {
     fn ccx_equiv_decomposition() {
         // Standard Toffoli decomposition into 1- and 2-qubit gates
         let mut a = Circuit::new(3);
-        a.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        a.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
 
         let mut b = Circuit::new(3);
         b.apply(Gate::h(2));
-        b.apply(Gate::cnot { control: 1, target: 2 });
+        b.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         b.apply(Gate::tdg(2));
-        b.apply(Gate::cnot { control: 0, target: 2 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         b.apply(Gate::t(2));
-        b.apply(Gate::cnot { control: 1, target: 2 });
+        b.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         b.apply(Gate::tdg(2));
-        b.apply(Gate::cnot { control: 0, target: 2 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         b.apply(Gate::t(1));
         b.apply(Gate::t(2));
         b.apply(Gate::h(2));
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         b.apply(Gate::t(0));
         b.apply(Gate::tdg(1));
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         assert!(circuits_equiv(&a, &b, 1e-10));
     }
@@ -399,14 +454,26 @@ mod tests {
         // Way 1: H(0), CNOT(0,1), CNOT(1,2)
         let mut a = Circuit::new(3);
         a.apply(Gate::h(0));
-        a.apply(Gate::cnot { control: 0, target: 1 });
-        a.apply(Gate::cnot { control: 1, target: 2 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
 
         // Way 2: H(0), CNOT(0,1), CNOT(0,2) — fan-out from q0
         let mut b = Circuit::new(3);
         b.apply(Gate::h(0));
-        b.apply(Gate::cnot { control: 0, target: 1 });
-        b.apply(Gate::cnot { control: 0, target: 2 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
 
         // These are NOT equivalent unitaries (same final state on |000⟩ but different maps)
         assert!(!circuits_equiv(&a, &b, 1e-10));
@@ -417,12 +484,24 @@ mod tests {
         // CNOT(0,1) then CNOT(2,1) vs reversed order — disjoint controls, same target
         // These do NOT commute (both write to q1)
         let mut a = Circuit::new(3);
-        a.apply(Gate::cnot { control: 0, target: 1 });
-        a.apply(Gate::cnot { control: 2, target: 1 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cnot {
+            control: 2,
+            target: 1,
+        });
 
         let mut b = Circuit::new(3);
-        b.apply(Gate::cnot { control: 2, target: 1 });
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 2,
+            target: 1,
+        });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         // Actually XOR is commutative+associative, so these ARE equivalent
         assert!(circuits_equiv(&a, &b, 1e-10));
@@ -432,12 +511,24 @@ mod tests {
     fn cnot_no_commute_overlapping() {
         // CNOT(0,1) then CNOT(1,2) vs reversed — these don't commute
         let mut a = Circuit::new(3);
-        a.apply(Gate::cnot { control: 0, target: 1 });
-        a.apply(Gate::cnot { control: 1, target: 2 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
 
         let mut b = Circuit::new(3);
-        b.apply(Gate::cnot { control: 1, target: 2 });
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         assert!(!circuits_equiv(&a, &b, 1e-10));
     }
@@ -447,9 +538,18 @@ mod tests {
         // SWAP(0,1) then SWAP(1,2) = cyclic permutation 0→1→2→0
         // vs SWAP(1,2) then SWAP(0,1) = cyclic permutation 0→2→1→0
         fn swap(c: &mut Circuit, a: usize, b: usize) {
-            c.apply(Gate::cnot { control: a, target: b });
-            c.apply(Gate::cnot { control: b, target: a });
-            c.apply(Gate::cnot { control: a, target: b });
+            c.apply(Gate::cnot {
+                control: a,
+                target: b,
+            });
+            c.apply(Gate::cnot {
+                control: b,
+                target: a,
+            });
+            c.apply(Gate::cnot {
+                control: a,
+                target: b,
+            });
         }
 
         let mut a = Circuit::new(3);
@@ -468,8 +568,16 @@ mod tests {
     fn double_ccx_is_identity() {
         // Toffoli is self-inverse
         let mut a = Circuit::new(3);
-        a.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
-        a.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        a.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        a.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         let b = Circuit::new(3);
         assert!(circuits_equiv(&a, &b, 1e-10));
     }
@@ -479,12 +587,18 @@ mod tests {
         // T on q0, CNOT(0,1), T on q1 is NOT the same as S on q0, CNOT(0,1)
         let mut a = Circuit::new(3);
         a.apply(Gate::t(0));
-        a.apply(Gate::cnot { control: 0, target: 1 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         a.apply(Gate::t(1));
 
         let mut b = Circuit::new(3);
         b.apply(Gate::s(0));
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         assert!(!circuits_equiv(&a, &b, 1e-10));
     }
@@ -493,12 +607,24 @@ mod tests {
     fn four_qubit_parallel_cnots() {
         // CNOT(0,1) and CNOT(2,3) in either order — fully disjoint, must commute
         let mut a = Circuit::new(4);
-        a.apply(Gate::cnot { control: 0, target: 1 });
-        a.apply(Gate::cnot { control: 2, target: 3 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cnot {
+            control: 2,
+            target: 3,
+        });
 
         let mut b = Circuit::new(4);
-        b.apply(Gate::cnot { control: 2, target: 3 });
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 2,
+            target: 3,
+        });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         assert!(circuits_equiv(&a, &b, 1e-10));
     }
@@ -507,10 +633,14 @@ mod tests {
     fn four_qubit_h_layer_order() {
         // H on all 4 qubits — order doesn't matter
         let mut a = Circuit::new(4);
-        for q in 0..4 { a.apply(Gate::h(q)); }
+        for q in 0..4 {
+            a.apply(Gate::h(q));
+        }
 
         let mut b = Circuit::new(4);
-        for q in (0..4).rev() { b.apply(Gate::h(q)); }
+        for q in (0..4).rev() {
+            b.apply(Gate::h(q));
+        }
 
         assert!(circuits_equiv(&a, &b, 1e-10));
     }
@@ -520,12 +650,18 @@ mod tests {
         // CNOT ladder 0→1→2→3 vs 3→2→1→0 — different circuits
         let mut a = Circuit::new(4);
         for q in 0..3 {
-            a.apply(Gate::cnot { control: q, target: q + 1 });
+            a.apply(Gate::cnot {
+                control: q,
+                target: q + 1,
+            });
         }
 
         let mut b = Circuit::new(4);
         for q in (0..3).rev() {
-            b.apply(Gate::cnot { control: q, target: q + 1 });
+            b.apply(Gate::cnot {
+                control: q,
+                target: q + 1,
+            });
         }
 
         assert!(!circuits_equiv(&a, &b, 1e-10));
@@ -634,9 +770,15 @@ mod tests {
         // Z on control commutes with CNOT
         let mut a = Circuit::new(2);
         a.apply(Gate::z(0));
-        a.apply(Gate::cnot { control: 0, target: 1 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         let mut b = Circuit::new(2);
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         b.apply(Gate::z(0));
         assert!(circuits_equiv(&a, &b, 1e-10));
     }
@@ -646,9 +788,15 @@ mod tests {
         // Z on target does NOT commute with CNOT
         let mut a = Circuit::new(2);
         a.apply(Gate::z(1));
-        a.apply(Gate::cnot { control: 0, target: 1 });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         let mut b = Circuit::new(2);
-        b.apply(Gate::cnot { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         b.apply(Gate::z(1));
         assert!(!circuits_equiv(&a, &b, 1e-10));
     }
@@ -656,11 +804,17 @@ mod tests {
     #[test]
     fn cz_equals_h_cnot_h() {
         let mut native = Circuit::new(2);
-        native.apply(Gate::cz { control: 0, target: 1 });
+        native.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
 
         let mut decomposed = Circuit::new(2);
         decomposed.apply(Gate::h(1));
-        decomposed.apply(Gate::cnot { control: 0, target: 1 });
+        decomposed.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         decomposed.apply(Gate::h(1));
         assert!(circuits_equiv(&native, &decomposed, 1e-10));
     }
@@ -668,17 +822,29 @@ mod tests {
     #[test]
     fn cz_is_symmetric() {
         let mut a = Circuit::new(3);
-        a.apply(Gate::cz { control: 0, target: 2 });
+        a.apply(Gate::cz {
+            control: 0,
+            target: 2,
+        });
         let mut b = Circuit::new(3);
-        b.apply(Gate::cz { control: 2, target: 0 });
+        b.apply(Gate::cz {
+            control: 2,
+            target: 0,
+        });
         assert!(circuits_equiv(&a, &b, 1e-10));
     }
 
     #[test]
     fn cz_squared_is_identity() {
         let mut a = Circuit::new(2);
-        a.apply(Gate::cz { control: 0, target: 1 });
-        a.apply(Gate::cz { control: 1, target: 0 });
+        a.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cz {
+            control: 1,
+            target: 0,
+        });
         assert!(circuits_equiv(&a, &Circuit::new(2), 1e-10));
     }
 
@@ -687,10 +853,16 @@ mod tests {
         let mut a = Circuit::new(2);
         a.apply(Gate::t(0));
         a.apply(Gate::sdg(1));
-        a.apply(Gate::cz { control: 0, target: 1 });
+        a.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
 
         let mut b = Circuit::new(2);
-        b.apply(Gate::cz { control: 1, target: 0 });
+        b.apply(Gate::cz {
+            control: 1,
+            target: 0,
+        });
         b.apply(Gate::t(0));
         b.apply(Gate::sdg(1));
         assert!(circuits_equiv(&a, &b, 1e-10));
@@ -700,9 +872,15 @@ mod tests {
     fn cz_does_not_commute_with_x_on_operand() {
         let mut a = Circuit::new(2);
         a.apply(Gate::x(0));
-        a.apply(Gate::cz { control: 0, target: 1 });
+        a.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         let mut b = Circuit::new(2);
-        b.apply(Gate::cz { control: 0, target: 1 });
+        b.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         b.apply(Gate::x(0));
         assert!(!circuits_equiv(&a, &b, 1e-10));
     }
@@ -710,22 +888,46 @@ mod tests {
     #[test]
     fn cz_commutes_with_cnot_when_target_is_outside_operands() {
         let mut a = Circuit::new(3);
-        a.apply(Gate::cz { control: 0, target: 1 });
-        a.apply(Gate::cnot { control: 0, target: 2 });
+        a.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         let mut b = Circuit::new(3);
-        b.apply(Gate::cnot { control: 0, target: 2 });
-        b.apply(Gate::cz { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        b.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         assert!(circuits_equiv(&a, &b, 1e-10));
     }
 
     #[test]
     fn cz_does_not_commute_with_cnot_targeting_operand() {
         let mut a = Circuit::new(3);
-        a.apply(Gate::cz { control: 0, target: 1 });
-        a.apply(Gate::cnot { control: 2, target: 1 });
+        a.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
+        a.apply(Gate::cnot {
+            control: 2,
+            target: 1,
+        });
         let mut b = Circuit::new(3);
-        b.apply(Gate::cnot { control: 2, target: 1 });
-        b.apply(Gate::cz { control: 0, target: 1 });
+        b.apply(Gate::cnot {
+            control: 2,
+            target: 1,
+        });
+        b.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         assert!(!circuits_equiv(&a, &b, 1e-10));
     }
 
@@ -755,7 +957,9 @@ mod tests {
     fn six_t_is_sdg() {
         // 6T = 6*(π/4) = 3π/2 = Sdg
         let mut a = Circuit::new(1);
-        for _ in 0..6 { a.apply(Gate::t(0)); }
+        for _ in 0..6 {
+            a.apply(Gate::t(0));
+        }
         let mut b = Circuit::new(1);
         b.apply(Gate::sdg(0));
         assert!(circuits_equiv(&a, &b, 1e-10));

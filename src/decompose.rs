@@ -17,30 +17,54 @@ use rsgridsynth::gridsynth::gridsynth_gates;
 pub struct DecomposeToffoli;
 
 impl Pass for DecomposeToffoli {
-    fn name(&self) -> &str { "Toffoli decomposition" }
+    fn name(&self) -> &str {
+        "Toffoli decomposition"
+    }
     fn run(&self, circuit: &Circuit) -> Circuit {
         let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for gate in &circuit.gates {
             match gate {
-                Gate::ccx { control1, control2, target } => {
+                Gate::ccx {
+                    control1,
+                    control2,
+                    target,
+                } => {
                     let c0 = *control1;
                     let c1 = *control2;
                     let t = *target;
                     output.apply(Gate::h(t));
-                    output.apply(Gate::cnot { control: c1, target: t });
+                    output.apply(Gate::cnot {
+                        control: c1,
+                        target: t,
+                    });
                     output.apply(Gate::tdg(t));
-                    output.apply(Gate::cnot { control: c0, target: t });
+                    output.apply(Gate::cnot {
+                        control: c0,
+                        target: t,
+                    });
                     output.apply(Gate::t(t));
-                    output.apply(Gate::cnot { control: c1, target: t });
+                    output.apply(Gate::cnot {
+                        control: c1,
+                        target: t,
+                    });
                     output.apply(Gate::tdg(t));
-                    output.apply(Gate::cnot { control: c0, target: t });
+                    output.apply(Gate::cnot {
+                        control: c0,
+                        target: t,
+                    });
                     output.apply(Gate::t(c1));
                     output.apply(Gate::t(t));
                     output.apply(Gate::h(t));
-                    output.apply(Gate::cnot { control: c0, target: c1 });
+                    output.apply(Gate::cnot {
+                        control: c0,
+                        target: c1,
+                    });
                     output.apply(Gate::t(c0));
                     output.apply(Gate::tdg(c1));
-                    output.apply(Gate::cnot { control: c0, target: c1 });
+                    output.apply(Gate::cnot {
+                        control: c0,
+                        target: c1,
+                    });
                 }
                 other => output.apply(other.clone()),
             }
@@ -100,27 +124,31 @@ impl Pass for DecomposeRz {
         let epsilon = self.epsilon;
 
         // Synthesize all Rz gates in parallel.
-        let expanded: Vec<Vec<Gate>> = circuit.gates.par_iter().map(|gate| {
-            match gate {
-                Gate::rz(theta, q) => {
-                    let q = *q;
-                    let chars = synthesize_rz(*theta, epsilon);
-                    let mut gates = Vec::with_capacity(chars.len());
-                    for g in chars {
-                        match g {
-                            'H' => gates.push(Gate::h(q)),
-                            'T' => gates.push(Gate::t(q)),
-                            'S' => gates.push(Gate::s(q)),
-                            'X' => gates.push(Gate::x(q)),
-                            'I' | 'W' => {} // identity / global phase, skip
-                            c => eprintln!("warning: unknown gridsynth gate '{c}'"),
+        let expanded: Vec<Vec<Gate>> = circuit
+            .gates
+            .par_iter()
+            .map(|gate| {
+                match gate {
+                    Gate::rz(theta, q) => {
+                        let q = *q;
+                        let chars = synthesize_rz(*theta, epsilon);
+                        let mut gates = Vec::with_capacity(chars.len());
+                        for g in chars {
+                            match g {
+                                'H' => gates.push(Gate::h(q)),
+                                'T' => gates.push(Gate::t(q)),
+                                'S' => gates.push(Gate::s(q)),
+                                'X' => gates.push(Gate::x(q)),
+                                'I' | 'W' => {} // identity / global phase, skip
+                                c => eprintln!("warning: unknown gridsynth gate '{c}'"),
+                            }
                         }
+                        gates
                     }
-                    gates
+                    other => vec![other.clone()],
                 }
-                other => vec![other.clone()],
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut output = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for gates in expanded {
@@ -151,7 +179,11 @@ mod tests {
     #[test]
     fn toffoli_single() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(dec.gates.len(), 15);
         assert!(!dec.gates.iter().any(|g| matches!(g, Gate::ccx { .. })));
@@ -162,7 +194,10 @@ mod tests {
     fn toffoli_preserves_non_ccx() {
         let mut c = Circuit::new(3);
         c.apply(Gate::h(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(2));
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(dec.gates.len(), 3);
@@ -172,8 +207,16 @@ mod tests {
     #[test]
     fn toffoli_multiple() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(dec.gates.len(), 30);
         assert!(circuits_equiv(&c, &dec, 1e-10));
@@ -184,7 +227,11 @@ mod tests {
     #[test]
     fn toffoli_different_qubits() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::ccx { control1: 2, control2: 0, target: 1 });
+        c.apply(Gate::ccx {
+            control1: 2,
+            control2: 0,
+            target: 1,
+        });
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(dec.gates.len(), 15);
         assert!(circuits_equiv(&c, &dec, 1e-10));
@@ -194,9 +241,20 @@ mod tests {
     fn toffoli_mixed_circuit() {
         let mut c = Circuit::new(3);
         c.apply(Gate::h(2));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::ccx { control1: 1, control2: 2, target: 0 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::ccx {
+            control1: 1,
+            control2: 2,
+            target: 0,
+        });
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(dec.gates.len(), 32);
         assert!(circuits_equiv(&c, &dec, 1e-10));
@@ -206,8 +264,15 @@ mod tests {
     fn toffoli_four_qubit() {
         let mut c = Circuit::new(4);
         c.apply(Gate::h(3));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
-        c.apply(Gate::cnot { control: 2, target: 3 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 2,
+            target: 3,
+        });
         let dec = DecomposeToffoli.run(&c);
         assert!(circuits_equiv(&c, &dec, 1e-10));
     }
@@ -263,13 +328,20 @@ mod tests {
         // Toffoli decomposes; surrounding measurements / resets pass through unchanged.
         let mut c = Circuit::with_cbits(3, 1);
         c.apply(Gate::reset(0));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         c.apply(Gate::measure { qubit: 2, cbit: 0 });
         let dec = DecomposeToffoli.run(&c);
         // 1 (reset) + 15 (CCX decomposition) + 1 (measure) = 17
         assert_eq!(dec.gates.len(), 17);
         assert!(matches!(&dec.gates[0], Gate::reset(0)));
-        assert!(matches!(dec.gates.last().unwrap(), Gate::measure { qubit: 2, cbit: 0 }));
+        assert!(matches!(
+            dec.gates.last().unwrap(),
+            Gate::measure { qubit: 2, cbit: 0 }
+        ));
         assert_eq!(dec.num_cbits, 1);
     }
 
@@ -278,11 +350,20 @@ mod tests {
     #[test]
     fn cz_decomposes_to_h_cnot_h() {
         let mut c = Circuit::new(2);
-        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         let dec = DecomposeCz.run(&c);
         assert_eq!(dec.gates.len(), 3);
         assert!(matches!(dec.gates[0], Gate::h(1)));
-        assert!(matches!(dec.gates[1], Gate::cnot { control: 0, target: 1 }));
+        assert!(matches!(
+            dec.gates[1],
+            Gate::cnot {
+                control: 0,
+                target: 1
+            }
+        ));
         assert!(matches!(dec.gates[2], Gate::h(1)));
         assert!(circuits_equiv(&c, &dec, 1e-10));
     }
@@ -290,10 +371,19 @@ mod tests {
     #[test]
     fn cz_decomposition_respects_operand_order() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::cz { control: 2, target: 0 });
+        c.apply(Gate::cz {
+            control: 2,
+            target: 0,
+        });
         let dec = DecomposeCz.run(&c);
         assert!(matches!(dec.gates[0], Gate::h(0)));
-        assert!(matches!(dec.gates[1], Gate::cnot { control: 2, target: 0 }));
+        assert!(matches!(
+            dec.gates[1],
+            Gate::cnot {
+                control: 2,
+                target: 0
+            }
+        ));
         assert!(matches!(dec.gates[2], Gate::h(0)));
         assert!(circuits_equiv(&c, &dec, 1e-10));
     }
@@ -302,9 +392,15 @@ mod tests {
     fn cz_decomposes_multiple_and_preserves_other_gates() {
         let mut c = Circuit::new(3);
         c.apply(Gate::t(0));
-        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::x(2));
-        c.apply(Gate::cz { control: 2, target: 1 });
+        c.apply(Gate::cz {
+            control: 2,
+            target: 1,
+        });
         let dec = DecomposeCz.run(&c);
         assert_eq!(dec.gates.len(), 8);
         assert!(!dec.gates.iter().any(|g| matches!(g, Gate::cz { .. })));
@@ -317,23 +413,44 @@ mod tests {
     fn cz_decomposition_preserves_measurement_metadata() {
         let mut c = Circuit::with_cbits(2, 1);
         c.apply(Gate::reset(0));
-        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::measure { qubit: 1, cbit: 0 });
         let dec = DecomposeCz.run(&c);
         assert_eq!(dec.num_cbits, 1);
         assert!(dec.has_measurement);
         assert!(matches!(dec.gates[0], Gate::reset(0)));
-        assert!(matches!(dec.gates.last(), Some(Gate::measure { qubit: 1, cbit: 0 })));
+        assert!(matches!(
+            dec.gates.last(),
+            Some(Gate::measure { qubit: 1, cbit: 0 })
+        ));
     }
 
     #[test]
     fn other_decomposers_preserve_native_cz() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::cz { control: 0, target: 2 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 2,
+        });
         let toffoli = DecomposeToffoli.run(&c);
         let rz = DecomposeRz::default().run(&c);
-        assert!(matches!(toffoli.gates.as_slice(), [Gate::cz { control: 0, target: 2 }]));
-        assert!(matches!(rz.gates.as_slice(), [Gate::cz { control: 0, target: 2 }]));
+        assert!(matches!(
+            toffoli.gates.as_slice(),
+            [Gate::cz {
+                control: 0,
+                target: 2
+            }]
+        ));
+        assert!(matches!(
+            rz.gates.as_slice(),
+            [Gate::cz {
+                control: 0,
+                target: 2
+            }]
+        ));
     }
 
     #[test]
@@ -347,9 +464,15 @@ mod tests {
     #[test]
     fn cz_decomposition_is_idempotent() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::cz { control: 0, target: 2 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 2,
+        });
         c.apply(Gate::t(1));
-        c.apply(Gate::cz { control: 2, target: 1 });
+        c.apply(Gate::cz {
+            control: 2,
+            target: 1,
+        });
         let once = DecomposeCz.run(&c);
         let twice = DecomposeCz.run(&once);
         assert_eq!(once.to_qasm(), twice.to_qasm());
@@ -366,7 +489,10 @@ mod tests {
         assert!(!dec.gates.iter().any(|g| matches!(g, Gate::rz(..))));
         assert!(!dec.gates.is_empty());
         for g in &dec.gates {
-            assert!(matches!(g, Gate::h(_) | Gate::t(_) | Gate::s(_) | Gate::x(_)));
+            assert!(matches!(
+                g,
+                Gate::h(_) | Gate::t(_) | Gate::s(_) | Gate::x(_)
+            ));
         }
     }
 
@@ -374,7 +500,10 @@ mod tests {
     fn rz_preserves_non_rz() {
         let mut c = Circuit::new(2);
         c.apply(Gate::h(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(0));
         let dec = DecomposeRz::default().run(&c);
         assert_eq!(dec.gates.len(), 3);
@@ -385,7 +514,10 @@ mod tests {
         let mut c = Circuit::new(2);
         c.apply(Gate::h(0));
         c.apply(Gate::rz(PI / 3.0, 0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::rz(PI / 7.0, 1));
         let dec = DecomposeRz { epsilon: 1e-3 }.run(&c);
         assert!(!dec.gates.iter().any(|g| matches!(g, Gate::rz(..))));
@@ -413,7 +545,11 @@ mod tests {
         // No rz survives; reset and measure both still there.
         assert!(!dec.gates.iter().any(|g| matches!(g, Gate::rz(..))));
         assert!(dec.gates.iter().any(|g| matches!(g, Gate::reset(0))));
-        assert!(dec.gates.iter().any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 })));
+        assert!(
+            dec.gates
+                .iter()
+                .any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 }))
+        );
         assert_eq!(dec.num_cbits, 1);
         assert!(dec.has_measurement);
     }
@@ -424,9 +560,19 @@ mod tests {
         c.apply(Gate::rz(PI / 5.0, 0));
         let fine = DecomposeRz { epsilon: 1e-4 }.run(&c);
         let coarse = DecomposeRz { epsilon: 1e-2 }.run(&c);
-        let t_fine = fine.gates.iter().filter(|g| matches!(g, Gate::t(_))).count();
-        let t_coarse = coarse.gates.iter().filter(|g| matches!(g, Gate::t(_))).count();
-        assert!(t_coarse <= t_fine,
-            "coarser epsilon should not require more T gates ({t_coarse} > {t_fine})");
+        let t_fine = fine
+            .gates
+            .iter()
+            .filter(|g| matches!(g, Gate::t(_)))
+            .count();
+        let t_coarse = coarse
+            .gates
+            .iter()
+            .filter(|g| matches!(g, Gate::t(_)))
+            .count();
+        assert!(
+            t_coarse <= t_fine,
+            "coarser epsilon should not require more T gates ({t_coarse} > {t_fine})"
+        );
     }
 }

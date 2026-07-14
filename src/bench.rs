@@ -2,8 +2,8 @@
 mod tests {
     use std::time::Instant;
 
-    use crate::circuit::{Circuit, Gate};
     use crate::cancel::CancelGates;
+    use crate::circuit::{Circuit, Gate};
     use crate::decompose::{DecomposeCz, DecomposeToffoli};
     use crate::pass::{Pass, count_t};
     use crate::phase_fold_rand::phase_fold_rand;
@@ -11,7 +11,9 @@ mod tests {
     struct Rng(u64);
 
     impl Rng {
-        fn new(seed: u64) -> Self { Rng(seed) }
+        fn new(seed: u64) -> Self {
+            Rng(seed)
+        }
 
         fn next(&mut self) -> u64 {
             self.0 ^= self.0 << 13;
@@ -36,7 +38,11 @@ mod tests {
             let q = rng.range(num_qubits);
             let kind = if num_qubits < 3 {
                 // skip ccx (needs 3 qubits) and cnot (needs 2 qubits) slots
-                let k = if num_qubits < 2 { rng.range(14) + 8 } else { rng.range(22) };
+                let k = if num_qubits < 2 {
+                    rng.range(14) + 8
+                } else {
+                    rng.range(22)
+                };
                 if k < 8 { k } else { k + 2 } // skip 8..=9 (ccx)
             } else {
                 rng.range(24)
@@ -44,11 +50,17 @@ mod tests {
             match kind {
                 0..=4 => {
                     let t = other_qubit(rng, q, num_qubits);
-                    c.apply(Gate::cnot { control: q, target: t });
+                    c.apply(Gate::cnot {
+                        control: q,
+                        target: t,
+                    });
                 }
                 5 => {
                     let other = other_qubit(rng, q, num_qubits);
-                    c.apply(Gate::cz { control: q, target: other });
+                    c.apply(Gate::cz {
+                        control: q,
+                        target: other,
+                    });
                 }
                 6..=7 => c.apply(Gate::rz(0.1 * rng.range(60) as f64, q)),
                 8..=9 => {
@@ -56,9 +68,15 @@ mod tests {
                     qs[1] = other_qubit(rng, q, num_qubits);
                     loop {
                         qs[2] = rng.range(num_qubits);
-                        if qs[2] != qs[0] && qs[2] != qs[1] { break; }
+                        if qs[2] != qs[0] && qs[2] != qs[1] {
+                            break;
+                        }
                     }
-                    c.apply(Gate::ccx { control1: qs[0], control2: qs[1], target: qs[2] });
+                    c.apply(Gate::ccx {
+                        control1: qs[0],
+                        control2: qs[1],
+                        target: qs[2],
+                    });
                 }
                 10..=13 => c.apply(Gate::t(q)),
                 14..=16 => c.apply(Gate::tdg(q)),
@@ -93,9 +111,15 @@ mod tests {
                     if num_qubits >= 2 {
                         let t = other_qubit(rng, q, num_qubits);
                         if rng.range(2) == 0 {
-                            c.apply(Gate::cnot { control: q, target: t });
+                            c.apply(Gate::cnot {
+                                control: q,
+                                target: t,
+                            });
                         } else {
-                            c.apply(Gate::cz { control: q, target: t });
+                            c.apply(Gate::cz {
+                                control: q,
+                                target: t,
+                            });
                         }
                     } else {
                         c.apply(Gate::z(q));
@@ -120,12 +144,21 @@ mod tests {
                 0..=7 => {
                     // Reverse half the emitted operand orders to exercise CZ symmetry.
                     if rng.range(2) == 0 {
-                        c.apply(Gate::cz { control: q, target: other });
+                        c.apply(Gate::cz {
+                            control: q,
+                            target: other,
+                        });
                     } else {
-                        c.apply(Gate::cz { control: other, target: q });
+                        c.apply(Gate::cz {
+                            control: other,
+                            target: q,
+                        });
                     }
                 }
-                8..=10 => c.apply(Gate::cnot { control: q, target: other }),
+                8..=10 => c.apply(Gate::cnot {
+                    control: q,
+                    target: other,
+                }),
                 11 | 12 => c.apply(Gate::h(q)),
                 13 | 14 => c.apply(Gate::x(q)),
                 15 | 16 => c.apply(Gate::t(q)),
@@ -155,7 +188,11 @@ mod tests {
                     let c1 = q;
                     let c2 = (q + 1) % num_qubits;
                     let t = (q + 2) % num_qubits;
-                    c.apply(Gate::ccx { control1: c1, control2: c2, target: t });
+                    c.apply(Gate::ccx {
+                        control1: c1,
+                        control2: c2,
+                        target: t,
+                    });
                 }
                 10..=13 => c.apply(Gate::t(q)),
                 14..=16 => c.apply(Gate::tdg(q)),
@@ -189,9 +226,7 @@ mod tests {
         let circuit = time("build circuit", || build_circuit(num_qubits, num_gates));
         println!("  circuit: {} gates", circuit.gates.len());
 
-        let optimized = time("phase_fold", || {
-            phase_fold_rand(&circuit)
-        });
+        let optimized = time("phase_fold", || phase_fold_rand(&circuit));
         println!(
             "  result: {} -> {} gates",
             circuit.gates.len(),
@@ -238,7 +273,10 @@ mod tests {
             pct_b.partial_cmp(&pct_a).unwrap()
         });
 
-        println!("\n{:>5} {:>4}q {:>6} {:>6} {:>7}", "case", "", "T before", "T after", "reduced");
+        println!(
+            "\n{:>5} {:>4}q {:>6} {:>6} {:>7}",
+            "case", "", "T before", "T after", "reduced"
+        );
         println!("{}", "-".repeat(40));
         for (q, t_before, t_after, _gates, case) in &reductions {
             let removed = t_before - t_after;
@@ -267,9 +305,7 @@ mod tests {
         // gates pile up per wire, producing long reducible/cancellable runs.
         let mut rng = Rng::new(0x4861_6441);
         let num_cases = 10_000;
-        let count_h = |c: &Circuit| {
-            c.gates.iter().filter(|g| matches!(g, Gate::h(_))).count()
-        };
+        let count_h = |c: &Circuit| c.gates.iter().filter(|g| matches!(g, Gate::h(_))).count();
         let mut gates_before = 0;
         let mut gates_after = 0;
         let mut h_before = 0;
@@ -355,7 +391,11 @@ mod tests {
     }
 
     fn count_cz(circuit: &Circuit) -> usize {
-        circuit.gates.iter().filter(|g| matches!(g, Gate::cz { .. })).count()
+        circuit
+            .gates
+            .iter()
+            .filter(|g| matches!(g, Gate::cz { .. }))
+            .count()
     }
 
     fn check_cz_pipeline_case(circuit: &Circuit, label: &str) -> Circuit {
@@ -373,15 +413,28 @@ mod tests {
                 "{stage} mismatch on {label}\n{circuit}"
             );
         }
-        assert!(cancelled.gates.len() <= circuit.gates.len(), "{label}: cancellation grew the circuit");
-        assert!(count_cz(&cancelled) <= count_cz(circuit), "{label}: cancellation increased the CZ count");
         assert!(
-            !decomposed.gates.iter().any(|g| matches!(g, Gate::cz { .. })),
+            cancelled.gates.len() <= circuit.gates.len(),
+            "{label}: cancellation grew the circuit"
+        );
+        assert!(
+            count_cz(&cancelled) <= count_cz(circuit),
+            "{label}: cancellation increased the CZ count"
+        );
+        assert!(
+            !decomposed
+                .gates
+                .iter()
+                .any(|g| matches!(g, Gate::cz { .. })),
             "{label}: DecomposeCz left a native CZ"
         );
 
         let twice = CancelGates.run(&cancelled);
-        assert_eq!(twice.to_qasm(), cancelled.to_qasm(), "{label}: CZ cancellation is not idempotent");
+        assert_eq!(
+            twice.to_qasm(),
+            cancelled.to_qasm(),
+            "{label}: CZ cancellation is not idempotent"
+        );
         cancelled
     }
 
@@ -391,15 +444,24 @@ mod tests {
         // End-to-end soundness check on real (measurement-free) benchmark
         // circuits, capped at qubit counts the full-unitary check can handle.
         let names = [
-            "tof_3", "tof_4", "tof_5", "barenco_tof_3", "barenco_tof_4",
-            "barenco_tof_5", "mod5_4", "mod_mult_55", "vbe_adder_3", "grover_5",
+            "tof_3",
+            "tof_4",
+            "tof_5",
+            "barenco_tof_3",
+            "barenco_tof_4",
+            "barenco_tof_5",
+            "mod5_4",
+            "mod_mult_55",
+            "vbe_adder_3",
+            "grover_5",
         ];
         for name in names {
-            let path = format!("{}/benchmarks/feynman/{name}.qasm", env!("CARGO_MANIFEST_DIR"));
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {path}: {e}"));
-            let circuit = crate::qasm::parse(&src)
-                .unwrap_or_else(|e| panic!("parse {name}: {e}"));
+            let path = format!(
+                "{}/benchmarks/feynman/{name}.qasm",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let circuit = crate::qasm::parse(&src).unwrap_or_else(|e| panic!("parse {name}: {e}"));
             let decomposed = DecomposeToffoli.run(&circuit);
             let cancelled = CancelGates.run(&decomposed);
             let optimized = phase_fold_rand(&cancelled);
@@ -476,14 +538,8 @@ mod tests {
             );
 
             // also check each optimization is correct
-            assert!(
-                circuits_equiv(&a, &opt_a, 1e-10),
-                "opt_a != a on case {i}"
-            );
-            assert!(
-                circuits_equiv(&b, &opt_b, 1e-10),
-                "opt_b != b on case {i}"
-            );
+            assert!(circuits_equiv(&a, &opt_a, 1e-10), "opt_a != a on case {i}");
+            assert!(circuits_equiv(&b, &opt_b, 1e-10), "opt_b != b on case {i}");
         }
 
         println!(
@@ -491,5 +547,4 @@ mod tests {
             num_cases - false_equiv
         );
     }
-
 }
