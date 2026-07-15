@@ -686,6 +686,75 @@ fn superopt_pass_builds_table_behind_cli() {
     );
 }
 
+// --- --max pipeline ---
+
+#[test]
+fn max_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("rz.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, rz_qasm("pi/5")).unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max",
+        "--decompose-rz",
+        "--epsilon",
+        "1e-3",
+    ]);
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Iteration 1 ·") && stderr.contains("Iteration 2 ·"),
+        "expected compact progress for at least two iterations:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(" gates · ") && stderr.contains(" T"),
+        "progress should contain the latest gate counts:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Gate cancellation")
+            && !stderr.contains("Phase folding")
+            && !stderr.contains("Rz → Clifford+T decomposition"),
+        "fixpoint progress should not print per-pass logs:\n{stderr}"
+    );
+    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+
+    let gates = gate_lines_from(&fs::read_to_string(output).unwrap());
+    assert!(
+        !gates.iter().any(|g| g.starts_with("rz(")),
+        "no rz gates should remain, got: {gates:?}"
+    );
+}
+
+#[test]
+fn max_conflicts_with_passes_and_fixpoint() {
+    for conflicting in [
+        ["--passes", "CancelGates"].as_slice(),
+        ["--fixpoint"].as_slice(),
+    ] {
+        let mut args = vec![TEST_QASM, "--max"];
+        args.extend_from_slice(conflicting);
+        let out = tzap_run(&args);
+        assert!(
+            !out.status.success(),
+            "should reject --max with {conflicting:?}"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--max cannot be combined with --passes or --fixpoint"),
+            "got: {stderr}"
+        );
+    }
+}
+
 fn gate_lines_from(stdout: &str) -> Vec<String> {
     stdout
         .lines()

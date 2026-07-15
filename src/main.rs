@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::process;
 use std::time::{Duration, Instant};
 
@@ -128,6 +129,8 @@ struct Opts {
     passes: Option<Vec<PassName>>,
     /// Re-run the optimization pipeline until gate count stops decreasing.
     fixpoint: bool,
+    /// Run the maximum optimization pipeline to a fixpoint.
+    max: bool,
 }
 
 fn fmt_num<N: std::fmt::Display>(n: N) -> String {
@@ -342,6 +345,58 @@ fn run_pipeline(
     }
 }
 
+/// Replace the current progress line with the latest fixpoint state.
+fn update_fixpoint_progress(iteration: usize, gates: usize, t_count: usize) {
+    eprint!(
+        "\r\x1b[2K  Iteration {} · {} gates · {} T",
+        fmt_num(iteration),
+        fmt_num(gates),
+        fmt_num(t_count)
+    );
+    let _ = io::stderr().flush();
+}
+
+/// Run one fixpoint sweep without per-pass logs, updating a single progress
+/// line with the most recent counts as each pass completes.
+fn run_fixpoint_sweep(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    parallel: bool,
+    num_chunks: usize,
+    iteration: usize,
+) -> (Circuit, Duration) {
+    update_fixpoint_progress(iteration, circuit.gates.len(), count_t(circuit));
+
+    if parallel {
+        let mut chunks = split_chunks(circuit, num_chunks);
+        let mut total = Duration::ZERO;
+        for pass in passes {
+            let start = Instant::now();
+            chunks = chunks.par_iter().map(|chunk| pass.run(chunk)).collect();
+            total += start.elapsed();
+            update_fixpoint_progress(
+                iteration,
+                chunks.iter().map(|chunk| chunk.gates.len()).sum(),
+                chunks.iter().map(count_t).sum(),
+            );
+        }
+        (
+            stitch(circuit.num_qubits, circuit.num_cbits, &chunks),
+            total,
+        )
+    } else {
+        let mut c = circuit.clone();
+        let mut total = Duration::ZERO;
+        for pass in passes {
+            let start = Instant::now();
+            c = pass.run(&c);
+            total += start.elapsed();
+            update_fixpoint_progress(iteration, c.gates.len(), count_t(&c));
+        }
+        (c, total)
+    }
+}
+
 /// Repeatedly run `passes` until a sweep fails to reduce the gate count.
 /// Returns the result, total pass time, and how many sweeps ran.
 fn run_to_fixpoint(
@@ -356,15 +411,70 @@ fn run_to_fixpoint(
     loop {
         round += 1;
         let before = c.gates.len();
-        eprintln!("  \u{25C7} Iteration {round}");
-        let (next, elapsed) = run_pipeline(&c, passes, parallel, num_chunks, "\t");
+        let (next, elapsed) = run_fixpoint_sweep(&c, passes, parallel, num_chunks, round);
         c = next;
         total += elapsed;
         if c.gates.len() >= before {
             break;
         }
     }
+    eprintln!();
     (c, total, round)
+}
+
+/// Run the maximum optimization pipeline to a fixpoint. When Rz decomposition
+/// is requested, insert it exactly once after the first optimization sweep and
+/// force another sweep when there were Rz gates to decompose.
+fn run_max_to_fixpoint(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    rz_decompose: Option<&dyn Pass>,
+    parallel: bool,
+    num_chunks: usize,
+) -> (Circuit, Duration, usize) {
+    let mut c = circuit.clone();
+    let mut total = Duration::ZERO;
+    let mut round = 0;
+    loop {
+        round += 1;
+        let before = c.gates.len();
+        let (next, elapsed) = run_fixpoint_sweep(&c, passes, parallel, num_chunks, round);
+        let reduced = next.gates.len() < before;
+        c = next;
+        total += elapsed;
+
+        if round == 1
+            && let Some(pass) = rz_decompose
+        {
+            let had_rz = c.gates.iter().any(|g| matches!(g, Gate::rz(..)));
+            let start = Instant::now();
+            c = pass.run(&c);
+            total += start.elapsed();
+            update_fixpoint_progress(round, c.gates.len(), count_t(&c));
+            if had_rz {
+                continue;
+            }
+        }
+
+        if !reduced {
+            break;
+        }
+    }
+    eprintln!();
+    (c, total, round)
+}
+
+fn initialize_superopt() -> SuperOpt {
+    let start = Instant::now();
+    let pass = SuperOpt::new(3, 10, SuperOptTableConfig::default()).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize SuperOpt: {error}");
+        process::exit(1);
+    });
+    eprintln!(
+        "  Initialized SuperOpt table in {:.3}s",
+        start.elapsed().as_secs_f64()
+    );
+    pass.without_subcircuits()
 }
 
 /// Default pipeline: decompose ccx (and optionally Rz), then cancel + phase-fold.
@@ -390,17 +500,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
             init_global_pool(num_chunks);
         }
         let superopt_pass = if uses_superopt {
-            let start = Instant::now();
-            let pass =
-                SuperOpt::new(3, 10, SuperOptTableConfig::default()).unwrap_or_else(|error| {
-                    eprintln!("Failed to initialize SuperOpt: {error}");
-                    process::exit(1);
-                });
-            eprintln!(
-                "  Initialized SuperOpt table in {:.3}s",
-                start.elapsed().as_secs_f64()
-            );
-            Some(pass.without_subcircuits())
+            Some(initialize_superopt())
         } else {
             None
         };
@@ -454,20 +554,30 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
     let baseline_gates = circuit.gates.len();
     let baseline_t = count_t(&circuit);
 
-    // Optimize, then (for --decompose-rz) decompose Rz and optimize the result
-    // again — so cancellation + phase folding run both before and after gridsynth.
-    let mut passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
-    if opts.decompose_rz && circuit.gates.iter().any(|g| matches!(g, Gate::rz(..))) {
-        passes.push(&rz_decompose);
-        passes.extend(build_passes(&cancel_pass, &global, &global_expr, opts.expr));
-    }
-
-    let (result, total_pass_time) = if opts.fixpoint {
-        let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
+    let (result, total_pass_time) = if opts.max {
+        let superopt_pass = initialize_superopt();
+        let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
+        let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
+        let (r, t, rounds) =
+            run_max_to_fixpoint(&circuit, &passes, decompose, parallel, num_chunks);
         eprintln!("  Fixpoint reached after {rounds} iteration(s)");
         (r, t)
     } else {
-        run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+        // Optimize, then (for --decompose-rz) decompose Rz and optimize the result
+        // again — so cancellation + phase folding run both before and after gridsynth.
+        let mut passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
+        if opts.decompose_rz && circuit.gates.iter().any(|g| matches!(g, Gate::rz(..))) {
+            passes.push(&rz_decompose);
+            passes.extend(build_passes(&cancel_pass, &global, &global_expr, opts.expr));
+        }
+
+        if opts.fixpoint {
+            let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
+            eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+            (r, t)
+        } else {
+            run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+        }
     };
 
     print_result(
@@ -519,6 +629,9 @@ fn print_help() {
     println!(
         "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
     );
+    println!(
+        "    \x1b[1m--max\x1b[0m            Run CancelGates, SuperOpt, and PhaseFoldRand to a fixpoint"
+    );
     println!("    \x1b[1m-h, --help\x1b[0m       Print this help message");
     println!();
     println!("  \x1b[1;33mPASSES\x1b[0m (names for --passes)");
@@ -537,7 +650,7 @@ fn parse_args(args: &[String]) -> Opts {
     let mut parallel = false;
     let mut passes: Option<Vec<PassName>> = None;
     let mut fixpoint = false;
-
+    let mut max = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -573,6 +686,7 @@ fn parse_args(args: &[String]) -> Opts {
             }
             "--parallel" => parallel = true,
             "--fixpoint" => fixpoint = true,
+            "--max" => max = true,
             "-o" => {
                 i += 1;
                 output_path = args.get(i).cloned();
@@ -594,11 +708,15 @@ fn parse_args(args: &[String]) -> Opts {
 
     let Some(input_path) = input_path else {
         eprintln!(
-            "\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]"
+            "\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint] [--max]"
         );
         process::exit(1);
     };
 
+    if max && (passes.is_some() || fixpoint) {
+        eprintln!("--max cannot be combined with --passes or --fixpoint");
+        process::exit(1);
+    }
     if passes.is_some() && (expr || decompose_rz) {
         eprintln!("--passes cannot be combined with --decompose-rz or --expr");
         process::exit(1);
@@ -612,6 +730,7 @@ fn parse_args(args: &[String]) -> Opts {
         parallel,
         passes,
         fixpoint,
+        max,
     }
 }
 

@@ -29,6 +29,12 @@ The most common usage of tzap is `tzap input.qasm -o output.qasm`, where the `in
 tzap benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
 ```
 
+The default optimization is fast and lightweight. To run the most powerful optimization pass, use `--max`:
+
+```bash
+tzap --max benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
+```
+
 tzap output:
 
 ```text
@@ -61,6 +67,15 @@ tzap allows you to run a custom sequence of optimization passes with `--passes`.
 
 ```bash
 tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
+```
+
+**Run maximum optimization**
+
+Use `--max` to repeat `CancelGates`, `SuperOpt`, and `PhaseFoldRand` until the gate count reaches a fixpoint. When combined with `--decompose-rz`, Rz decomposition runs once after the first optimization iteration, and optimization then continues to a fixpoint. `--max` cannot be combined with `--passes` or `--fixpoint`.
+
+```bash
+tzap --max input.qasm -o output.qasm
+tzap --max input.qasm -o output.qasm --decompose-rz --epsilon 1e-6
 ```
 
 ## Circuit support
