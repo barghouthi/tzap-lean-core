@@ -9,7 +9,7 @@ use super::SuperOptError;
 pub(super) const IDENTITY_TOLERANCE: f64 = 1e-10;
 
 /// A double-precision complex number used by [`UnitaryMatrix`].
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Complex64 {
     pub re: f64,
     pub im: f64,
@@ -66,7 +66,7 @@ impl std::ops::Mul<f64> for Complex64 {
 /// A dense `2^n` by `2^n` unitary matrix in row-major order.
 ///
 /// Qubit zero is the most significant basis-state bit.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct UnitaryMatrix {
     num_qubits: usize,
     dim: usize,
@@ -95,10 +95,6 @@ impl UnitaryMatrix {
         self.num_qubits
     }
 
-    pub fn dimension(&self) -> usize {
-        self.dim
-    }
-
     pub fn get(&self, row: usize, column: usize) -> Complex64 {
         self.data[row * self.dim + column]
     }
@@ -107,21 +103,21 @@ impl UnitaryMatrix {
         &self.data
     }
 
-    pub(super) fn equivalent_up_to_global_phase(&self, other: &Self, tolerance: f64) -> bool {
+    pub(super) fn equivalent_up_to_global_phase(&self, other: &Self) -> bool {
         if self.num_qubits != other.num_qubits {
             return false;
         }
-        let Some(left_phase) = canonical_phase(self, tolerance) else {
+        let Some(left_phase) = canonical_phase(self) else {
             return false;
         };
-        let Some(right_phase) = canonical_phase(other, tolerance) else {
+        let Some(right_phase) = canonical_phase(other) else {
             return false;
         };
         self.data.iter().zip(&other.data).all(|(&left, &right)| {
             let left = left * left_phase;
             let right = right * right_phase;
             let delta = Complex64::new(left.re - right.re, left.im - right.im);
-            delta.norm_sqr() <= tolerance * tolerance
+            delta.norm_sqr() <= IDENTITY_TOLERANCE * IDENTITY_TOLERANCE
         })
     }
 
@@ -223,10 +219,10 @@ impl UnitaryMatrix {
     }
 }
 
-fn canonical_phase(matrix: &UnitaryMatrix, tolerance: f64) -> Option<Complex64> {
+fn canonical_phase(matrix: &UnitaryMatrix) -> Option<Complex64> {
     matrix.data.iter().find_map(|&entry| {
         let norm = entry.norm_sqr().sqrt();
-        (norm > tolerance).then(|| entry.conj() * (1.0 / norm))
+        (norm > IDENTITY_TOLERANCE).then(|| entry.conj() * (1.0 / norm))
     })
 }
 
@@ -238,7 +234,7 @@ pub(super) struct UnitaryFingerprint {
 
 pub(super) fn unitary_fingerprint(matrix: &UnitaryMatrix) -> UnitaryFingerprint {
     const SCALE: f64 = 1e9;
-    let phase = canonical_phase(matrix, IDENTITY_TOLERANCE).unwrap_or(Complex64::ONE);
+    let phase = canonical_phase(matrix).unwrap_or(Complex64::ONE);
     let mut first = 0xcbf2_9ce4_8422_2325u64;
     let mut second = 0x9e37_79b9_7f4a_7c15u64;
     for &entry in &matrix.data {

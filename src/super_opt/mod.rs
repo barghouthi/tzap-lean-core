@@ -62,8 +62,6 @@ pub struct SuperOptResult {
     /// Input circuit with a non-overlapping set of strictly smaller rewrites applied.
     pub circuit: Circuit,
     pub subcircuits: Vec<SuperOptWindow>,
-    /// Gate positions of rewrites whose table representative is the empty circuit.
-    pub removed_subcircuits: Vec<Vec<usize>>,
     /// All selected rewrites, including identity removals with empty replacements.
     pub rewrites: Vec<SuperOptRewrite>,
     /// Reused matrices for completed closed components.
@@ -122,10 +120,6 @@ impl SuperOpt {
     pub const fn without_subcircuits(mut self) -> Self {
         self.collect_subcircuits = false;
         self
-    }
-
-    pub fn name(&self) -> &str {
-        "SuperOpt"
     }
 
     /// Run one forward scan while maintaining one closed unitary component per
@@ -269,11 +263,10 @@ impl SuperOpt {
         }
 
         subcircuits.sort_by(|left, right| left.gate_indices.cmp(&right.gate_indices));
-        let (optimized, removed_subcircuits, rewrites) = rewrites.apply(circuit);
+        let (optimized, rewrites) = rewrites.apply(circuit);
         Ok(SuperOptResult {
             circuit: optimized,
             subcircuits,
-            removed_subcircuits,
             rewrites,
             cache_hits: store.hits,
             cache_misses: store.misses,
@@ -318,7 +311,7 @@ impl SuperOpt {
 
 impl Pass for SuperOpt {
     fn name(&self) -> &str {
-        SuperOpt::name(self)
+        "SuperOpt"
     }
 
     fn run(&self, circuit: &Circuit) -> Circuit {
@@ -499,7 +492,7 @@ impl RewriteSet {
         true
     }
 
-    fn apply(self, circuit: &Circuit) -> (Circuit, Vec<Vec<usize>>, Vec<SuperOptRewrite>) {
+    fn apply(self, circuit: &Circuit) -> (Circuit, Vec<SuperOptRewrite>) {
         let mut optimized = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for (index, gate) in circuit.gates.iter().enumerate() {
             if let Some(rewrite) = self.anchored[index] {
@@ -511,14 +504,7 @@ impl RewriteSet {
                 optimized.apply(gate.clone());
             }
         }
-        let mut removed: Vec<_> = self
-            .selected
-            .iter()
-            .filter(|rewrite| rewrite.replacement.is_empty())
-            .map(|rewrite| rewrite.gate_indices.clone())
-            .collect();
-        removed.sort();
-        (optimized, removed, self.selected)
+        (optimized, self.selected)
     }
 }
 

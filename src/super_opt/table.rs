@@ -9,7 +9,7 @@ use rayon::prelude::*;
 
 use crate::circuit::Gate;
 
-use super::matrix::{IDENTITY_TOLERANCE, UnitaryFingerprint, UnitaryMatrix, unitary_fingerprint};
+use super::matrix::{UnitaryFingerprint, UnitaryMatrix, unitary_fingerprint};
 use super::synthesis_arena::WidthTable;
 use super::{SuperOptError, SuperOptTableConfig};
 
@@ -234,10 +234,9 @@ impl UnitaryCircuitTable {
         // it is not a redundant post-rewrite audit.
         let candidate = library_circuit_matrix(matrix.num_qubits(), &circuit).ok()?;
         matrix
-            .equivalent_up_to_global_phase(&candidate, IDENTITY_TOLERANCE)
+            .equivalent_up_to_global_phase(&candidate)
             .then(|| circuit.into_iter().map(LibraryGate::to_gate).collect())
     }
-
 }
 
 type SharedTable = Result<Arc<UnitaryCircuitTable>, SuperOptError>;

@@ -16,6 +16,17 @@ impl TestRng {
     }
 }
 
+fn removed_indices(result: &SuperOptResult) -> Vec<Vec<usize>> {
+    let mut removed: Vec<_> = result
+        .rewrites
+        .iter()
+        .filter(|rewrite| rewrite.replacement.is_empty())
+        .map(|rewrite| rewrite.gate_indices.clone())
+        .collect();
+    removed.sort();
+    removed
+}
+
 fn union_qubits(left: &[Qubit], right: &[Qubit]) -> Vec<Qubit> {
     let mut union = Vec::with_capacity(left.len() + right.len());
     union.extend_from_slice(left);
@@ -311,7 +322,7 @@ fn cz_matrix_is_symmetric_in_its_qubits() {
         },
         &[0, 1],
     );
-    assert_eq!(forward, reversed);
+    assert_matrix_close(&forward, &reversed);
     assert_eq!(forward.get(3, 3), Complex64::new(-1.0, 0.0));
     assert_eq!(forward.get(0, 0), Complex64::ONE);
 }
@@ -349,8 +360,8 @@ fn global_phase_equivalence_accepts_phase_and_rejects_difference() {
     let s = single_qubit_matrix(&[Gate::s(0)]);
     let sdg = single_qubit_matrix(&[Gate::sdg(0)]);
     let rz_half_pi = single_qubit_matrix(&[Gate::rz(std::f64::consts::FRAC_PI_2, 0)]);
-    assert!(s.equivalent_up_to_global_phase(&rz_half_pi, IDENTITY_TOLERANCE));
-    assert!(!s.equivalent_up_to_global_phase(&sdg, IDENTITY_TOLERANCE));
+    assert!(s.equivalent_up_to_global_phase(&rz_half_pi));
+    assert!(!s.equivalent_up_to_global_phase(&sdg));
 }
 
 #[test]
@@ -533,7 +544,7 @@ fn rz_inverse_pair_is_removed_as_identity() {
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 1]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 1]]);
     assert!(result.circuit.gates.is_empty());
 }
 
@@ -601,7 +612,7 @@ fn identity_removal_wins_over_synthesis() {
     let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 2));
     let result = pass.run(&circuit).unwrap();
     assert!(result.circuit.gates.is_empty());
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 1]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 1]]);
     assert!(result.rewrites.iter().any(|r| r.replacement.is_empty()));
 }
 
@@ -639,7 +650,7 @@ fn optimizes_unitary_regions_around_measure_and_reset() {
     assert_eq!(result.circuit.gates.len(), 2);
     assert!(matches!(result.circuit.gates[0], Gate::measure { .. }));
     assert!(matches!(result.circuit.gates[1], Gate::reset(0)));
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 1], vec![4, 5]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 1], vec![4, 5]]);
     assert!(
         result.subcircuits.iter().all(|window| {
             !window.gate_indices.contains(&2) && !window.gate_indices.contains(&3)
@@ -744,7 +755,7 @@ fn disjoint_measure_and_reset_do_not_block_unitary_window() {
         .with_synthesis_table(synthesis_table(1, 2))
         .run(&circuit)
         .unwrap();
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 3]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 3]]);
     assert_eq!(result.circuit.gates.len(), 2);
     assert!(matches!(result.circuit.gates[0], Gate::measure { .. }));
     assert!(matches!(result.circuit.gates[1], Gate::reset(2)));
@@ -820,7 +831,7 @@ fn mixed_circuit_without_subcircuits_still_rewrites_unitary_windows() {
         .run(&circuit)
         .unwrap();
     assert!(result.subcircuits.is_empty());
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 2]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 2]]);
     assert_eq!(result.circuit.gates.len(), 1);
     assert!(matches!(result.circuit.gates[0], Gate::reset(1)));
 }
@@ -889,8 +900,7 @@ fn result_lists_are_sorted() {
             .all(|pair| pair[0].gate_indices <= pair[1].gate_indices)
     );
     assert!(
-        result
-            .removed_subcircuits
+        removed_indices(&result)
             .windows(2)
             .all(|pair| pair[0] <= pair[1])
     );
@@ -926,7 +936,7 @@ fn without_subcircuits_matches_collected_run() {
         format!("{:?}", collected.circuit.gates),
         format!("{:?}", skipped.circuit.gates)
     );
-    assert_eq!(collected.removed_subcircuits, skipped.removed_subcircuits);
+    assert_eq!(removed_indices(&collected), removed_indices(&skipped));
     assert_eq!(collected.rewrites.len(), skipped.rewrites.len());
     // Cache statistics may differ: without subcircuit collection the pass skips
     // the provably-unshortenable single-gate windows, so it performs strictly
@@ -948,8 +958,8 @@ fn window_bound_counts_gates_not_index_span() {
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
-    assert!(result.removed_subcircuits.contains(&vec![0, 3]));
-    assert!(result.removed_subcircuits.contains(&vec![1, 2]));
+    assert!(removed_indices(&result).contains(&vec![0, 3]));
+    assert!(removed_indices(&result).contains(&vec![1, 2]));
     assert!(result.circuit.gates.is_empty());
 }
 
@@ -1152,7 +1162,7 @@ fn audit_rewrites(circuit: &Circuit, result: &SuperOptResult) {
         }
         let original = naive_matrix(circuit, &rewrite.gate_indices, &support);
         assert!(
-            original.equivalent_up_to_global_phase(&replacement_matrix, IDENTITY_TOLERANCE),
+            original.equivalent_up_to_global_phase(&replacement_matrix),
             "replacement matrix differs for gates {:?}",
             rewrite.gate_indices
         );
@@ -1228,7 +1238,7 @@ fn removes_noncontiguous_identity_subcircuit_from_circuit() {
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 2]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 2]]);
     assert_eq!(result.circuit.gates.len(), 1);
     assert!(matches!(result.circuit.gates[0], Gate::x(1)));
     assert!(crate::unitary::circuits_equiv(
@@ -1248,7 +1258,7 @@ fn checks_identity_windows_shorter_than_gate_limit() {
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 1]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 1]]);
     assert!(result.circuit.gates.is_empty());
     assert!(
         result
@@ -1276,7 +1286,7 @@ fn removes_identity_up_to_global_phase() {
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 1, 2, 3]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 1, 2, 3]]);
     assert!(result.circuit.gates.is_empty());
     assert!(crate::unitary::circuits_equiv(
         &circuit,
@@ -1296,7 +1306,7 @@ fn overlapping_identity_windows_are_not_both_removed() {
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
-    assert_eq!(result.removed_subcircuits, vec![vec![0, 1]]);
+    assert_eq!(removed_indices(&result), vec![vec![0, 1]]);
     assert_eq!(result.circuit.gates.len(), 1);
     assert!(matches!(result.circuit.gates[0], Gate::x(0)));
     assert!(crate::unitary::circuits_equiv(
@@ -1313,7 +1323,7 @@ fn nonidentity_window_is_preserved() {
     circuit.apply(Gate::x(0));
 
     let result = SuperOpt::analyzer(1, 2).run(&circuit).unwrap();
-    assert!(result.removed_subcircuits.is_empty());
+    assert!(removed_indices(&result).is_empty());
     assert_eq!(result.circuit.gates.len(), 2);
 }
 
