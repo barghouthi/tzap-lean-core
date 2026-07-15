@@ -14,7 +14,7 @@ A super fast, Rust-based optimizer for large Clifford+T circuits.
 
 tzap is **multiple orders of mangitude** faster than other optimizers&mdash;and **linearly** **scales** to **millions** of gates!
 <img src="assets/comparison.png"
-     alt="Runtime comparison of tzap, VOQC, Feynman, and QuiZX on GF multipliers"
+     alt="Runtime comparison of tzap, VOQC, and QuiZX on GF multipliers"
      style="width: 100%; height: auto;">
 
 ## CLI Usage
@@ -23,13 +23,13 @@ tzap is a CLI optimization tool for quantum circuits. You can also use tzap as a
 
 **Optimize a circuit and inspect the results**
 
-Use the default pipeline when you want to optimize a circuit and inspect how much tzap reduces it. The `-o` option writes the optimized circuit to a new OpenQASM file; if you omit `-o`, tzap prints the statistics without writing the circuit.
+The most common usage of tzap is `tzap input.qasm -o output.qasm`, where the `input.qasm` circuit is optimized into `output.qasm`. For example, using the benchmarks in this repo:
 
 ```bash
 tzap benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
 ```
 
-Output:
+tzap output:
 
 ```text
 ⚡️ tzap
@@ -63,11 +63,7 @@ tzap allows you to run a custom sequence of optimization passes with `--passes`.
 tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
 ```
 
-**Gate handling**
-
-Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is unless you pass `--decompose-rz`.
-
-## Limitations
+## Circuit support
 
 tzap supports a subset of OpenQASM 2.0:
 
@@ -75,6 +71,8 @@ tzap supports a subset of OpenQASM 2.0:
 - **Supported declarations:** `qreg`, `creg`
 - **Not supported:** classical conditionals (`if`), custom gate definitions (`gate`), barriers, and `include` files (besides `qelib1.inc`, which is ignored)
 - Unrecognized lines will produce an error
+
+**Gate handling**: Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is unless you pass `--decompose-rz`.
 
 ## Building
 Install [Rust](https://github.com/qqq-wisc/tzap.git) then
