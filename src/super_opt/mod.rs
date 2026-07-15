@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
 use smallvec::{SmallVec, smallvec};
 
 /// Inline storage for a window's qubit support (bounded by `max_qubits`, at most
@@ -161,22 +162,35 @@ impl UnitaryMatrix {
         })
     }
 
-    fn set(&mut self, row: usize, column: usize, value: Complex64) {
-        self.data[row * self.dim + column] = value;
+    /// Copy `source` into `self`, reusing the existing allocation.
+    fn copy_from(&mut self, source: &Self) {
+        self.num_qubits = source.num_qubits;
+        self.dim = source.dim;
+        if self.data.len() == source.data.len() {
+            self.data.copy_from_slice(&source.data);
+        } else {
+            self.data.clone_from(&source.data);
+        }
+    }
+
+    /// Disjoint mutable views of rows `row0` and `row1`, requiring `row0 < row1`.
+    fn row_pair_mut(&mut self, row0: usize, row1: usize) -> (&mut [Complex64], &mut [Complex64]) {
+        let dim = self.dim;
+        let (head, tail) = self.data.split_at_mut(row1 * dim);
+        (&mut head[row0 * dim..(row0 + 1) * dim], &mut tail[..dim])
     }
 
     fn apply_single_left(&mut self, gate: [[Complex64; 2]; 2], q: usize) {
         let bit = qubit_bit(self.num_qubits, q);
-        for column in 0..self.dim {
-            for row0 in 0..self.dim {
-                if row0 & bit != 0 {
-                    continue;
-                }
-                let row1 = row0 | bit;
-                let a = self.get(row0, column);
-                let b = self.get(row1, column);
-                self.set(row0, column, gate[0][0] * a + gate[0][1] * b);
-                self.set(row1, column, gate[1][0] * a + gate[1][1] * b);
+        for row0 in 0..self.dim {
+            if row0 & bit != 0 {
+                continue;
+            }
+            let (top, bottom) = self.row_pair_mut(row0, row0 | bit);
+            for (a, b) in top.iter_mut().zip(bottom) {
+                let (x, y) = (*a, *b);
+                *a = gate[0][0] * x + gate[0][1] * y;
+                *b = gate[1][0] * x + gate[1][1] * y;
             }
         }
     }
@@ -184,15 +198,10 @@ impl UnitaryMatrix {
     fn apply_cnot_left(&mut self, control: usize, target: usize) {
         let control_bit = qubit_bit(self.num_qubits, control);
         let target_bit = qubit_bit(self.num_qubits, target);
-        for column in 0..self.dim {
-            for row0 in 0..self.dim {
-                if row0 & control_bit != 0 && row0 & target_bit == 0 {
-                    let row1 = row0 | target_bit;
-                    let a = self.get(row0, column);
-                    let b = self.get(row1, column);
-                    self.set(row0, column, b);
-                    self.set(row1, column, a);
-                }
+        for row0 in 0..self.dim {
+            if row0 & control_bit != 0 && row0 & target_bit == 0 {
+                let (top, bottom) = self.row_pair_mut(row0, row0 | target_bit);
+                top.swap_with_slice(bottom);
             }
         }
     }
@@ -203,8 +212,8 @@ impl UnitaryMatrix {
         let minus_one = Complex64::new(-1.0, 0.0);
         for row in 0..self.dim {
             if row & control_bit != 0 && row & target_bit != 0 {
-                for column in 0..self.dim {
-                    self.set(row, column, minus_one * self.get(row, column));
+                for value in &mut self.data[row * self.dim..(row + 1) * self.dim] {
+                    *value = minus_one * *value;
                 }
             }
         }
@@ -214,15 +223,10 @@ impl UnitaryMatrix {
         let control1_bit = qubit_bit(self.num_qubits, control1);
         let control2_bit = qubit_bit(self.num_qubits, control2);
         let target_bit = qubit_bit(self.num_qubits, target);
-        for column in 0..self.dim {
-            for row0 in 0..self.dim {
-                if row0 & control1_bit != 0 && row0 & control2_bit != 0 && row0 & target_bit == 0 {
-                    let row1 = row0 | target_bit;
-                    let a = self.get(row0, column);
-                    let b = self.get(row1, column);
-                    self.set(row0, column, b);
-                    self.set(row1, column, a);
-                }
+        for row0 in 0..self.dim {
+            if row0 & control1_bit != 0 && row0 & control2_bit != 0 && row0 & target_bit == 0 {
+                let (top, bottom) = self.row_pair_mut(row0, row0 | target_bit);
+                top.swap_with_slice(bottom);
             }
         }
     }
@@ -468,57 +472,79 @@ impl UnitaryCircuitTable {
             let support: Vec<_> = (0..num_qubits).collect();
             let mut frontier = vec![(0, identity)];
 
+            // Parents per parallel batch: enough candidates to spread across
+            // threads while a batch's survivor list stays small in memory.
+            let batch_parents = (65_536 / gates.len()).max(1);
+
             'depths: for depth in 1..=config.max_gates {
-                // If this layer can plausibly fill the table, retain only node
-                // ids. In the usual saturated case those child matrices would
-                // immediately be discarded. If pruning lets the layer finish,
-                // reconstruct them once for the next layer.
-                let possible_children = frontier.len().saturating_mul(gates.len());
-                let retain_child_matrices =
-                    entries[num_qubits].len().saturating_add(possible_children)
-                        < config.max_entries_per_qubit;
-                let mut next_nodes = Vec::new();
-                let mut next_frontier = Vec::new();
-                for (parent, base) in frontier {
-                    let last = entries[num_qubits].nodes[parent].gate;
-                    for &gate in &gates {
-                        if let Some(last) = last
-                            && (last.is_inverse_of(gate) || (last.is_disjoint(gate) && gate < last))
-                        {
-                            continue;
-                        }
+                // Accepted children this layer as (frontier position, node, gate).
+                let mut accepted = Vec::new();
+                for (batch_index, batch) in frontier.chunks(batch_parents).enumerate() {
+                    // Matrix products and fingerprints dominate the build, so
+                    // candidates are generated in parallel against a read-only
+                    // view of the table. Survivors are then inserted serially
+                    // in enumeration order, which keeps the table (and the
+                    // exact saturation point) identical to a sequential build;
+                    // candidates already present at batch start would have been
+                    // skipped by the sequential scan too, so pre-filtering them
+                    // in the parallel phase changes nothing.
+                    let table = &entries[num_qubits];
+                    let batch_survivors: Vec<Vec<(LibraryGate, UnitaryFingerprint)>> = batch
+                        .par_iter()
+                        .map(|(parent, base)| {
+                            let last = table.nodes[*parent].gate;
+                            let mut scratch = base.clone();
+                            let mut survivors = Vec::new();
+                            for &gate in &gates {
+                                if let Some(last) = last
+                                    && (last.is_inverse_of(gate)
+                                        || (last.is_disjoint(gate) && gate < last))
+                                {
+                                    continue;
+                                }
+                                scratch.copy_from(base);
+                                scratch.apply_gate_left(&gate.to_gate(), &support);
+                                let fingerprint = unitary_fingerprint(&scratch);
+                                if !table.contains_key(&fingerprint) {
+                                    survivors.push((gate, fingerprint));
+                                }
+                            }
+                            survivors
+                        })
+                        .collect();
 
-                        let mut matrix = base.clone();
-                        matrix.apply_gate_left(&gate.to_gate(), &support);
-                        let fingerprint = unitary_fingerprint(&matrix);
-                        if entries[num_qubits].contains_key(&fingerprint) {
-                            continue;
-                        }
-
-                        if entries[num_qubits].len() >= config.max_entries_per_qubit {
-                            saturated[num_qubits] = true;
-                            break 'depths;
-                        }
-                        let node = entries[num_qubits].insert_child(fingerprint, parent, gate);
-                        next_nodes.push(node);
-                        if retain_child_matrices {
-                            next_frontier.push((node, matrix));
+                    let table = &mut entries[num_qubits];
+                    for (offset, survivors) in batch_survivors.into_iter().enumerate() {
+                        let position = batch_index * batch_parents + offset;
+                        let parent = frontier[position].0;
+                        for (gate, fingerprint) in survivors {
+                            if table.contains_key(&fingerprint) {
+                                continue;
+                            }
+                            if table.len() >= config.max_entries_per_qubit {
+                                saturated[num_qubits] = true;
+                                break 'depths;
+                            }
+                            let node = table.insert_child(fingerprint, parent, gate);
+                            accepted.push((position, node, gate));
                         }
                     }
-                }
-                if next_nodes.is_empty() {
-                    completed_depth[num_qubits] = depth;
-                    break;
                 }
                 completed_depth[num_qubits] = depth;
-                if !retain_child_matrices {
-                    next_frontier.reserve(next_nodes.len());
-                    for node in next_nodes {
-                        let circuit = entries[num_qubits].circuit(node);
-                        let matrix = library_circuit_matrix(num_qubits, &circuit)?;
-                        next_frontier.push((node, matrix));
-                    }
+                if accepted.is_empty() {
+                    break;
                 }
+                // Re-deriving each child from its parent repeats one gate
+                // application per accepted node, in exchange for never holding
+                // matrices for the (mostly duplicate) rejected candidates.
+                let next_frontier = accepted
+                    .into_par_iter()
+                    .map(|(position, node, gate)| {
+                        let mut matrix = frontier[position].1.clone();
+                        matrix.apply_gate_left(&gate.to_gate(), &support);
+                        (node, matrix)
+                    })
+                    .collect();
                 frontier = next_frontier;
             }
         }
