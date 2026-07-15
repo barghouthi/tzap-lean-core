@@ -12,8 +12,9 @@ A super fast, Rust-based optimizer for large Clifford+T circuits.
 - The core randomized phase folding algorithm is fully formalized in Lean under [`formalization`](formalization/).
 
 tzap is **multiple orders of mangitude** faster than other optimizers---and way more scalable!
-![Runtime comparison of tzap, VOQC, Feynman, and QuiZX on GF multipliers](assets/comparison.png)
-
+<img src="assets/comparison.png"
+     alt="Runtime comparison of tzap, VOQC, Feynman, and QuiZX on GF multipliers"
+     style="width: 100%; height: auto;">
 
 ## Usage
 
