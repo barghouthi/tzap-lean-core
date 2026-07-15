@@ -1,16 +1,18 @@
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::process;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
+use tzap::cancel::CancelGates;
 use tzap::circuit::{Circuit, Gate};
 use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
-use tzap::cancel::CancelGates;
 use tzap::pass::{Pass, count_t};
-use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
+use tzap::phase_fold_rand::PhaseFoldRand;
+use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
 
 /// Chunks (and rayon threads) per logical core.
 const CHUNK_MULTIPLIER: usize = 4;
@@ -22,35 +24,97 @@ enum PassName {
     DecomposeCz,
     DecomposeRz,
     CancelGates,
+    SuperOpt,
     PhaseFoldRand,
     PhaseFoldGlobalExpr,
 }
 
 impl PassName {
     /// All passes — `(name, variant, description)` — in the order shown by `--help`.
-    const ALL: [(&'static str, PassName, &'static str); 6] = [
-        ("DecomposeToffoli", PassName::DecomposeToffoli,
-            "Decompose ccx (Toffoli) gates into Clifford+T"),
-        ("DecomposeCz", PassName::DecomposeCz,
-            "Decompose cz gates into H+CX+H"),
-        ("DecomposeRz", PassName::DecomposeRz,
-            "Decompose Rz gates into Clifford+T (gridsynth; see --epsilon)"),
-        ("CancelGates", PassName::CancelGates,
-            "Cancel adjacent self-inverse gate pairs and reduce Hadamards"),
-        ("PhaseFoldRand", PassName::PhaseFoldRand,
-            "Merge T/Rz rotations via randomized parity tracking"),
-        ("PhaseFoldGlobalExpr", PassName::PhaseFoldGlobalExpr,
-            "Merge T/Rz rotations via symbolic parity expressions"),
+    const ALL: [(&'static str, PassName, &'static str); 7] = [
+        (
+            "DecomposeToffoli",
+            PassName::DecomposeToffoli,
+            "Decompose ccx (Toffoli) gates into Clifford+T",
+        ),
+        (
+            "DecomposeCz",
+            PassName::DecomposeCz,
+            "Decompose cz gates into H+CX+H",
+        ),
+        (
+            "DecomposeRz",
+            PassName::DecomposeRz,
+            "Decompose Rz gates into Clifford+T (gridsynth; see --epsilon)",
+        ),
+        (
+            "CancelGates",
+            PassName::CancelGates,
+            "Cancel adjacent self-inverse gate pairs and reduce Hadamards",
+        ),
+        (
+            "SuperOpt",
+            PassName::SuperOpt,
+            "Replace small subcircuit windows using a synthesis table",
+        ),
+        (
+            "PhaseFoldRand",
+            PassName::PhaseFoldRand,
+            "Merge T/Rz rotations via randomized parity tracking",
+        ),
+        (
+            "PhaseFoldGlobalExpr",
+            PassName::PhaseFoldGlobalExpr,
+            "Merge T/Rz rotations via symbolic parity expressions",
+        ),
     ];
 
     fn parse(s: &str) -> Option<PassName> {
-        Self::ALL.iter().find(|(n, _, _)| *n == s).map(|(_, p, _)| *p)
+        Self::ALL
+            .iter()
+            .find(|(n, _, _)| *n == s)
+            .map(|(_, p, _)| *p)
     }
 
     /// Comma-separated list of every valid name (for help / error messages).
     fn all_names() -> String {
-        Self::ALL.iter().map(|(n, _, _)| *n).collect::<Vec<_>>().join(", ")
+        Self::ALL
+            .iter()
+            .map(|(n, _, _)| *n)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
+}
+
+fn parse_pass_list(list: &str) -> Vec<PassName> {
+    let parsed = list
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|name| {
+            PassName::parse(name).unwrap_or_else(|| {
+                eprintln!(
+                    "Unknown pass '{name}'. Available passes: {}",
+                    PassName::all_names()
+                );
+                process::exit(1);
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if parsed.is_empty() {
+        eprintln!("--passes requires at least one pass name");
+        process::exit(1);
+    }
+    parsed
+}
+
+fn looks_like_pass_list_fragment(token: &str) -> bool {
+    token
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .all(|name| PassName::parse(name).is_some())
 }
 
 /// Parsed command-line options.
@@ -65,6 +129,8 @@ struct Opts {
     passes: Option<Vec<PassName>>,
     /// Re-run the optimization pipeline until gate count stops decreasing.
     fixpoint: bool,
+    /// Run the maximum optimization pipeline to a fixpoint.
+    max: bool,
 }
 
 fn fmt_num<N: std::fmt::Display>(n: N) -> String {
@@ -72,7 +138,9 @@ fn fmt_num<N: std::fmt::Display>(n: N) -> String {
     let is_negative = s.starts_with('-');
     let num_part = if is_negative { &s[1..] } else { &s[..] };
     let mut result = String::with_capacity(s.len() + s.len() / 3);
-    if is_negative { result.push('-'); }
+    if is_negative {
+        result.push('-');
+    }
 
     let rem = num_part.len() % 3;
     for (i, c) in num_part.chars().enumerate() {
@@ -128,8 +196,13 @@ fn run_logged(pass: &dyn Pass, circuit: &Circuit, indent: &str) -> (Circuit, Dur
     let start = Instant::now();
     let c = pass.run(circuit);
     let elapsed = start.elapsed();
-    eprintln!("{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
-        pass.name(), fmt_num(c.gates.len()), fmt_num(count_t(&c)), elapsed.as_secs_f64());
+    eprintln!(
+        "{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
+        pass.name(),
+        fmt_num(c.gates.len()),
+        fmt_num(count_t(&c)),
+        elapsed.as_secs_f64()
+    );
     (c, elapsed)
 }
 
@@ -137,11 +210,14 @@ fn run_logged(pass: &dyn Pass, circuit: &Circuit, indent: &str) -> (Circuit, Dur
 /// `max(1)` guards the empty case where `slice::chunks(0)` would panic.
 fn split_chunks(circuit: &Circuit, num_chunks: usize) -> Vec<Circuit> {
     let chunk_size = circuit.gates.len().div_ceil(num_chunks).max(1);
-    circuit.gates
+    circuit
+        .gates
         .chunks(chunk_size)
         .map(|slice| {
             let mut c = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
-            for g in slice { c.apply(g.clone()); }
+            for g in slice {
+                c.apply(g.clone());
+            }
             c
         })
         .collect()
@@ -151,7 +227,9 @@ fn split_chunks(circuit: &Circuit, num_chunks: usize) -> Vec<Circuit> {
 fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
     let mut out = Circuit::with_cbits(num_qubits, num_cbits);
     for c in chunks {
-        for g in &c.gates { out.apply(g.clone()); }
+        for g in &c.gates {
+            out.apply(g.clone());
+        }
     }
     out
 }
@@ -174,17 +252,35 @@ fn run_passes_parallel_logged(
 
         let gates: usize = chunks.iter().map(|c| c.gates.len()).sum();
         let t: usize = chunks.iter().map(count_t).sum();
-        eprintln!("{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
-            p.name(), fmt_num(gates), fmt_num(t), elapsed.as_secs_f64());
+        eprintln!(
+            "{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
+            p.name(),
+            fmt_num(gates),
+            fmt_num(t),
+            elapsed.as_secs_f64()
+        );
     }
-    (stitch(circuit.num_qubits, circuit.num_cbits, &chunks), total)
+    (
+        stitch(circuit.num_qubits, circuit.num_cbits, &chunks),
+        total,
+    )
 }
 
 /// Print the closing result banner.
 fn print_result(in_gates: usize, out_gates: usize, in_t: usize, out_t: usize, secs: f64) {
     eprintln!("\n\x1b[1m  ⚡\u{FE0F} Result\x1b[0m");
-    eprintln!("\t├─ Gates  {} → {} (↓{:.1}%)", fmt_num(in_gates), fmt_num(out_gates), pct(in_gates, out_gates));
-    eprintln!("\t├─ T/Tdg  {} → {} (↓{:.1}%)", fmt_num(in_t), fmt_num(out_t), pct(in_t, out_t));
+    eprintln!(
+        "\t├─ Gates  {} → {} (↓{:.1}%)",
+        fmt_num(in_gates),
+        fmt_num(out_gates),
+        pct(in_gates, out_gates)
+    );
+    eprintln!(
+        "\t├─ T/Tdg  {} → {} (↓{:.1}%)",
+        fmt_num(in_t),
+        fmt_num(out_t),
+        pct(in_t, out_t)
+    );
     eprintln!("\t└─ Time   {secs:.3}s");
 }
 
@@ -211,11 +307,13 @@ fn read_circuit(path: &str) -> Circuit {
         eprintln!("Error parsing {path}: {e}");
         process::exit(1);
     });
-    eprintln!("\t└─ {} qubits · {} gates · {} T/Tdg · {:.3}s\n",
+    eprintln!(
+        "\t└─ {} qubits · {} gates · {} T/Tdg · {:.3}s\n",
         fmt_num(circuit.num_qubits),
         fmt_num(circuit.gates.len()),
         fmt_num(count_t(&circuit)),
-        parse_start.elapsed().as_secs_f64());
+        parse_start.elapsed().as_secs_f64()
+    );
     circuit
 }
 
@@ -229,8 +327,11 @@ fn run_pipeline(
     indent: &str,
 ) -> (Circuit, Duration) {
     if parallel {
-        eprintln!("{indent}  Parallel mode: {} chunks / {} threads\n",
-            fmt_num(num_chunks), fmt_num(rayon::current_num_threads()));
+        eprintln!(
+            "{indent}  Parallel mode: {} chunks / {} threads\n",
+            fmt_num(num_chunks),
+            fmt_num(rayon::current_num_threads())
+        );
         run_passes_parallel_logged(circuit, passes, num_chunks, indent)
     } else {
         let mut c = circuit.clone();
@@ -239,6 +340,58 @@ fn run_pipeline(
             let (next, elapsed) = run_logged(*p, &c, indent);
             c = next;
             total += elapsed;
+        }
+        (c, total)
+    }
+}
+
+/// Replace the current progress line with the latest fixpoint state.
+fn update_fixpoint_progress(iteration: usize, gates: usize, t_count: usize) {
+    eprint!(
+        "\r\x1b[2K  Iteration {} · {} gates · {} T",
+        fmt_num(iteration),
+        fmt_num(gates),
+        fmt_num(t_count)
+    );
+    let _ = io::stderr().flush();
+}
+
+/// Run one fixpoint sweep without per-pass logs, updating a single progress
+/// line with the most recent counts as each pass completes.
+fn run_fixpoint_sweep(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    parallel: bool,
+    num_chunks: usize,
+    iteration: usize,
+) -> (Circuit, Duration) {
+    update_fixpoint_progress(iteration, circuit.gates.len(), count_t(circuit));
+
+    if parallel {
+        let mut chunks = split_chunks(circuit, num_chunks);
+        let mut total = Duration::ZERO;
+        for pass in passes {
+            let start = Instant::now();
+            chunks = chunks.par_iter().map(|chunk| pass.run(chunk)).collect();
+            total += start.elapsed();
+            update_fixpoint_progress(
+                iteration,
+                chunks.iter().map(|chunk| chunk.gates.len()).sum(),
+                chunks.iter().map(count_t).sum(),
+            );
+        }
+        (
+            stitch(circuit.num_qubits, circuit.num_cbits, &chunks),
+            total,
+        )
+    } else {
+        let mut c = circuit.clone();
+        let mut total = Duration::ZERO;
+        for pass in passes {
+            let start = Instant::now();
+            c = pass.run(&c);
+            total += start.elapsed();
+            update_fixpoint_progress(iteration, c.gates.len(), count_t(&c));
         }
         (c, total)
     }
@@ -258,13 +411,70 @@ fn run_to_fixpoint(
     loop {
         round += 1;
         let before = c.gates.len();
-        eprintln!("  \u{25C7} Iteration {round}");
-        let (next, elapsed) = run_pipeline(&c, passes, parallel, num_chunks, "\t");
+        let (next, elapsed) = run_fixpoint_sweep(&c, passes, parallel, num_chunks, round);
         c = next;
         total += elapsed;
-        if c.gates.len() >= before { break; }
+        if c.gates.len() >= before {
+            break;
+        }
     }
+    eprintln!();
     (c, total, round)
+}
+
+/// Run the maximum optimization pipeline to a fixpoint. When Rz decomposition
+/// is requested, insert it exactly once after the first optimization sweep and
+/// force another sweep when there were Rz gates to decompose.
+fn run_max_to_fixpoint(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    rz_decompose: Option<&dyn Pass>,
+    parallel: bool,
+    num_chunks: usize,
+) -> (Circuit, Duration, usize) {
+    let mut c = circuit.clone();
+    let mut total = Duration::ZERO;
+    let mut round = 0;
+    loop {
+        round += 1;
+        let before = c.gates.len();
+        let (next, elapsed) = run_fixpoint_sweep(&c, passes, parallel, num_chunks, round);
+        let reduced = next.gates.len() < before;
+        c = next;
+        total += elapsed;
+
+        if round == 1
+            && let Some(pass) = rz_decompose
+        {
+            let had_rz = c.gates.iter().any(|g| matches!(g, Gate::rz(..)));
+            let start = Instant::now();
+            c = pass.run(&c);
+            total += start.elapsed();
+            update_fixpoint_progress(round, c.gates.len(), count_t(&c));
+            if had_rz {
+                continue;
+            }
+        }
+
+        if !reduced {
+            break;
+        }
+    }
+    eprintln!();
+    (c, total, round)
+}
+
+fn initialize_superopt() -> SuperOpt {
+    let start = Instant::now();
+    let pass = SuperOpt::new(3, 10, SuperOptTableConfig::default()).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize SuperOpt: {error}");
+        process::exit(1);
+    });
+    eprintln!(
+        "  Initialized SuperOpt table in {:.3}s",
+        start.elapsed().as_secs_f64()
+    );
+    pass.without_subcircuits()
 }
 
 /// Default pipeline: decompose ccx (and optionally Rz), then cancel + phase-fold.
@@ -275,7 +485,9 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
 
     let decompose_toffoli = DecomposeToffoli;
     let decompose_cz = DecomposeCz;
-    let rz_decompose = DecomposeRz { epsilon: opts.rz_epsilon };
+    let rz_decompose = DecomposeRz {
+        epsilon: opts.rz_epsilon,
+    };
     let cancel_pass = CancelGates;
     let global = PhaseFoldRand;
     let global_expr = PhaseFoldGlobalExpr;
@@ -283,19 +495,31 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
     // Explicit pipeline via --passes: run exactly what the user listed, in order.
     if let Some(names) = &opts.passes {
         let uses_rz = names.iter().any(|p| matches!(p, PassName::DecomposeRz));
+        let uses_superopt = names.iter().any(|p| matches!(p, PassName::SuperOpt));
         if parallel || uses_rz {
             init_global_pool(num_chunks);
         }
-        let passes: Vec<&dyn Pass> = names.iter().map(|p| -> &dyn Pass {
-            match p {
-                PassName::DecomposeToffoli => &decompose_toffoli,
-                PassName::DecomposeCz => &decompose_cz,
-                PassName::DecomposeRz => &rz_decompose,
-                PassName::CancelGates => &cancel_pass,
-                PassName::PhaseFoldRand => &global,
-                PassName::PhaseFoldGlobalExpr => &global_expr,
-            }
-        }).collect();
+        let superopt_pass = if uses_superopt {
+            Some(initialize_superopt())
+        } else {
+            None
+        };
+        let passes: Vec<&dyn Pass> = names
+            .iter()
+            .map(|p| -> &dyn Pass {
+                match p {
+                    PassName::DecomposeToffoli => &decompose_toffoli,
+                    PassName::DecomposeCz => &decompose_cz,
+                    PassName::DecomposeRz => &rz_decompose,
+                    PassName::CancelGates => &cancel_pass,
+                    PassName::SuperOpt => superopt_pass
+                        .as_ref()
+                        .expect("constructed when the pass is selected"),
+                    PassName::PhaseFoldRand => &global,
+                    PassName::PhaseFoldGlobalExpr => &global_expr,
+                }
+            })
+            .collect();
         let baseline_gates = circuit.gates.len();
         let baseline_t = count_t(&circuit);
         let (result, total) = if opts.fixpoint {
@@ -305,8 +529,13 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         } else {
             run_pipeline(&circuit, &passes, parallel, num_chunks, "")
         };
-        print_result(baseline_gates, result.gates.len(), baseline_t, count_t(&result),
-            total.as_secs_f64());
+        print_result(
+            baseline_gates,
+            result.gates.len(),
+            baseline_t,
+            count_t(&result),
+            total.as_secs_f64(),
+        );
         write_output(&opts.output_path, &result);
         return;
     }
@@ -325,24 +554,39 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
     let baseline_gates = circuit.gates.len();
     let baseline_t = count_t(&circuit);
 
-    // Optimize, then (for --decompose-rz) decompose Rz and optimize the result
-    // again — so cancellation + phase folding run both before and after gridsynth.
-    let mut passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
-    if opts.decompose_rz && circuit.gates.iter().any(|g| matches!(g, Gate::rz(..))) {
-        passes.push(&rz_decompose);
-        passes.extend(build_passes(&cancel_pass, &global, &global_expr, opts.expr));
-    }
-
-    let (result, total_pass_time) = if opts.fixpoint {
-        let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
+    let (result, total_pass_time) = if opts.max {
+        let superopt_pass = initialize_superopt();
+        let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
+        let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
+        let (r, t, rounds) =
+            run_max_to_fixpoint(&circuit, &passes, decompose, parallel, num_chunks);
         eprintln!("  Fixpoint reached after {rounds} iteration(s)");
         (r, t)
     } else {
-        run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+        // Optimize, then (for --decompose-rz) decompose Rz and optimize the result
+        // again — so cancellation + phase folding run both before and after gridsynth.
+        let mut passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
+        if opts.decompose_rz && circuit.gates.iter().any(|g| matches!(g, Gate::rz(..))) {
+            passes.push(&rz_decompose);
+            passes.extend(build_passes(&cancel_pass, &global, &global_expr, opts.expr));
+        }
+
+        if opts.fixpoint {
+            let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
+            eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+            (r, t)
+        } else {
+            run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+        }
     };
 
-    print_result(baseline_gates, result.gates.len(), baseline_t, count_t(&result),
-        total_pass_time.as_secs_f64());
+    print_result(
+        baseline_gates,
+        result.gates.len(),
+        baseline_t,
+        count_t(&result),
+        total_pass_time.as_secs_f64(),
+    );
 
     let input_has_rz = circuit.gates.iter().any(|g| matches!(g, Gate::rz(..)));
     let output_has_rz = result.gates.iter().any(|g| matches!(g, Gate::rz(..)));
@@ -373,12 +617,21 @@ fn print_help() {
     println!("  \x1b[1;33mOPTIONS\x1b[0m");
     println!("    \x1b[1m-o\x1b[0m <file>        Write output to <file>");
     println!("    \x1b[1m--decompose-rz\x1b[0m   Decompose Rz gates into Clifford+T (gridsynth)");
-    println!("    \x1b[1m--epsilon\x1b[0m <eps>  Approximation epsilon for --decompose-rz (default: 1e-10)");
+    println!(
+        "    \x1b[1m--epsilon\x1b[0m <eps>  Approximation epsilon for --decompose-rz (default: 1e-10)"
+    );
     println!("    \x1b[1m--parallel\x1b[0m       Enable parallel mode (off by default)");
-    println!("    \x1b[1m--passes\x1b[0m <list>  Run these passes in order, overriding the default pipeline");
+    println!(
+        "    \x1b[1m--passes\x1b[0m <list>  Run these passes in order, overriding the default pipeline"
+    );
     println!("                     (see PASSES). Excludes --decompose-rz; --epsilon still");
     println!("                     configures DecomposeRz.");
-    println!("    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing");
+    println!(
+        "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
+    );
+    println!(
+        "    \x1b[1m--max\x1b[0m            Run CancelGates, SuperOpt, and PhaseFoldRand to a fixpoint"
+    );
     println!("    \x1b[1m-h, --help\x1b[0m       Print this help message");
     println!();
     println!("  \x1b[1;33mPASSES\x1b[0m (names for --passes)");
@@ -397,18 +650,22 @@ fn parse_args(args: &[String]) -> Opts {
     let mut parallel = false;
     let mut passes: Option<Vec<PassName>> = None;
     let mut fixpoint = false;
-
+    let mut max = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--help" | "-h" => { print_help(); process::exit(0); }
+            "--help" | "-h" => {
+                print_help();
+                process::exit(0);
+            }
             "--expr" => expr = true,
             "--decompose-rz" => decompose_rz = true,
             "--epsilon" => {
                 i += 1;
-                rz_epsilon = args.get(i)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or_else(|| { eprintln!("--epsilon requires a number (e.g. 1e-10)"); process::exit(1); });
+                rz_epsilon = args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+                    eprintln!("--epsilon requires a number (e.g. 1e-10)");
+                    process::exit(1);
+                });
             }
             "--passes" => {
                 i += 1;
@@ -416,18 +673,20 @@ fn parse_args(args: &[String]) -> Opts {
                     eprintln!("--passes requires a comma-separated list of pass names");
                     process::exit(1);
                 });
-                let parsed = list.split(',')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(|name| PassName::parse(name).unwrap_or_else(|| {
-                        eprintln!("Unknown pass '{name}'. Available passes: {}", PassName::all_names());
-                        process::exit(1);
-                    }))
-                    .collect();
-                passes = Some(parsed);
+                let mut list = list.clone();
+                while let Some(next) = args.get(i + 1) {
+                    if next.starts_with('-') || !looks_like_pass_list_fragment(next) {
+                        break;
+                    }
+                    list.push(',');
+                    list.push_str(next);
+                    i += 1;
+                }
+                passes = Some(parse_pass_list(&list));
             }
             "--parallel" => parallel = true,
             "--fixpoint" => fixpoint = true,
+            "--max" => max = true,
             "-o" => {
                 i += 1;
                 output_path = args.get(i).cloned();
@@ -448,18 +707,30 @@ fn parse_args(args: &[String]) -> Opts {
     }
 
     let Some(input_path) = input_path else {
-        eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]");
+        eprintln!(
+            "\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint] [--max]"
+        );
         process::exit(1);
     };
 
+    if max && (passes.is_some() || fixpoint) {
+        eprintln!("--max cannot be combined with --passes or --fixpoint");
+        process::exit(1);
+    }
     if passes.is_some() && (expr || decompose_rz) {
         eprintln!("--passes cannot be combined with --decompose-rz or --expr");
         process::exit(1);
     }
-
     Opts {
-        input_path, output_path, expr, decompose_rz,
-        rz_epsilon, parallel, passes, fixpoint,
+        input_path,
+        output_path,
+        expr,
+        decompose_rz,
+        rz_epsilon,
+        parallel,
+        passes,
+        fixpoint,
+        max,
     }
 }
 
@@ -469,7 +740,11 @@ fn main() {
 
     eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m");
     let file_size = fs::metadata(&opts.input_path).map(|m| m.len()).unwrap_or(0);
-    eprintln!("  Parsing {} ({:.1} MB)", opts.input_path, file_size as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "  Parsing {} ({:.1} MB)",
+        opts.input_path,
+        file_size as f64 / (1024.0 * 1024.0)
+    );
 
     let circuit = read_circuit(&opts.input_path);
     run_optimize(circuit, &opts);
@@ -494,13 +769,20 @@ mod tests {
         let passes: Vec<&dyn Pass> = vec![&cancel];
         let par = run_passes_parallel_logged(&c, &passes, 4, "").0;
 
-        assert_eq!(par.num_cbits, 1, "parallel reconstruction must preserve num_cbits");
+        assert_eq!(
+            par.num_cbits, 1,
+            "parallel reconstruction must preserve num_cbits"
+        );
 
         let out = qasm::serialize(&par);
-        assert!(out.contains("creg"),
-            "parallel output has measurements but no creg declaration:\n{out}");
-        assert!(qasm::parse(&out).is_ok(),
-            "parallel output must round-trip to valid QASM:\n{out}");
+        assert!(
+            out.contains("creg"),
+            "parallel output has measurements but no creg declaration:\n{out}"
+        );
+        assert!(
+            qasm::parse(&out).is_ok(),
+            "parallel output must round-trip to valid QASM:\n{out}"
+        );
     }
 
     /// Optimizing an empty circuit in parallel must not panic. Regression guard:

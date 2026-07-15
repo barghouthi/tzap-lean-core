@@ -22,14 +22,20 @@ pub fn run_passes(circuit: &Circuit, passes: &[&dyn Pass]) -> PassResult {
             gates_after_first = c.gates.len();
         }
     }
-    PassResult { circuit: c, t_after_first, gates_after_first }
+    PassResult {
+        circuit: c,
+        t_after_first,
+        gates_after_first,
+    }
 }
 
 pub fn count_t(c: &Circuit) -> usize {
-    c.gates.iter().filter(|g| matches!(g, Gate::t(_) | Gate::tdg(_))).count()
+    c.gates
+        .iter()
+        .filter(|g| matches!(g, Gate::t(_) | Gate::tdg(_)))
+        .count()
 }
 
 pub fn count_rz(c: &Circuit) -> usize {
     c.gates.iter().filter(|g| matches!(g, Gate::rz(..))).count()
 }
-

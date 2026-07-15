@@ -17,7 +17,10 @@ struct ParityExpr {
 
 impl ParityExpr {
     fn new(var: usize) -> Self {
-        ParityExpr { vars: vec![var], negated: false }
+        ParityExpr {
+            vars: vec![var],
+            negated: false,
+        }
     }
 
     fn fresh(var: usize) -> Self {
@@ -57,7 +60,6 @@ impl ParityExpr {
             negated: !self.negated,
         }
     }
-
 }
 
 struct Group {
@@ -75,7 +77,9 @@ struct Group {
 pub struct PhaseFoldGlobalExpr;
 
 impl Pass for PhaseFoldGlobalExpr {
-    fn name(&self) -> &str { "Phase folding (expr)" }
+    fn name(&self) -> &str {
+        "Phase folding (expr)"
+    }
     fn run(&self, circuit: &Circuit) -> Circuit {
         phase_fold_global_expr(circuit)
     }
@@ -84,7 +88,11 @@ impl Pass for PhaseFoldGlobalExpr {
 pub fn phase_fold_global_expr(circuit: &Circuit) -> Circuit {
     let n = circuit.num_qubits;
     let mut next_var = 0usize;
-    let mut fresh = || { let v = next_var; next_var += 1; ParityExpr::fresh(v) };
+    let mut fresh = || {
+        let v = next_var;
+        next_var += 1;
+        ParityExpr::fresh(v)
+    };
     let mut qubits: Vec<ParityExpr> = (0..n).map(|_| fresh()).collect();
 
     let mut groups: BTreeMap<ParityExpr, Group> = BTreeMap::new();
@@ -99,8 +107,12 @@ pub fn phase_fold_global_expr(circuit: &Circuit) -> Circuit {
             Gate::sdg(q) => record_phase(&qubits, *q, -PI / 2.0, idx, &mut groups),
             Gate::z(q) => record_phase(&qubits, *q, PI, idx, &mut groups),
             Gate::rz(theta, q) => record_phase(&qubits, *q, *theta, idx, &mut groups),
-            Gate::h(q) => { qubits[*q] = fresh(); }
-            Gate::x(q) => { qubits[*q] = qubits[*q].complement(); }
+            Gate::h(q) => {
+                qubits[*q] = fresh();
+            }
+            Gate::x(q) => {
+                qubits[*q] = qubits[*q].complement();
+            }
             Gate::cnot { control, target } => {
                 let ctrl = qubits[*control].clone();
                 qubits[*target] = qubits[*target].xor(&ctrl);
@@ -108,7 +120,11 @@ pub fn phase_fold_global_expr(circuit: &Circuit) -> Circuit {
             // CZ is diagonal and does not change either tracked parity. Keep the gate
             // in the output, but do not introduce an artificial analysis boundary.
             Gate::cz { .. } => {}
-            Gate::ccx { control1: _, control2: _, target } => {
+            Gate::ccx {
+                control1: _,
+                control2: _,
+                target,
+            } => {
                 // AND-based parity — opaque, just refresh the target.
                 qubits[*target] = fresh();
             }
@@ -159,7 +175,10 @@ fn record_phase(
     // complement side are folded in with a sign flip — matches the hash
     // version's complementary-parity lookup so rotations bracketed by X
     // (or any CNOT·X·CNOT pattern) merge across the negation.
-    let key = ParityExpr { vars: parity.vars.clone(), negated: false };
+    let key = ParityExpr {
+        vars: parity.vars.clone(),
+        negated: false,
+    };
     let signed_angle = if is_complement { -angle } else { angle };
 
     if let Some(g) = groups.get_mut(&key) {
@@ -171,13 +190,16 @@ fn record_phase(
         return;
     }
 
-    groups.insert(key, Group {
-        angle: signed_angle,
-        last_idx: idx,
-        last_qubit: q,
-        last_sign: is_complement,
-        indices: vec![idx],
-    });
+    groups.insert(
+        key,
+        Group {
+            angle: signed_angle,
+            last_idx: idx,
+            last_qubit: q,
+            last_sign: is_complement,
+            indices: vec![idx],
+        },
+    );
 }
 
 fn angle_is_zero(angle: f64) -> bool {
@@ -199,9 +221,15 @@ fn emit_rotation(output: &mut Circuit, q: usize, angle: f64) {
             0 => {}
             1 => output.apply(Gate::t(q)),
             2 => output.apply(Gate::s(q)),
-            3 => { output.apply(Gate::s(q)); output.apply(Gate::t(q)); }
+            3 => {
+                output.apply(Gate::s(q));
+                output.apply(Gate::t(q));
+            }
             4 => output.apply(Gate::z(q)),
-            5 => { output.apply(Gate::z(q)); output.apply(Gate::t(q)); }
+            5 => {
+                output.apply(Gate::z(q));
+                output.apply(Gate::t(q));
+            }
             6 => output.apply(Gate::sdg(q)),
             7 => output.apply(Gate::tdg(q)),
             _ => unreachable!(),
@@ -219,13 +247,27 @@ mod tests {
     const TOL: f64 = 1e-10;
 
     fn count_phase_gates(c: &Circuit) -> usize {
-        c.gates.iter().filter(|g| matches!(g,
-            Gate::t(_) | Gate::tdg(_) | Gate::s(_) | Gate::sdg(_) | Gate::z(_) | Gate::rz(..)
-        )).count()
+        c.gates
+            .iter()
+            .filter(|g| {
+                matches!(
+                    g,
+                    Gate::t(_)
+                        | Gate::tdg(_)
+                        | Gate::s(_)
+                        | Gate::sdg(_)
+                        | Gate::z(_)
+                        | Gate::rz(..)
+                )
+            })
+            .count()
     }
 
     fn count_t_gates(c: &Circuit) -> usize {
-        c.gates.iter().filter(|g| matches!(g, Gate::t(_) | Gate::tdg(_))).count()
+        c.gates
+            .iter()
+            .filter(|g| matches!(g, Gate::t(_) | Gate::tdg(_)))
+            .count()
     }
 
     fn run(c: &Circuit) -> Circuit {
@@ -325,7 +367,9 @@ mod tests {
     #[test]
     fn four_t_merge_to_z() {
         let mut c = Circuit::new(1);
-        for _ in 0..4 { c.apply(Gate::t(0)); }
+        for _ in 0..4 {
+            c.apply(Gate::t(0));
+        }
         let out = run(&c);
         assert_eq!(count_phase_gates(&out), 1);
         assert_eq!(count_t_gates(&out), 0);
@@ -335,7 +379,9 @@ mod tests {
     #[test]
     fn eight_t_cancel() {
         let mut c = Circuit::new(1);
-        for _ in 0..8 { c.apply(Gate::t(0)); }
+        for _ in 0..8 {
+            c.apply(Gate::t(0));
+        }
         let out = run(&c);
         assert_eq!(count_phase_gates(&out), 0);
         assert!(circuits_equiv(&c, &out, TOL));
@@ -356,7 +402,10 @@ mod tests {
     fn cnot_enables_cross_qubit_merge() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
         // After CNOT, q1 parity = q0 XOR q1. Not the same as q0.
         let out = run(&c);
@@ -373,8 +422,14 @@ mod tests {
         // But: q0 = v0 and q1 after double CNOT = v1, so no merge.
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
         let out = run(&c);
         // v0 and v1 are different, no merge
@@ -444,7 +499,11 @@ mod tests {
     fn ccx_refreshes_target() {
         let mut c = Circuit::new(3);
         c.apply(Gate::t(2));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         c.apply(Gate::t(2));
         let out = run(&c);
         // CCX refreshes target parity, so no merge
@@ -455,9 +514,15 @@ mod tests {
     fn phase_fold_preserves_semantics_3q() {
         let mut c = Circuit::new(3);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
-        c.apply(Gate::cnot { control: 1, target: 2 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         c.apply(Gate::s(2));
         c.apply(Gate::t(0));
         let out = run(&c);
@@ -470,7 +535,10 @@ mod tests {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
         c.apply(Gate::tdg(1));
         c.apply(Gate::s(0));
@@ -514,7 +582,11 @@ mod tests {
         c.apply(Gate::t(0));
         let opt = run(&c);
         assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
-        assert!(opt.gates.iter().any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 })));
+        assert!(
+            opt.gates
+                .iter()
+                .any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 }))
+        );
         // No T survives.
         assert_eq!(count_t_gates(&opt), 0);
     }
@@ -523,7 +595,10 @@ mod tests {
     fn measure_preserved_with_no_rotations_expr() {
         let mut c = Circuit::with_cbits(2, 2);
         c.apply(Gate::h(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::measure { qubit: 1, cbit: 1 });
         let opt = run(&c);
@@ -537,10 +612,16 @@ mod tests {
         use crate::phase_fold_rand::phase_fold_rand;
         let mut c = Circuit::new(3);
         c.apply(Gate::h(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(0));
         c.apply(Gate::t(1));
-        c.apply(Gate::cnot { control: 1, target: 2 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         c.apply(Gate::s(2));
         c.apply(Gate::x(0));
         c.apply(Gate::t(0));

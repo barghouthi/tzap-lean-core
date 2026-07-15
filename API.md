@@ -74,6 +74,7 @@ A custom pass only needs to supply `name` and `run`.
 | `DecomposeCz` | `tzap::decompose` | Explicitly lowers CZ gates to H+CX+H |
 | `DecomposeRz` | `tzap::decompose_rz` | Decomposes Rz gates into Clifford+T via gridsynth |
 | `CancelGates` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |
+| `SuperOpt` | `tzap::super_opt` | Replaces small windows using its shared unitary-to-circuit table |
 | `PhaseFoldRand` | `tzap::phase_fold_rand` | Merges T/Rz gates across the circuit via randomized parity tracking |
 | `PhaseFoldGlobalExpr` | `tzap::phase_fold_global_expr` | Merges T/Rz gates via symbolic parity expressions |
 
@@ -119,6 +120,36 @@ The `t_after_first` / `gates_after_first` fields are useful for
 attributing reductions to the leading decomposition pass when reporting
 end-to-end numbers. Helpers `count_t` and `count_rz` are also exposed
 from `tzap::pass`.
+
+### SuperOpt
+
+`SuperOpt` is a peephole pass. It scans each maximal connected subcircuit window
+and replaces it with the smallest equivalent circuit from a precomputed
+unitary-to-circuit table, applying a rewrite only when it strictly reduces the
+gate count. Every replacement is verified by matrix equality up to global phase
+before use, so rewrites are always semantics-preserving. The pass accepts unitary
+circuits only.
+
+```rust
+use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
+
+let pass = SuperOpt::new(3, 10, SuperOptTableConfig::default())?;
+let result = pass.run(&circuit)?;
+println!("{} rewrites", result.rewrites.len());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Parameters:
+
+- `max_qubits` — maximum distinct qubits in a scanned window.
+- `window_gates` — maximum gates in a scanned window.
+- `SuperOptTableConfig::new(max_qubits, max_gates, max_entries_per_qubit)` — bounds
+  for the synthesis table, independent of the window size; `default()` is
+  `(3, 8, 200_000)`. Tables are built on first use and shared for the life of the
+  process.
+
+`SuperOpt` also implements `tzap::pass::Pass`. Chain `.without_subcircuits()` when
+only the optimized circuit is needed, to skip retaining per-window diagnostics.
 
 ### DecomposeRz epsilon
 

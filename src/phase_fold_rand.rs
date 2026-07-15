@@ -1,6 +1,6 @@
+use std::collections::hash_map::RandomState;
 use std::f64::consts::PI;
 use std::hash::{BuildHasher, Hasher};
-use std::collections::hash_map::RandomState;
 
 use rustc_hash::FxHashMap;
 
@@ -43,7 +43,9 @@ struct LivePhase {
 pub struct PhaseFoldRand;
 
 impl Pass for PhaseFoldRand {
-    fn name(&self) -> &str { "Phase folding" }
+    fn name(&self) -> &str {
+        "Phase folding"
+    }
     fn run(&self, circuit: &Circuit) -> Circuit {
         phase_fold_rand(circuit)
     }
@@ -61,17 +63,77 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
 
     for (idx, gate) in circuit.gates.iter().enumerate() {
         match gate {
-            Gate::t(q)   => record_int(&qubits, *q, 1, idx, &mut live, &mut parity_to_group, &mut skip),
-            Gate::tdg(q) => record_int(&qubits, *q, 7, idx, &mut live, &mut parity_to_group, &mut skip),
-            Gate::s(q)   => record_int(&qubits, *q, 2, idx, &mut live, &mut parity_to_group, &mut skip),
-            Gate::sdg(q) => record_int(&qubits, *q, 6, idx, &mut live, &mut parity_to_group, &mut skip),
-            Gate::z(q)   => record_int(&qubits, *q, 4, idx, &mut live, &mut parity_to_group, &mut skip),
+            Gate::t(q) => record_int(
+                &qubits,
+                *q,
+                1,
+                idx,
+                &mut live,
+                &mut parity_to_group,
+                &mut skip,
+            ),
+            Gate::tdg(q) => record_int(
+                &qubits,
+                *q,
+                7,
+                idx,
+                &mut live,
+                &mut parity_to_group,
+                &mut skip,
+            ),
+            Gate::s(q) => record_int(
+                &qubits,
+                *q,
+                2,
+                idx,
+                &mut live,
+                &mut parity_to_group,
+                &mut skip,
+            ),
+            Gate::sdg(q) => record_int(
+                &qubits,
+                *q,
+                6,
+                idx,
+                &mut live,
+                &mut parity_to_group,
+                &mut skip,
+            ),
+            Gate::z(q) => record_int(
+                &qubits,
+                *q,
+                4,
+                idx,
+                &mut live,
+                &mut parity_to_group,
+                &mut skip,
+            ),
             Gate::rz(theta, q) => match classify_quarter_pi(*theta) {
-                Some(k) => record_int(&qubits, *q, k, idx, &mut live, &mut parity_to_group, &mut skip),
-                None    => record_float(&qubits, *q, *theta, idx, &mut live, &mut parity_to_group, &mut skip),
+                Some(k) => record_int(
+                    &qubits,
+                    *q,
+                    k,
+                    idx,
+                    &mut live,
+                    &mut parity_to_group,
+                    &mut skip,
+                ),
+                None => record_float(
+                    &qubits,
+                    *q,
+                    *theta,
+                    idx,
+                    &mut live,
+                    &mut parity_to_group,
+                    &mut skip,
+                ),
             },
-            Gate::h(q) => { qubits[*q] = fresh(); }
-            Gate::x(q) => { qubits[*q] = !qubits[*q]; }
+            Gate::h(q) => {
+                qubits[*q] = fresh();
+            }
+            Gate::x(q) => {
+                qubits[*q] = !qubits[*q];
+            }
             Gate::cnot { control, target } => {
                 qubits[*target] ^= qubits[*control];
             }
@@ -80,7 +142,11 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
                 // bits, and therefore both tracked parities, unchanged. The gate itself
                 // remains in the reconstructed circuit.
             }
-            Gate::ccx { control1: _, control2: _, target } => {
+            Gate::ccx {
+                control1: _,
+                control2: _,
+                target,
+            } => {
                 // AND-based parity — opaque, just refresh the target.
                 qubits[*target] = fresh();
             }
@@ -261,9 +327,15 @@ fn emit_int(output: &mut Circuit, q: usize, k: u8) {
         0 => {}
         1 => output.apply(Gate::t(q)),
         2 => output.apply(Gate::s(q)),
-        3 => { output.apply(Gate::s(q)); output.apply(Gate::t(q)); }
+        3 => {
+            output.apply(Gate::s(q));
+            output.apply(Gate::t(q));
+        }
         4 => output.apply(Gate::z(q)),
-        5 => { output.apply(Gate::z(q)); output.apply(Gate::t(q)); }
+        5 => {
+            output.apply(Gate::z(q));
+            output.apply(Gate::t(q));
+        }
         6 => output.apply(Gate::sdg(q)),
         7 => output.apply(Gate::tdg(q)),
         _ => unreachable!(),
@@ -297,42 +369,96 @@ mod tests {
     }
 
     fn count_phase_gates(c: &Circuit) -> usize {
-        c.gates.iter().filter(|g| matches!(g,
-            Gate::t(_) | Gate::tdg(_) | Gate::s(_) | Gate::sdg(_) | Gate::z(_) | Gate::rz(..)
-        )).count()
+        c.gates
+            .iter()
+            .filter(|g| {
+                matches!(
+                    g,
+                    Gate::t(_)
+                        | Gate::tdg(_)
+                        | Gate::s(_)
+                        | Gate::sdg(_)
+                        | Gate::z(_)
+                        | Gate::rz(..)
+                )
+            })
+            .count()
     }
 
     fn count_t_gates(c: &Circuit) -> usize {
-        c.gates.iter().filter(|g| matches!(g, Gate::t(_) | Gate::tdg(_))).count()
+        c.gates
+            .iter()
+            .filter(|g| matches!(g, Gate::t(_) | Gate::tdg(_)))
+            .count()
     }
 
     #[test]
     #[ignore] // long-running: 24-qubit pipeline benchmark
     fn large_circuit_toffoli_decompose_and_phase_fold() {
         let mut c = Circuit::new(24);
-        c.apply(Gate::cnot { control: 3, target: 2 });
-        c.apply(Gate::cnot { control: 8, target: 7 });
-        c.apply(Gate::cnot { control: 14, target: 13 });
-        c.apply(Gate::cnot { control: 21, target: 20 });
-        c.apply(Gate::cnot { control: 3, target: 4 });
-        c.apply(Gate::cnot { control: 8, target: 9 });
-        c.apply(Gate::cnot { control: 14, target: 15 });
-        c.apply(Gate::cnot { control: 21, target: 22 });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 8,
+            target: 7,
+        });
+        c.apply(Gate::cnot {
+            control: 14,
+            target: 13,
+        });
+        c.apply(Gate::cnot {
+            control: 21,
+            target: 20,
+        });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 4,
+        });
+        c.apply(Gate::cnot {
+            control: 8,
+            target: 9,
+        });
+        c.apply(Gate::cnot {
+            control: 14,
+            target: 15,
+        });
+        c.apply(Gate::cnot {
+            control: 21,
+            target: 22,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
         c.apply(Gate::h(3));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 3 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 3,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
-        c.apply(Gate::ccx { control1: 5, control2: 6, target: 8 });
+        c.apply(Gate::ccx {
+            control1: 5,
+            control2: 6,
+            target: 8,
+        });
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
-        c.apply(Gate::ccx { control1: 11, control2: 12, target: 14 });
+        c.apply(Gate::ccx {
+            control1: 11,
+            control2: 12,
+            target: 14,
+        });
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
-        c.apply(Gate::ccx { control1: 18, control2: 19, target: 21 });
+        c.apply(Gate::ccx {
+            control1: 18,
+            control2: 19,
+            target: 21,
+        });
         c.apply(Gate::h(21));
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
@@ -346,40 +472,98 @@ mod tests {
         c.apply(Gate::h(16));
         c.apply(Gate::h(23));
         c.apply(Gate::h(4));
-        c.apply(Gate::ccx { control1: 2, control2: 3, target: 4 });
+        c.apply(Gate::ccx {
+            control1: 2,
+            control2: 3,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(9));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 9 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 9,
+        });
         c.apply(Gate::h(9));
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(15));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 15 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 15,
+        });
         c.apply(Gate::h(15));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
         c.apply(Gate::h(22));
-        c.apply(Gate::ccx { control1: 20, control2: 21, target: 22 });
+        c.apply(Gate::ccx {
+            control1: 20,
+            control2: 21,
+            target: 22,
+        });
         c.apply(Gate::h(22));
         c.apply(Gate::h(23));
-        c.apply(Gate::ccx { control1: 20, control2: 21, target: 23 });
+        c.apply(Gate::ccx {
+            control1: 20,
+            control2: 21,
+            target: 23,
+        });
         c.apply(Gate::h(23));
-        c.apply(Gate::cnot { control: 6, target: 5 });
-        c.apply(Gate::cnot { control: 12, target: 11 });
-        c.apply(Gate::cnot { control: 19, target: 18 });
-        c.apply(Gate::cnot { control: 5, target: 8 });
-        c.apply(Gate::cnot { control: 11, target: 14 });
-        c.apply(Gate::cnot { control: 18, target: 21 });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 5,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 11,
+        });
+        c.apply(Gate::cnot {
+            control: 19,
+            target: 18,
+        });
+        c.apply(Gate::cnot {
+            control: 5,
+            target: 8,
+        });
+        c.apply(Gate::cnot {
+            control: 11,
+            target: 14,
+        });
+        c.apply(Gate::cnot {
+            control: 18,
+            target: 21,
+        });
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
         c.apply(Gate::h(23));
-        c.apply(Gate::ccx { control1: 20, control2: 21, target: 23 });
+        c.apply(Gate::ccx {
+            control1: 20,
+            control2: 21,
+            target: 23,
+        });
         c.apply(Gate::h(23));
         c.apply(Gate::h(4));
         c.apply(Gate::h(10));
@@ -388,56 +572,122 @@ mod tests {
         c.apply(Gate::h(23));
         c.apply(Gate::h(17));
         c.apply(Gate::h(17));
-        c.apply(Gate::ccx { control1: 16, control2: 23, target: 17 });
+        c.apply(Gate::ccx {
+            control1: 16,
+            control2: 23,
+            target: 17,
+        });
         c.apply(Gate::h(17));
         c.apply(Gate::h(22));
-        c.apply(Gate::ccx { control1: 15, control2: 23, target: 22 });
+        c.apply(Gate::ccx {
+            control1: 15,
+            control2: 23,
+            target: 22,
+        });
         c.apply(Gate::h(22));
         c.apply(Gate::h(9));
-        c.apply(Gate::ccx { control1: 4, control2: 10, target: 9 });
+        c.apply(Gate::ccx {
+            control1: 4,
+            control2: 10,
+            target: 9,
+        });
         c.apply(Gate::h(9));
         c.apply(Gate::h(17));
         c.apply(Gate::h(9));
         c.apply(Gate::h(15));
         c.apply(Gate::h(22));
-        c.apply(Gate::ccx { control1: 9, control2: 17, target: 22 });
+        c.apply(Gate::ccx {
+            control1: 9,
+            control2: 17,
+            target: 22,
+        });
         c.apply(Gate::h(22));
         c.apply(Gate::h(15));
-        c.apply(Gate::ccx { control1: 9, control2: 16, target: 15 });
+        c.apply(Gate::ccx {
+            control1: 9,
+            control2: 16,
+            target: 15,
+        });
         c.apply(Gate::h(15));
         c.apply(Gate::h(15));
         c.apply(Gate::h(22));
         c.apply(Gate::h(17));
         c.apply(Gate::h(17));
-        c.apply(Gate::ccx { control1: 16, control2: 23, target: 17 });
+        c.apply(Gate::ccx {
+            control1: 16,
+            control2: 23,
+            target: 17,
+        });
         c.apply(Gate::h(17));
         c.apply(Gate::h(17));
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
         c.apply(Gate::h(23));
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
         c.apply(Gate::h(23));
-        c.apply(Gate::ccx { control1: 20, control2: 21, target: 23 });
+        c.apply(Gate::ccx {
+            control1: 20,
+            control2: 21,
+            target: 23,
+        });
         c.apply(Gate::h(23));
-        c.apply(Gate::cnot { control: 5, target: 8 });
-        c.apply(Gate::cnot { control: 11, target: 14 });
-        c.apply(Gate::cnot { control: 18, target: 21 });
-        c.apply(Gate::cnot { control: 6, target: 5 });
-        c.apply(Gate::cnot { control: 12, target: 11 });
-        c.apply(Gate::cnot { control: 19, target: 18 });
+        c.apply(Gate::cnot {
+            control: 5,
+            target: 8,
+        });
+        c.apply(Gate::cnot {
+            control: 11,
+            target: 14,
+        });
+        c.apply(Gate::cnot {
+            control: 18,
+            target: 21,
+        });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 5,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 11,
+        });
+        c.apply(Gate::cnot {
+            control: 19,
+            target: 18,
+        });
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
         c.apply(Gate::h(23));
-        c.apply(Gate::ccx { control1: 20, control2: 21, target: 23 });
+        c.apply(Gate::ccx {
+            control1: 20,
+            control2: 21,
+            target: 23,
+        });
         c.apply(Gate::h(23));
         c.apply(Gate::h(23));
         c.apply(Gate::h(3));
@@ -445,168 +695,403 @@ mod tests {
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
         c.apply(Gate::h(3));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 3 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 3,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
-        c.apply(Gate::ccx { control1: 5, control2: 6, target: 8 });
+        c.apply(Gate::ccx {
+            control1: 5,
+            control2: 6,
+            target: 8,
+        });
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
-        c.apply(Gate::ccx { control1: 11, control2: 12, target: 14 });
+        c.apply(Gate::ccx {
+            control1: 11,
+            control2: 12,
+            target: 14,
+        });
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
-        c.apply(Gate::ccx { control1: 18, control2: 19, target: 21 });
-        c.apply(Gate::h(21));
-        c.apply(Gate::h(3));
-        c.apply(Gate::h(8));
-        c.apply(Gate::h(14));
-        c.apply(Gate::h(21));
-        c.apply(Gate::cnot { control: 3, target: 2 });
-        c.apply(Gate::cnot { control: 8, target: 7 });
-        c.apply(Gate::cnot { control: 14, target: 13 });
-        c.apply(Gate::cnot { control: 21, target: 20 });
-        c.apply(Gate::cnot { control: 6, target: 5 });
-        c.apply(Gate::cnot { control: 12, target: 11 });
-        c.apply(Gate::cnot { control: 19, target: 18 });
-        c.apply(Gate::cnot { control: 6, target: 8 });
-        c.apply(Gate::cnot { control: 12, target: 14 });
-        c.apply(Gate::cnot { control: 19, target: 21 });
-        c.apply(Gate::cnot { control: 4, target: 6 });
-        c.apply(Gate::cnot { control: 9, target: 12 });
-        c.apply(Gate::cnot { control: 15, target: 19 });
-        c.apply(Gate::h(3));
-        c.apply(Gate::h(8));
-        c.apply(Gate::h(14));
-        c.apply(Gate::h(21));
-        c.apply(Gate::h(3));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 3 });
-        c.apply(Gate::h(3));
-        c.apply(Gate::h(8));
-        c.apply(Gate::ccx { control1: 5, control2: 6, target: 8 });
-        c.apply(Gate::h(8));
-        c.apply(Gate::h(14));
-        c.apply(Gate::ccx { control1: 11, control2: 12, target: 14 });
-        c.apply(Gate::h(14));
-        c.apply(Gate::h(21));
-        c.apply(Gate::ccx { control1: 18, control2: 19, target: 21 });
+        c.apply(Gate::ccx {
+            control1: 18,
+            control2: 19,
+            target: 21,
+        });
         c.apply(Gate::h(21));
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
-        c.apply(Gate::cnot { control: 3, target: 2 });
-        c.apply(Gate::cnot { control: 8, target: 7 });
-        c.apply(Gate::cnot { control: 14, target: 13 });
-        c.apply(Gate::cnot { control: 21, target: 20 });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 8,
+            target: 7,
+        });
+        c.apply(Gate::cnot {
+            control: 14,
+            target: 13,
+        });
+        c.apply(Gate::cnot {
+            control: 21,
+            target: 20,
+        });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 5,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 11,
+        });
+        c.apply(Gate::cnot {
+            control: 19,
+            target: 18,
+        });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 8,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 14,
+        });
+        c.apply(Gate::cnot {
+            control: 19,
+            target: 21,
+        });
+        c.apply(Gate::cnot {
+            control: 4,
+            target: 6,
+        });
+        c.apply(Gate::cnot {
+            control: 9,
+            target: 12,
+        });
+        c.apply(Gate::cnot {
+            control: 15,
+            target: 19,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
         c.apply(Gate::h(3));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 3 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 3,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
-        c.apply(Gate::ccx { control1: 5, control2: 6, target: 8 });
+        c.apply(Gate::ccx {
+            control1: 5,
+            control2: 6,
+            target: 8,
+        });
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
-        c.apply(Gate::ccx { control1: 11, control2: 12, target: 14 });
+        c.apply(Gate::ccx {
+            control1: 11,
+            control2: 12,
+            target: 14,
+        });
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
-        c.apply(Gate::ccx { control1: 18, control2: 19, target: 21 });
+        c.apply(Gate::ccx {
+            control1: 18,
+            control2: 19,
+            target: 21,
+        });
         c.apply(Gate::h(21));
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
         c.apply(Gate::h(21));
-        c.apply(Gate::cnot { control: 6, target: 5 });
-        c.apply(Gate::cnot { control: 12, target: 11 });
-        c.apply(Gate::cnot { control: 19, target: 18 });
-        c.apply(Gate::cnot { control: 4, target: 6 });
-        c.apply(Gate::cnot { control: 9, target: 12 });
-        c.apply(Gate::cnot { control: 15, target: 19 });
-        c.apply(Gate::cnot { control: 6, target: 8 });
-        c.apply(Gate::cnot { control: 12, target: 14 });
-        c.apply(Gate::cnot { control: 19, target: 21 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
-        c.apply(Gate::cnot { control: 6, target: 5 });
-        c.apply(Gate::cnot { control: 12, target: 11 });
-        c.apply(Gate::cnot { control: 19, target: 18 });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 8,
+            target: 7,
+        });
+        c.apply(Gate::cnot {
+            control: 14,
+            target: 13,
+        });
+        c.apply(Gate::cnot {
+            control: 21,
+            target: 20,
+        });
+        c.apply(Gate::h(3));
+        c.apply(Gate::h(8));
+        c.apply(Gate::h(14));
+        c.apply(Gate::h(21));
+        c.apply(Gate::h(3));
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 3,
+        });
+        c.apply(Gate::h(3));
+        c.apply(Gate::h(8));
+        c.apply(Gate::ccx {
+            control1: 5,
+            control2: 6,
+            target: 8,
+        });
+        c.apply(Gate::h(8));
+        c.apply(Gate::h(14));
+        c.apply(Gate::ccx {
+            control1: 11,
+            control2: 12,
+            target: 14,
+        });
+        c.apply(Gate::h(14));
+        c.apply(Gate::h(21));
+        c.apply(Gate::ccx {
+            control1: 18,
+            control2: 19,
+            target: 21,
+        });
+        c.apply(Gate::h(21));
+        c.apply(Gate::h(3));
+        c.apply(Gate::h(8));
+        c.apply(Gate::h(14));
+        c.apply(Gate::h(21));
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 5,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 11,
+        });
+        c.apply(Gate::cnot {
+            control: 19,
+            target: 18,
+        });
+        c.apply(Gate::cnot {
+            control: 4,
+            target: 6,
+        });
+        c.apply(Gate::cnot {
+            control: 9,
+            target: 12,
+        });
+        c.apply(Gate::cnot {
+            control: 15,
+            target: 19,
+        });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 8,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 14,
+        });
+        c.apply(Gate::cnot {
+            control: 19,
+            target: 21,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 5,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 11,
+        });
+        c.apply(Gate::cnot {
+            control: 19,
+            target: 18,
+        });
         c.apply(Gate::x(0));
         c.apply(Gate::x(2));
         c.apply(Gate::x(5));
         c.apply(Gate::x(7));
         c.apply(Gate::x(11));
         c.apply(Gate::x(13));
-        c.apply(Gate::cnot { control: 3, target: 2 });
-        c.apply(Gate::cnot { control: 8, target: 7 });
-        c.apply(Gate::cnot { control: 14, target: 13 });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 8,
+            target: 7,
+        });
+        c.apply(Gate::cnot {
+            control: 14,
+            target: 13,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
         c.apply(Gate::h(3));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 3 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 3,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
-        c.apply(Gate::ccx { control1: 5, control2: 6, target: 8 });
+        c.apply(Gate::ccx {
+            control1: 5,
+            control2: 6,
+            target: 8,
+        });
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
-        c.apply(Gate::ccx { control1: 11, control2: 12, target: 14 });
+        c.apply(Gate::ccx {
+            control1: 11,
+            control2: 12,
+            target: 14,
+        });
         c.apply(Gate::h(14));
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
-        c.apply(Gate::cnot { control: 6, target: 5 });
-        c.apply(Gate::cnot { control: 12, target: 11 });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 5,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 11,
+        });
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
-        c.apply(Gate::cnot { control: 5, target: 8 });
-        c.apply(Gate::cnot { control: 11, target: 14 });
+        c.apply(Gate::cnot {
+            control: 5,
+            target: 8,
+        });
+        c.apply(Gate::cnot {
+            control: 11,
+            target: 14,
+        });
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
         c.apply(Gate::h(15));
         c.apply(Gate::h(15));
-        c.apply(Gate::ccx { control1: 9, control2: 16, target: 15 });
+        c.apply(Gate::ccx {
+            control1: 9,
+            control2: 16,
+            target: 15,
+        });
         c.apply(Gate::h(15));
         c.apply(Gate::h(9));
         c.apply(Gate::h(9));
-        c.apply(Gate::ccx { control1: 4, control2: 10, target: 9 });
+        c.apply(Gate::ccx {
+            control1: 4,
+            control2: 10,
+            target: 9,
+        });
         c.apply(Gate::h(9));
         c.apply(Gate::h(4));
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
-        c.apply(Gate::cnot { control: 5, target: 8 });
-        c.apply(Gate::cnot { control: 11, target: 14 });
+        c.apply(Gate::cnot {
+            control: 5,
+            target: 8,
+        });
+        c.apply(Gate::cnot {
+            control: 11,
+            target: 14,
+        });
         c.apply(Gate::h(10));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 10 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 10,
+        });
         c.apply(Gate::h(10));
         c.apply(Gate::h(16));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 16 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 16,
+        });
         c.apply(Gate::h(16));
-        c.apply(Gate::cnot { control: 6, target: 5 });
-        c.apply(Gate::cnot { control: 12, target: 11 });
+        c.apply(Gate::cnot {
+            control: 6,
+            target: 5,
+        });
+        c.apply(Gate::cnot {
+            control: 12,
+            target: 11,
+        });
         c.apply(Gate::h(9));
-        c.apply(Gate::ccx { control1: 7, control2: 8, target: 9 });
+        c.apply(Gate::ccx {
+            control1: 7,
+            control2: 8,
+            target: 9,
+        });
         c.apply(Gate::h(9));
         c.apply(Gate::h(15));
-        c.apply(Gate::ccx { control1: 13, control2: 14, target: 15 });
+        c.apply(Gate::ccx {
+            control1: 13,
+            control2: 14,
+            target: 15,
+        });
         c.apply(Gate::h(15));
         c.apply(Gate::h(4));
-        c.apply(Gate::ccx { control1: 2, control2: 3, target: 4 });
+        c.apply(Gate::ccx {
+            control1: 2,
+            control2: 3,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
         c.apply(Gate::h(9));
@@ -617,23 +1102,53 @@ mod tests {
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
         c.apply(Gate::h(3));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 3 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 3,
+        });
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
-        c.apply(Gate::ccx { control1: 5, control2: 6, target: 8 });
+        c.apply(Gate::ccx {
+            control1: 5,
+            control2: 6,
+            target: 8,
+        });
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
-        c.apply(Gate::ccx { control1: 11, control2: 12, target: 14 });
+        c.apply(Gate::ccx {
+            control1: 11,
+            control2: 12,
+            target: 14,
+        });
         c.apply(Gate::h(14));
         c.apply(Gate::h(3));
         c.apply(Gate::h(8));
         c.apply(Gate::h(14));
-        c.apply(Gate::cnot { control: 3, target: 4 });
-        c.apply(Gate::cnot { control: 8, target: 9 });
-        c.apply(Gate::cnot { control: 14, target: 15 });
-        c.apply(Gate::cnot { control: 3, target: 2 });
-        c.apply(Gate::cnot { control: 8, target: 7 });
-        c.apply(Gate::cnot { control: 14, target: 13 });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 4,
+        });
+        c.apply(Gate::cnot {
+            control: 8,
+            target: 9,
+        });
+        c.apply(Gate::cnot {
+            control: 14,
+            target: 15,
+        });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 8,
+            target: 7,
+        });
+        c.apply(Gate::cnot {
+            control: 14,
+            target: 13,
+        });
         c.apply(Gate::x(0));
         c.apply(Gate::x(2));
         c.apply(Gate::x(5));
@@ -654,13 +1169,34 @@ mod tests {
         let folded2_t = count_t_gates(&folded2);
 
         println!("=== large circuit pipeline ===");
-        println!("original:            {} gates, {} T/Tdg", original_gates, original_t);
-        println!("after toffoli decomp: {} gates, {} T/Tdg", count_gates(&dec), dec_t);
-        println!("after phase fold 1:  {} gates, {} T/Tdg", count_gates(&folded), folded_t);
-        println!("after phase fold 2:  {} gates, {} T/Tdg", count_gates(&folded2), folded2_t);
+        println!(
+            "original:            {} gates, {} T/Tdg",
+            original_gates, original_t
+        );
+        println!(
+            "after toffoli decomp: {} gates, {} T/Tdg",
+            count_gates(&dec),
+            dec_t
+        );
+        println!(
+            "after phase fold 1:  {} gates, {} T/Tdg",
+            count_gates(&folded),
+            folded_t
+        );
+        println!(
+            "after phase fold 2:  {} gates, {} T/Tdg",
+            count_gates(&folded2),
+            folded2_t
+        );
 
-        assert!(folded_t <= dec_t, "phase folding should not increase T count");
-        assert!(folded2_t <= folded_t, "second phase fold should not increase T count");
+        assert!(
+            folded_t <= dec_t,
+            "phase folding should not increase T count"
+        );
+        assert!(
+            folded2_t <= folded_t,
+            "second phase fold should not increase T count"
+        );
     }
 
     #[test]
@@ -670,26 +1206,54 @@ mod tests {
         c.apply(Gate::x(4));
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
-        c.apply(Gate::ccx { control1: 0, control2: 3, target: 4 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 3,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
-        c.apply(Gate::ccx { control1: 2, control2: 3, target: 4 });
+        c.apply(Gate::ccx {
+            control1: 2,
+            control2: 3,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
-        c.apply(Gate::cnot { control: 3, target: 4 });
+        c.apply(Gate::cnot {
+            control: 3,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
-        c.apply(Gate::ccx { control1: 1, control2: 2, target: 4 });
+        c.apply(Gate::ccx {
+            control1: 1,
+            control2: 2,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
-        c.apply(Gate::cnot { control: 2, target: 4 });
+        c.apply(Gate::cnot {
+            control: 2,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 4 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 4,
+        });
         c.apply(Gate::h(4));
         c.apply(Gate::h(4));
-        c.apply(Gate::cnot { control: 1, target: 4 });
-        c.apply(Gate::cnot { control: 0, target: 4 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 4,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 4,
+        });
 
         let original_gates = count_gates(&c);
         let original_t = count_t_gates(&c);
@@ -704,10 +1268,25 @@ mod tests {
         let folded2_t = count_t_gates(&folded2);
 
         println!("=== small circuit pipeline ===");
-        println!("original:            {} gates, {} T/Tdg", original_gates, original_t);
-        println!("after toffoli decomp: {} gates, {} T/Tdg", count_gates(&dec), dec_t);
-        println!("after phase fold 1:  {} gates, {} T/Tdg", count_gates(&folded), folded_t);
-        println!("after phase fold 2:  {} gates, {} T/Tdg", count_gates(&folded2), folded2_t);
+        println!(
+            "original:            {} gates, {} T/Tdg",
+            original_gates, original_t
+        );
+        println!(
+            "after toffoli decomp: {} gates, {} T/Tdg",
+            count_gates(&dec),
+            dec_t
+        );
+        println!(
+            "after phase fold 1:  {} gates, {} T/Tdg",
+            count_gates(&folded),
+            folded_t
+        );
+        println!(
+            "after phase fold 2:  {} gates, {} T/Tdg",
+            count_gates(&folded2),
+            folded2_t
+        );
 
         assert!(folded_t <= dec_t);
     }
@@ -715,9 +1294,20 @@ mod tests {
     #[test]
     fn two_toffoli_shared_control() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::ccx { control1: 1, control2: 2, target: 0 });
-        c.apply(Gate::cnot { control: 2, target: 0 });
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 1,
+            control2: 2,
+            target: 0,
+        });
+        c.apply(Gate::cnot {
+            control: 2,
+            target: 0,
+        });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
 
         let dec = DecomposeToffoli.run(&c);
         assert_eq!(count_t_gates(&dec), 14);
@@ -731,23 +1321,58 @@ mod tests {
     #[ignore] // long-running: combinatorial CCX removal search
     fn mod5_4_remove_ccx_combos() {
         let ccx_indices: Vec<usize> = vec![1, 2, 4, 6];
-        let names = ["ccx q0,q3,q4", "ccx q2,q3,q4", "ccx q1,q2,q4", "ccx q0,q1,q4"];
+        let names = [
+            "ccx q0,q3,q4",
+            "ccx q2,q3,q4",
+            "ccx q1,q2,q4",
+            "ccx q0,q1,q4",
+        ];
 
         let build = |skip: &[usize]| -> Circuit {
             let mut c = Circuit::new(5);
             let gates: Vec<Gate> = vec![
                 Gate::x(4),
-                Gate::ccx { control1: 0, control2: 3, target: 4 },
-                Gate::ccx { control1: 2, control2: 3, target: 4 },
-                Gate::cnot { control: 3, target: 4 },
-                Gate::ccx { control1: 1, control2: 2, target: 4 },
-                Gate::cnot { control: 2, target: 4 },
-                Gate::ccx { control1: 0, control2: 1, target: 4 },
-                Gate::cnot { control: 1, target: 4 },
-                Gate::cnot { control: 0, target: 4 },
+                Gate::ccx {
+                    control1: 0,
+                    control2: 3,
+                    target: 4,
+                },
+                Gate::ccx {
+                    control1: 2,
+                    control2: 3,
+                    target: 4,
+                },
+                Gate::cnot {
+                    control: 3,
+                    target: 4,
+                },
+                Gate::ccx {
+                    control1: 1,
+                    control2: 2,
+                    target: 4,
+                },
+                Gate::cnot {
+                    control: 2,
+                    target: 4,
+                },
+                Gate::ccx {
+                    control1: 0,
+                    control2: 1,
+                    target: 4,
+                },
+                Gate::cnot {
+                    control: 1,
+                    target: 4,
+                },
+                Gate::cnot {
+                    control: 0,
+                    target: 4,
+                },
             ];
             for (j, g) in gates.into_iter().enumerate() {
-                if !skip.contains(&j) { c.apply(g); }
+                if !skip.contains(&j) {
+                    c.apply(g);
+                }
             }
             c
         };
@@ -756,7 +1381,10 @@ mod tests {
         println!("{}", "-".repeat(65));
 
         for keep in 0..4 {
-            let skip: Vec<usize> = (0..4).filter(|&i| i != keep).map(|i| ccx_indices[i]).collect();
+            let skip: Vec<usize> = (0..4)
+                .filter(|&i| i != keep)
+                .map(|i| ccx_indices[i])
+                .collect();
             let c = build(&skip);
             let dec = DecomposeToffoli.run(&c);
             let dec_t = count_t_gates(&dec);
@@ -771,7 +1399,11 @@ mod tests {
     #[test]
     fn toffoli_decompose_then_phase_fold() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         let dec = DecomposeToffoli.run(&c);
         let opt = phase_fold_rand(&dec);
         let dec_phases = count_phase_gates(&dec);
@@ -804,7 +1436,9 @@ mod tests {
     #[test]
     fn four_t_merge_to_s_s() {
         let mut c = Circuit::new(1);
-        for _ in 0..4 { c.apply(Gate::t(0)); }
+        for _ in 0..4 {
+            c.apply(Gate::t(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -813,7 +1447,9 @@ mod tests {
     #[test]
     fn eight_t_cancel() {
         let mut c = Circuit::new(1);
-        for _ in 0..8 { c.apply(Gate::t(0)); }
+        for _ in 0..8 {
+            c.apply(Gate::t(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -823,7 +1459,10 @@ mod tests {
     fn same_parity_across_cnot() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
@@ -834,7 +1473,10 @@ mod tests {
     fn different_parity_no_merge() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 2);
@@ -960,9 +1602,15 @@ mod tests {
         // the same parity.
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::x(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_t_gates(&opt), 0);
@@ -977,9 +1625,15 @@ mod tests {
         // complement of first T's parity.
         let mut c = Circuit::new(2);
         c.apply(Gate::t(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::x(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
         let opt = phase_fold_rand(&c);
         // Both Ts live on parities that are complements of each other,
@@ -994,11 +1648,11 @@ mod tests {
         // Exercises the path where the group is first reached via the
         // complement branch, then later via the direct branch.
         let mut c = Circuit::new(1);
-        c.apply(Gate::t(0));       // group[p0] int=1, sign=F
-        c.apply(Gate::x(0));       // qubits[0] = !p0
-        c.apply(Gate::t(0));       // complement hit → int=0, sign=T
-        c.apply(Gate::x(0));       // qubits[0] = p0
-        c.apply(Gate::tdg(0));     // direct hit on p0 → int=(0-1)&7=7, sign=F
+        c.apply(Gate::t(0)); // group[p0] int=1, sign=F
+        c.apply(Gate::x(0)); // qubits[0] = !p0
+        c.apply(Gate::t(0)); // complement hit → int=0, sign=T
+        c.apply(Gate::x(0)); // qubits[0] = p0
+        c.apply(Gate::tdg(0)); // direct hit on p0 → int=(0-1)&7=7, sign=F
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1022,8 +1676,14 @@ mod tests {
     fn three_qubit_folding() {
         let mut c = Circuit::new(3);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 0, target: 2 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         c.apply(Gate::t(0));
         c.apply(Gate::tdg(0));
         let opt = phase_fold_rand(&c);
@@ -1035,20 +1695,38 @@ mod tests {
     fn toffoli_decomposition_fold() {
         let mut c = Circuit::new(3);
         c.apply(Gate::h(2));
-        c.apply(Gate::cnot { control: 1, target: 2 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         c.apply(Gate::tdg(2));
-        c.apply(Gate::cnot { control: 0, target: 2 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         c.apply(Gate::t(2));
-        c.apply(Gate::cnot { control: 1, target: 2 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         c.apply(Gate::tdg(2));
-        c.apply(Gate::cnot { control: 0, target: 2 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         c.apply(Gate::t(1));
         c.apply(Gate::t(2));
         c.apply(Gate::h(2));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(0));
         c.apply(Gate::tdg(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         let original_phases = count_phase_gates(&c);
         let opt = phase_fold_rand(&c);
@@ -1063,7 +1741,10 @@ mod tests {
     fn preserves_non_phase_structure() {
         let mut c = Circuit::new(2);
         c.apply(Gate::h(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::x(1));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_gates(&opt), 3);
@@ -1084,10 +1765,19 @@ mod tests {
     fn cross_qubit_merge_via_cnot() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::t(0));
 
         let opt = phase_fold_rand(&c);
@@ -1099,10 +1789,19 @@ mod tests {
     fn cross_qubit_cancel() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::tdg(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::t(0));
 
         let opt = phase_fold_rand(&c);
@@ -1113,13 +1812,31 @@ mod tests {
     #[test]
     fn cross_qubit_three_way() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::cnot { control: 0, target: 2 });
-        c.apply(Gate::cnot { control: 1, target: 2 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         c.apply(Gate::rz(0.5, 2));
-        c.apply(Gate::cnot { control: 1, target: 2 });
-        c.apply(Gate::cnot { control: 0, target: 2 });
-        c.apply(Gate::cnot { control: 1, target: 2 });
-        c.apply(Gate::cnot { control: 0, target: 2 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         c.apply(Gate::rz(0.5, 2));
 
         let opt = phase_fold_rand(&c);
@@ -1130,10 +1847,19 @@ mod tests {
     #[test]
     fn cross_qubit_rz_different_qubits_same_parity() {
         let mut c = Circuit::new(2);
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::rz(0.3, 1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::rz(0.7, 0));
 
         let opt = phase_fold_rand(&c);
@@ -1143,9 +1869,17 @@ mod tests {
 
     fn print_before_after(name: &str, original: &Circuit, optimized: &Circuit) {
         println!("=== {name} ===");
-        println!("BEFORE ({} gates, {} phase):", count_gates(original), count_phase_gates(original));
+        println!(
+            "BEFORE ({} gates, {} phase):",
+            count_gates(original),
+            count_phase_gates(original)
+        );
         print!("{original}");
-        println!("AFTER ({} gates, {} phase):", count_gates(optimized), count_phase_gates(optimized));
+        println!(
+            "AFTER ({} gates, {} phase):",
+            count_gates(optimized),
+            count_phase_gates(optimized)
+        );
         print!("{optimized}");
         println!();
     }
@@ -1153,12 +1887,24 @@ mod tests {
     #[test]
     fn circuit_from_diagram() {
         let mut c = Circuit::new(3);
-        c.apply(Gate::cnot { control: 0, target: 2 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         c.apply(Gate::t(2));
-        c.apply(Gate::cnot { control: 1, target: 2 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::tdg(0));
-        c.apply(Gate::cnot { control: 2, target: 0 });
+        c.apply(Gate::cnot {
+            control: 2,
+            target: 0,
+        });
 
         let opt = phase_fold_rand(&c);
         print_before_after("diagram circuit (T on y, T† on x)", &c, &opt);
@@ -1170,12 +1916,24 @@ mod tests {
     #[test]
     fn cx_t_cx_cx_tdg_cx() {
         let mut c = Circuit::new(2);
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::tdg(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
 
         let opt = phase_fold_rand(&c);
         print_before_after("cx T cx cx Tdg cx", &c, &opt);
@@ -1188,13 +1946,31 @@ mod tests {
     fn t_swap_h_swap_t() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::h(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(1));
 
         let opt = phase_fold_rand(&c);
@@ -1209,41 +1985,86 @@ mod tests {
     fn demo_cross_qubit_all() {
         let mut c1 = Circuit::new(2);
         c1.apply(Gate::t(0));
-        c1.apply(Gate::cnot { control: 0, target: 1 });
+        c1.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c1.apply(Gate::t(1));
-        c1.apply(Gate::cnot { control: 0, target: 1 });
-        c1.apply(Gate::cnot { control: 1, target: 0 });
+        c1.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c1.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c1.apply(Gate::t(0));
         let opt1 = phase_fold_rand(&c1);
         print_before_after("cross-qubit merge (T on q0 + T on q1 -> S)", &c1, &opt1);
 
         let mut c2 = Circuit::new(2);
         c2.apply(Gate::t(0));
-        c2.apply(Gate::cnot { control: 0, target: 1 });
+        c2.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c2.apply(Gate::tdg(1));
-        c2.apply(Gate::cnot { control: 0, target: 1 });
-        c2.apply(Gate::cnot { control: 1, target: 0 });
+        c2.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c2.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c2.apply(Gate::t(0));
         let opt2 = phase_fold_rand(&c2);
         print_before_after("cross-qubit cancel (T on q0 + Tdg on q1 -> 0)", &c2, &opt2);
 
         let mut c3 = Circuit::new(3);
-        c3.apply(Gate::cnot { control: 0, target: 2 });
-        c3.apply(Gate::cnot { control: 1, target: 2 });
+        c3.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        c3.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         c3.apply(Gate::rz(0.5, 2));
-        c3.apply(Gate::cnot { control: 1, target: 2 });
-        c3.apply(Gate::cnot { control: 0, target: 2 });
-        c3.apply(Gate::cnot { control: 1, target: 2 });
-        c3.apply(Gate::cnot { control: 0, target: 2 });
+        c3.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
+        c3.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        c3.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
+        c3.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         c3.apply(Gate::rz(0.5, 2));
         let opt3 = phase_fold_rand(&c3);
         print_before_after("3-qubit merge (Rz on q2 twice, same parity)", &c3, &opt3);
 
         let mut c4 = Circuit::new(2);
-        c4.apply(Gate::cnot { control: 0, target: 1 });
+        c4.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c4.apply(Gate::rz(0.3, 1));
-        c4.apply(Gate::cnot { control: 0, target: 1 });
-        c4.apply(Gate::cnot { control: 1, target: 0 });
+        c4.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c4.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c4.apply(Gate::rz(0.7, 0));
         let opt4 = phase_fold_rand(&c4);
         print_before_after("Rz(0.3) on q1 + Rz(0.7) on q0 -> Rz(1.0)", &c4, &opt4);
@@ -1324,7 +2145,9 @@ mod tests {
     #[test]
     fn t_t_t_t_is_z() {
         let mut c = Circuit::new(1);
-        for _ in 0..4 { c.apply(Gate::t(0)); }
+        for _ in 0..4 {
+            c.apply(Gate::t(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::z(_)));
@@ -1334,7 +2157,9 @@ mod tests {
     #[test]
     fn three_tdg_is_z_plus_t() {
         let mut c = Circuit::new(1);
-        for _ in 0..3 { c.apply(Gate::tdg(0)); }
+        for _ in 0..3 {
+            c.apply(Gate::tdg(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 2); // Z + T (5π/4)
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1427,7 +2252,9 @@ mod tests {
     #[test]
     fn six_t_is_sdg() {
         let mut c = Circuit::new(1);
-        for _ in 0..6 { c.apply(Gate::t(0)); }
+        for _ in 0..6 {
+            c.apply(Gate::t(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
@@ -1437,7 +2264,9 @@ mod tests {
     #[test]
     fn seven_t_is_tdg() {
         let mut c = Circuit::new(1);
-        for _ in 0..7 { c.apply(Gate::t(0)); }
+        for _ in 0..7 {
+            c.apply(Gate::t(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::tdg(_)));
@@ -1448,7 +2277,10 @@ mod tests {
     fn z_across_cnot_folds() {
         let mut c = Circuit::new(2);
         c.apply(Gate::z(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::z(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 0);
@@ -1459,7 +2291,10 @@ mod tests {
     fn sdg_across_cnot_folds() {
         let mut c = Circuit::new(2);
         c.apply(Gate::sdg(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::s(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 0);
@@ -1504,9 +2339,18 @@ mod tests {
     fn cross_qubit_z_merge() {
         let mut c = Circuit::new(2);
         c.apply(Gate::z(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         let opt = phase_fold_rand(&c);
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
@@ -1514,10 +2358,19 @@ mod tests {
     #[test]
     fn cross_qubit_sdg_s_cancel() {
         let mut c = Circuit::new(2);
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::sdg(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 1, target: 0 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::s(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 0);
@@ -1528,7 +2381,11 @@ mod tests {
     fn z_in_toffoli_decomp_pipeline() {
         let mut c = Circuit::new(3);
         c.apply(Gate::z(2));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         c.apply(Gate::z(2));
         let dec = DecomposeToffoli.run(&c);
         let pf1 = phase_fold_rand(&dec);
@@ -1540,7 +2397,11 @@ mod tests {
     fn sdg_in_toffoli_decomp_pipeline() {
         let mut c = Circuit::new(3);
         c.apply(Gate::sdg(0));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         c.apply(Gate::s(1));
         let dec = DecomposeToffoli.run(&c);
         let pf1 = phase_fold_rand(&dec);
@@ -1563,7 +2424,9 @@ mod tests {
     #[test]
     fn three_s_is_sdg() {
         let mut c = Circuit::new(1);
-        for _ in 0..3 { c.apply(Gate::s(0)); }
+        for _ in 0..3 {
+            c.apply(Gate::s(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::sdg(_)));
@@ -1573,7 +2436,9 @@ mod tests {
     #[test]
     fn three_sdg_is_s() {
         let mut c = Circuit::new(1);
-        for _ in 0..3 { c.apply(Gate::sdg(0)); }
+        for _ in 0..3 {
+            c.apply(Gate::sdg(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(matches!(&opt.gates[0], Gate::s(_)));
@@ -1583,7 +2448,9 @@ mod tests {
     #[test]
     fn four_s_cancel() {
         let mut c = Circuit::new(1);
-        for _ in 0..4 { c.apply(Gate::s(0)); }
+        for _ in 0..4 {
+            c.apply(Gate::s(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1592,7 +2459,9 @@ mod tests {
     #[test]
     fn four_sdg_cancel() {
         let mut c = Circuit::new(1);
-        for _ in 0..4 { c.apply(Gate::sdg(0)); }
+        for _ in 0..4 {
+            c.apply(Gate::sdg(0));
+        }
         let opt = phase_fold_rand(&c);
         assert_eq!(count_gates(&opt), 0);
         assert!(circuits_equiv(&c, &opt, 1e-10));
@@ -1628,11 +2497,20 @@ mod tests {
     fn mixed_z_sdg_cnot_pipeline() {
         let mut c = Circuit::new(3);
         c.apply(Gate::z(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::sdg(1));
-        c.apply(Gate::cnot { control: 1, target: 2 });
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 2,
+        });
         c.apply(Gate::t(2));
-        c.apply(Gate::cnot { control: 0, target: 2 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
         c.apply(Gate::s(0));
         c.apply(Gate::tdg(2));
         let opt = phase_fold_rand(&c);
@@ -1697,14 +2575,21 @@ mod tests {
         let mut c = Circuit::new(2);
         c.apply(Gate::h(0));
         c.apply(Gate::z(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::sdg(1));
         c.apply(Gate::x(1));
         let opt = phase_fold_rand(&c);
         assert!(circuits_equiv(&c, &opt, 1e-10));
         let h_count = opt.gates.iter().filter(|g| matches!(g, Gate::h(_))).count();
         let x_count = opt.gates.iter().filter(|g| matches!(g, Gate::x(_))).count();
-        let cx_count = opt.gates.iter().filter(|g| matches!(g, Gate::cnot { .. })).count();
+        let cx_count = opt
+            .gates
+            .iter()
+            .filter(|g| matches!(g, Gate::cnot { .. }))
+            .count();
         assert_eq!(h_count, 1);
         assert_eq!(x_count, 1);
         assert_eq!(cx_count, 1);
@@ -1715,7 +2600,11 @@ mod tests {
         let mut c = Circuit::new(3);
         c.apply(Gate::z(0));
         c.apply(Gate::sdg(1));
-        c.apply(Gate::ccx { control1: 0, control2: 1, target: 2 });
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
         c.apply(Gate::z(2));
         c.apply(Gate::s(1));
         let dec = DecomposeToffoli.run(&c);
@@ -1817,16 +2706,25 @@ mod tests {
         // on q1 merges with an earlier T on q0 (same parity group → one
         // LivePhase with int_part=1, float_part=0.3).
         let mut c = Circuit::new(2);
-        c.apply(Gate::t(0));                                // parity X, int=1
-        c.apply(Gate::cnot { control: 1, target: 0 });      // q0 = X^Y, q1 = Y
-        c.apply(Gate::cnot { control: 0, target: 1 });      // q1 = Y^(X^Y) = X
-        c.apply(Gate::rz(0.3, 1));                          // parity X → merge
+        c.apply(Gate::t(0)); // parity X, int=1
+        c.apply(Gate::cnot {
+            control: 1,
+            target: 0,
+        }); // q0 = X^Y, q1 = Y
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        }); // q1 = Y^(X^Y) = X
+        c.apply(Gate::rz(0.3, 1)); // parity X → merge
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
         match opt.gates.iter().find(|g| matches!(g, Gate::rz(..))) {
             Some(Gate::rz(theta, _)) => {
                 let expected = (PI / 4.0 + 0.3).rem_euclid(2.0 * PI);
-                assert!((theta - expected).abs() < 1e-9, "theta={theta}, expected={expected}");
+                assert!(
+                    (theta - expected).abs() < 1e-9,
+                    "theta={theta}, expected={expected}"
+                );
             }
             other => panic!("expected combined rz gate, got {other:?}"),
         }
@@ -1895,9 +2793,10 @@ mod tests {
         let opt = phase_fold_rand(&c);
         assert_eq!(count_t_gates(&opt), 0);
         assert_eq!(count_phase_gates(&opt), 1);
-        assert!(matches!(opt.gates.as_slice(), [
-            Gate::measure { qubit: 0, cbit: 0 }, Gate::s(0)
-        ]));
+        assert!(matches!(
+            opt.gates.as_slice(),
+            [Gate::measure { qubit: 0, cbit: 0 }, Gate::s(0)]
+        ));
         assert!(opt.has_measurement);
     }
 
@@ -1921,9 +2820,10 @@ mod tests {
         c.apply(Gate::tdg(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 0);
-        assert!(matches!(opt.gates.as_slice(), [
-            Gate::measure { qubit: 0, cbit: 0 }
-        ]));
+        assert!(matches!(
+            opt.gates.as_slice(),
+            [Gate::measure { qubit: 0, cbit: 0 }]
+        ));
     }
 
     #[test]
@@ -1939,7 +2839,11 @@ mod tests {
         assert_eq!(count_phase_gates(&opt), 1);
         assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
         // Measurement is preserved.
-        assert!(opt.gates.iter().any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 })));
+        assert!(
+            opt.gates
+                .iter()
+                .any(|g| matches!(g, Gate::measure { qubit: 1, cbit: 0 }))
+        );
     }
 
     #[test]
@@ -1958,7 +2862,10 @@ mod tests {
     fn measure_preserved_with_no_rotations() {
         let mut c = Circuit::with_cbits(2, 2);
         c.apply(Gate::h(0));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
         c.apply(Gate::measure { qubit: 1, cbit: 1 });
         let opt = phase_fold_rand(&c);
@@ -1977,9 +2884,10 @@ mod tests {
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_phase_gates(&opt), 1);
-        assert!(matches!(opt.gates.as_slice(), [
-            Gate::measure { qubit: 0, cbit: 0 }, Gate::z(0)
-        ]));
+        assert!(matches!(
+            opt.gates.as_slice(),
+            [Gate::measure { qubit: 0, cbit: 0 }, Gate::z(0)]
+        ));
     }
 
     #[test]
@@ -2008,15 +2916,24 @@ mod tests {
     fn reset_zero_propagates_through_cnot() {
         let mut c = Circuit::new(2);
         c.apply(Gate::reset(1));
-        c.apply(Gate::cnot { control: 0, target: 1 });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::t(0));
         c.apply(Gate::t(1));
         let opt = phase_fold_rand(&c);
-        assert!(matches!(opt.gates.as_slice(), [
-            Gate::reset(1),
-            Gate::cnot { control: 0, target: 1 },
-            Gate::s(1)
-        ]));
+        assert!(matches!(
+            opt.gates.as_slice(),
+            [
+                Gate::reset(1),
+                Gate::cnot {
+                    control: 0,
+                    target: 1
+                },
+                Gate::s(1)
+            ]
+        ));
     }
 
     #[test]
@@ -2027,17 +2944,27 @@ mod tests {
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_t_gates(&opt), 1);
-        assert!(matches!(opt.gates.as_slice(), [
-            Gate::reset(0), Gate::h(0), Gate::t(0)
-        ]));
+        assert!(matches!(
+            opt.gates.as_slice(),
+            [Gate::reset(0), Gate::h(0), Gate::t(0)]
+        ));
     }
 
     #[test]
     fn cz_preserved_without_rotations() {
         let mut c = Circuit::new(2);
-        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         let opt = phase_fold_rand(&c);
-        assert!(matches!(opt.gates.as_slice(), [Gate::cz { control: 0, target: 1 }]));
+        assert!(matches!(
+            opt.gates.as_slice(),
+            [Gate::cz {
+                control: 0,
+                target: 1
+            }]
+        ));
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
 
@@ -2046,11 +2973,23 @@ mod tests {
         for q in 0..2 {
             let mut c = Circuit::new(2);
             c.apply(Gate::t(q));
-            c.apply(Gate::cz { control: 0, target: 1 });
+            c.apply(Gate::cz {
+                control: 0,
+                target: 1,
+            });
             c.apply(Gate::t(q));
             let opt = phase_fold_rand(&c);
             assert_eq!(opt.gates.len(), 2, "operand {q}");
-            assert!(matches!(opt.gates[0], Gate::cz { control: 0, target: 1 }), "operand {q}");
+            assert!(
+                matches!(
+                    opt.gates[0],
+                    Gate::cz {
+                        control: 0,
+                        target: 1
+                    }
+                ),
+                "operand {q}"
+            );
             assert!(matches!(opt.gates[1], Gate::s(p) if p == q), "operand {q}");
             assert!(circuits_equiv(&c, &opt, 1e-10), "operand {q}");
         }
@@ -2061,10 +3000,19 @@ mod tests {
         for q in 0..2 {
             let mut c = Circuit::new(2);
             c.apply(Gate::t(q));
-            c.apply(Gate::cz { control: 0, target: 1 });
+            c.apply(Gate::cz {
+                control: 0,
+                target: 1,
+            });
             c.apply(Gate::tdg(q));
             let opt = phase_fold_rand(&c);
-            assert!(matches!(opt.gates.as_slice(), [Gate::cz { control: 0, target: 1 }]));
+            assert!(matches!(
+                opt.gates.as_slice(),
+                [Gate::cz {
+                    control: 0,
+                    target: 1
+                }]
+            ));
             assert!(circuits_equiv(&c, &opt, 1e-10));
         }
     }
@@ -2073,11 +3021,20 @@ mod tests {
     fn arbitrary_rz_folds_through_cz() {
         let mut c = Circuit::new(2);
         c.apply(Gate::rz(0.37, 1));
-        c.apply(Gate::cz { control: 1, target: 0 });
+        c.apply(Gate::cz {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::rz(-0.12, 1));
         let opt = phase_fold_rand(&c);
         assert_eq!(opt.gates.len(), 2);
-        assert!(matches!(opt.gates[0], Gate::cz { control: 1, target: 0 }));
+        assert!(matches!(
+            opt.gates[0],
+            Gate::cz {
+                control: 1,
+                target: 0
+            }
+        ));
         match opt.gates[1] {
             Gate::rz(theta, 1) => assert!((theta - 0.25).abs() < 1e-12),
             ref other => panic!("expected merged Rz, got {other:?}"),
@@ -2089,7 +3046,10 @@ mod tests {
     fn cz_does_not_hide_real_hadamard_boundary() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
-        c.apply(Gate::cz { control: 0, target: 1 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
         c.apply(Gate::h(0));
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
@@ -2103,14 +3063,24 @@ mod tests {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(0));
         c.apply(Gate::tdg(1));
-        c.apply(Gate::cz { control: 0, target: 1 });
-        c.apply(Gate::cz { control: 1, target: 0 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cz {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::t(0));
         c.apply(Gate::t(1));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_t_gates(&opt), 0);
         assert!(opt.gates.iter().any(|g| matches!(g, Gate::s(0))));
-        assert!(!opt.gates.iter().any(|g| matches!(g, Gate::t(1) | Gate::tdg(1))));
+        assert!(
+            !opt.gates
+                .iter()
+                .any(|g| matches!(g, Gate::t(1) | Gate::tdg(1)))
+        );
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
 
@@ -2118,9 +3088,18 @@ mod tests {
     fn cz_and_cnot_control_preserve_phase_parity_together() {
         let mut c = Circuit::new(3);
         c.apply(Gate::t(0));
-        c.apply(Gate::cz { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 0, target: 2 });
-        c.apply(Gate::cz { control: 2, target: 1 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        c.apply(Gate::cz {
+            control: 2,
+            target: 1,
+        });
         c.apply(Gate::t(0));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_t_gates(&opt), 0);
@@ -2132,9 +3111,18 @@ mod tests {
     fn cz_does_not_mask_cnot_target_parity_change() {
         let mut c = Circuit::new(2);
         c.apply(Gate::t(1));
-        c.apply(Gate::cz { control: 0, target: 1 });
-        c.apply(Gate::cnot { control: 0, target: 1 });
-        c.apply(Gate::cz { control: 1, target: 0 });
+        c.apply(Gate::cz {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        c.apply(Gate::cz {
+            control: 1,
+            target: 0,
+        });
         c.apply(Gate::t(1));
         let opt = phase_fold_rand(&c);
         assert_eq!(count_t_gates(&opt), 2);
@@ -2145,14 +3133,36 @@ mod tests {
     fn phase_fold_preserves_cz_count_and_operand_order() {
         let mut c = Circuit::new(3);
         c.apply(Gate::t(2));
-        c.apply(Gate::cz { control: 2, target: 0 });
-        c.apply(Gate::cz { control: 1, target: 2 });
+        c.apply(Gate::cz {
+            control: 2,
+            target: 0,
+        });
+        c.apply(Gate::cz {
+            control: 1,
+            target: 2,
+        });
         c.apply(Gate::t(2));
         let opt = phase_fold_rand(&c);
-        let czs: Vec<_> = opt.gates.iter().filter(|g| matches!(g, Gate::cz { .. })).collect();
+        let czs: Vec<_> = opt
+            .gates
+            .iter()
+            .filter(|g| matches!(g, Gate::cz { .. }))
+            .collect();
         assert_eq!(czs.len(), 2);
-        assert!(matches!(czs[0], Gate::cz { control: 2, target: 0 }));
-        assert!(matches!(czs[1], Gate::cz { control: 1, target: 2 }));
+        assert!(matches!(
+            czs[0],
+            Gate::cz {
+                control: 2,
+                target: 0
+            }
+        ));
+        assert!(matches!(
+            czs[1],
+            Gate::cz {
+                control: 1,
+                target: 2
+            }
+        ));
         assert!(circuits_equiv(&c, &opt, 1e-10));
     }
 }

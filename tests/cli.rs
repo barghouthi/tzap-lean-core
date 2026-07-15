@@ -18,7 +18,10 @@ fn no_args_prints_usage() {
     let out = tzap_run(&[]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("tzap"), "expected usage message, got: {stderr}");
+    assert!(
+        stderr.contains("tzap"),
+        "expected usage message, got: {stderr}"
+    );
 }
 
 #[test]
@@ -26,7 +29,10 @@ fn missing_file_errors() {
     let out = tzap_run(&["nonexistent.qasm"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Error reading"), "expected error message, got: {stderr}");
+    assert!(
+        stderr.contains("Error reading"),
+        "expected error message, got: {stderr}"
+    );
 }
 
 #[test]
@@ -35,7 +41,11 @@ fn optimizes_test_qasm_to_file() {
     let out_path = dir.path().join("out.qasm");
 
     let out = tzap_run(&[TEST_QASM, "-o", out_path.to_str().unwrap()]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let content = fs::read_to_string(&out_path).unwrap();
     assert!(content.starts_with("OPENQASM 2.0;"));
@@ -75,10 +85,17 @@ fn writes_to_output_file() {
     let out_path = dir.path().join("out.qasm");
 
     let out = tzap_run(&[TEST_QASM, out_path.to_str().unwrap()]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // stdout should be empty when writing to file
-    assert!(out.stdout.is_empty(), "stdout should be empty when output file given");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty when output file given"
+    );
 
     let content = fs::read_to_string(&out_path).unwrap();
     assert!(content.starts_with("OPENQASM 2.0;"));
@@ -116,10 +133,16 @@ fn toffoli_decomposition_increases_gate_count() {
 
     let content = fs::read_to_string(&out_path).unwrap();
     let gates = gate_lines_from(&content);
-    assert!(gates.len() > 3, "decomposed circuit should have more than 3 gates, got {}", gates.len());
+    assert!(
+        gates.len() > 3,
+        "decomposed circuit should have more than 3 gates, got {}",
+        gates.len()
+    );
     // No CCX gates should remain
-    assert!(!gates.iter().any(|g| g.starts_with("ccx ")),
-        "no ccx gates should remain after decomposition");
+    assert!(
+        !gates.iter().any(|g| g.starts_with("ccx ")),
+        "no ccx gates should remain after decomposition"
+    );
 }
 
 #[test]
@@ -133,12 +156,21 @@ fn mod5_4_reduces_t_count() {
     let content = fs::read_to_string(&out_path).unwrap();
     let gates = gate_lines_from(&content);
 
-    let t_count = gates.iter()
+    let t_count = gates
+        .iter()
         .filter(|g| g.starts_with("t ") || g.starts_with("tdg "))
         .count();
 
-    assert_eq!(t_count, 16, "mod5_4 should optimize to 16 T/Tdg, got {t_count}");
-    assert_eq!(gates.len(), 57, "mod5_4 should optimize to 57 gates, got {}", gates.len());
+    assert_eq!(
+        t_count, 16,
+        "mod5_4 should optimize to 16 T/Tdg, got {t_count}"
+    );
+    assert_eq!(
+        gates.len(),
+        57,
+        "mod5_4 should optimize to 57 gates, got {}",
+        gates.len()
+    );
 }
 
 #[test]
@@ -166,8 +198,10 @@ fn mod5_4_no_rz_in_output() {
     assert!(out.status.success());
     let content = fs::read_to_string(&out_path).unwrap();
     for line in content.lines() {
-        assert!(!line.starts_with("rz("),
-            "mod5_4 output should not contain raw rz gates, found: {line}");
+        assert!(
+            !line.starts_with("rz("),
+            "mod5_4 output should not contain raw rz gates, found: {line}"
+        );
     }
 }
 
@@ -177,24 +211,38 @@ fn inline_qasm_optimization() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("tt.qasm");
     let output = dir.path().join("out.qasm");
-    fs::write(&input, "\
+    fs::write(
+        &input,
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 t q[0];
 t q[0];
-").unwrap();
+",
+    )
+    .unwrap();
 
     let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
     assert!(out.status.success());
 
     let content = fs::read_to_string(&output).unwrap();
-    let gate_lines: Vec<&str> = content.lines()
-        .filter(|l| !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg"))
+    let gate_lines: Vec<&str> = content
+        .lines()
+        .filter(|l| {
+            !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg")
+        })
         .filter(|l| !l.is_empty())
         .collect();
-    assert_eq!(gate_lines.len(), 1, "T+T should fold to S, got: {gate_lines:?}");
-    assert!(gate_lines[0].starts_with("s "), "T+T should fold to S, got: {gate_lines:?}");
+    assert_eq!(
+        gate_lines.len(),
+        1,
+        "T+T should fold to S, got: {gate_lines:?}"
+    );
+    assert!(
+        gate_lines[0].starts_with("s "),
+        "T+T should fold to S, got: {gate_lines:?}"
+    );
 }
 
 #[test]
@@ -202,23 +250,34 @@ fn t_t_folds_to_s() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("tt.qasm");
     let output = dir.path().join("out.qasm");
-    fs::write(&input, "\
+    fs::write(
+        &input,
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 t q[0];
 t q[0];
-").unwrap();
+",
+    )
+    .unwrap();
 
     let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
     assert!(out.status.success());
 
     let content = fs::read_to_string(&output).unwrap();
-    let gate_lines: Vec<&str> = content.lines()
-        .filter(|l| !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg"))
+    let gate_lines: Vec<&str> = content
+        .lines()
+        .filter(|l| {
+            !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg")
+        })
         .filter(|l| !l.is_empty())
         .collect();
-    assert_eq!(gate_lines.len(), 1, "T+T should fold to single gate, got: {gate_lines:?}");
+    assert_eq!(
+        gate_lines.len(),
+        1,
+        "T+T should fold to single gate, got: {gate_lines:?}"
+    );
     assert_eq!(gate_lines[0], "s q[0];", "T+T should fold to S");
 }
 
@@ -227,75 +286,103 @@ fn t_tdg_cancels() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("t_tdg.qasm");
     let output = dir.path().join("out.qasm");
-    fs::write(&input, "\
+    fs::write(
+        &input,
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 t q[0];
 tdg q[0];
-").unwrap();
+",
+    )
+    .unwrap();
 
     let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
     assert!(out.status.success());
 
     let content = fs::read_to_string(&output).unwrap();
-    let gate_lines: Vec<&str> = content.lines()
-        .filter(|l| !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg"))
+    let gate_lines: Vec<&str> = content
+        .lines()
+        .filter(|l| {
+            !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg")
+        })
         .filter(|l| !l.is_empty())
         .collect();
-    assert!(gate_lines.is_empty(), "T+Tdg should cancel, got: {gate_lines:?}");
+    assert!(
+        gate_lines.is_empty(),
+        "T+Tdg should cancel, got: {gate_lines:?}"
+    );
 }
 
 #[test]
 fn phase_fold_through_cnot_control() {
     // T q0; CNOT q0,q1; T q0 should merge to CNOT + S
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 t q[0];
 cx q[0],q[1];
 t q[0];
-");
-    assert_eq!(gates.len(), 2, "should merge T through CNOT control: {gates:?}");
-    assert!(gates.iter().any(|g| g.starts_with("cx ")), "CNOT should remain");
+",
+    );
+    assert_eq!(
+        gates.len(),
+        2,
+        "should merge T through CNOT control: {gates:?}"
+    );
+    assert!(
+        gates.iter().any(|g| g.starts_with("cx ")),
+        "CNOT should remain"
+    );
     assert!(gates.iter().any(|g| g == "s q[0];"), "T+T should become S");
 }
 
 #[test]
 fn phase_fold_cancel_through_cnot_control() {
     // S q0; CNOT q0,q1; Sdg q0 — should cancel rotations
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 s q[0];
 cx q[0],q[1];
 sdg q[0];
-");
-    assert_eq!(gates.len(), 1, "S and Sdg should cancel through CNOT: {gates:?}");
+",
+    );
+    assert_eq!(
+        gates.len(),
+        1,
+        "S and Sdg should cancel through CNOT: {gates:?}"
+    );
     assert!(gates[0].starts_with("cx "), "only CNOT should remain");
 }
 
 #[test]
 fn phase_fold_blocked_on_cnot_target() {
     // T q[1]; CNOT q[0],q[1]; T q[1] — q1 is target, can't merge
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 t q[1];
 cx q[0],q[1];
 t q[1];
-");
+",
+    );
     // Phase fold may or may not touch this, but the two T's should not merge
-    assert!(gates.len() >= 3, "should not merge T on CNOT target: {gates:?}");
+    assert!(
+        gates.len() >= 3,
+        "should not merge T on CNOT target: {gates:?}"
+    );
 }
 
 fn rz_qasm(theta_expr: &str) -> String {
-    format!(
-        "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nrz({theta_expr}) q[0];\n"
-    )
+    format!("OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nrz({theta_expr}) q[0];\n")
 }
 
 #[test]
@@ -307,17 +394,28 @@ fn decompose_rz_with_epsilon_produces_cliffordt() {
 
     let out = tzap_run(&[
         input.to_str().unwrap(),
-        "-o", output.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
         "--decompose-rz",
-        "--epsilon", "1e-3",
+        "--epsilon",
+        "1e-3",
     ]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let content = fs::read_to_string(&output).unwrap();
     let gates = gate_lines_from(&content);
-    assert!(!gates.iter().any(|g| g.starts_with("rz(")),
-        "no rz gates should remain, got: {gates:?}");
-    assert!(!gates.is_empty(), "output should have gates after decomposition");
+    assert!(
+        !gates.iter().any(|g| g.starts_with("rz(")),
+        "no rz gates should remain, got: {gates:?}"
+    );
+    assert!(
+        !gates.is_empty(),
+        "output should have gates after decomposition"
+    );
 }
 
 #[test]
@@ -327,14 +425,12 @@ fn epsilon_accepts_scientific_notation_variants() {
     fs::write(&input, rz_qasm("pi/5")).unwrap();
 
     for eps in &["1e-3", "1E-3", "1.5e-2", "0.001"] {
-        let out = tzap_run(&[
-            input.to_str().unwrap(),
-            "--decompose-rz",
-            "--epsilon", eps,
-        ]);
-        assert!(out.status.success(),
+        let out = tzap_run(&[input.to_str().unwrap(), "--decompose-rz", "--epsilon", eps]);
+        assert!(
+            out.status.success(),
             "--epsilon {eps} should be accepted, stderr: {}",
-            String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }
 
@@ -347,11 +443,15 @@ fn invalid_epsilon_exits_with_error() {
     let out = tzap_run(&[
         input.to_str().unwrap(),
         "--decompose-rz",
-        "--epsilon", "not-a-number",
+        "--epsilon",
+        "not-a-number",
     ]);
     assert!(!out.status.success(), "invalid epsilon should fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--epsilon"), "error should mention --epsilon, got: {stderr}");
+    assert!(
+        stderr.contains("--epsilon"),
+        "error should mention --epsilon, got: {stderr}"
+    );
 }
 
 #[test]
@@ -363,15 +463,23 @@ fn epsilon_without_decompose_rz_is_ignored() {
 
     let out = tzap_run(&[
         input.to_str().unwrap(),
-        "-o", output.to_str().unwrap(),
-        "--epsilon", "1e-3",
+        "-o",
+        output.to_str().unwrap(),
+        "--epsilon",
+        "1e-3",
     ]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let content = fs::read_to_string(&output).unwrap();
     let gates = gate_lines_from(&content);
-    assert!(gates.iter().any(|g| g.starts_with("rz(")),
-        "rz gate should be preserved without --decompose-rz, got: {gates:?}");
+    assert!(
+        gates.iter().any(|g| g.starts_with("rz(")),
+        "rz gate should be preserved without --decompose-rz, got: {gates:?}"
+    );
 }
 
 #[test]
@@ -384,28 +492,43 @@ fn coarser_epsilon_produces_fewer_t_gates_than_finer() {
     let out_coarse = dir.path().join("coarse.qasm");
 
     let r1 = tzap_run(&[
-        input.to_str().unwrap(), "-o", out_fine.to_str().unwrap(),
-        "--decompose-rz", "--epsilon", "1e-4",
+        input.to_str().unwrap(),
+        "-o",
+        out_fine.to_str().unwrap(),
+        "--decompose-rz",
+        "--epsilon",
+        "1e-4",
     ]);
     let r2 = tzap_run(&[
-        input.to_str().unwrap(), "-o", out_coarse.to_str().unwrap(),
-        "--decompose-rz", "--epsilon", "1e-2",
+        input.to_str().unwrap(),
+        "-o",
+        out_coarse.to_str().unwrap(),
+        "--decompose-rz",
+        "--epsilon",
+        "1e-2",
     ]);
     assert!(r1.status.success());
     assert!(r2.status.success());
 
     let t_fine = gate_lines_from(&fs::read_to_string(&out_fine).unwrap())
-        .iter().filter(|g| g.starts_with("t ") || g.starts_with("tdg ")).count();
+        .iter()
+        .filter(|g| g.starts_with("t ") || g.starts_with("tdg "))
+        .count();
     let t_coarse = gate_lines_from(&fs::read_to_string(&out_coarse).unwrap())
-        .iter().filter(|g| g.starts_with("t ") || g.starts_with("tdg ")).count();
+        .iter()
+        .filter(|g| g.starts_with("t ") || g.starts_with("tdg "))
+        .count();
 
-    assert!(t_coarse <= t_fine,
-        "coarser epsilon should need <= T gates: coarse={t_coarse}, fine={t_fine}");
+    assert!(
+        t_coarse <= t_fine,
+        "coarser epsilon should need <= T gates: coarse={t_coarse}, fine={t_fine}"
+    );
 }
 
 // --- --passes pipeline override ---
 
-const HHTT_QASM: &str = "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nh q[0];\nh q[0];\nt q[0];\nt q[0];\n";
+const HHTT_QASM: &str =
+    "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nh q[0];\nh q[0];\nt q[0];\nt q[0];\n";
 
 #[test]
 fn passes_runs_only_the_listed_pass() {
@@ -416,8 +539,18 @@ fn passes_runs_only_the_listed_pass() {
     let output = dir.path().join("out.qasm");
     fs::write(&input, HHTT_QASM).unwrap();
 
-    let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap(), "--passes", "CancelGates"]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "CancelGates",
+    ]);
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let gates = gate_lines_from(&fs::read_to_string(&output).unwrap());
     assert_eq!(gates, vec!["t q[0];", "t q[0];"]);
@@ -432,10 +565,17 @@ fn passes_run_in_the_given_order() {
     fs::write(&input, HHTT_QASM).unwrap();
 
     let out = tzap_run(&[
-        input.to_str().unwrap(), "-o", output.to_str().unwrap(),
-        "--passes", "CancelGates,PhaseFoldRand",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "CancelGates,PhaseFoldRand",
     ]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let gates = gate_lines_from(&fs::read_to_string(&output).unwrap());
     assert_eq!(gates, vec!["s q[0];"]);
@@ -450,15 +590,25 @@ fn passes_allows_decompose_rz_with_epsilon() {
     fs::write(&input, rz_qasm("pi/5")).unwrap();
 
     let out = tzap_run(&[
-        input.to_str().unwrap(), "-o", output.to_str().unwrap(),
-        "--passes", "DecomposeRz,CancelGates,PhaseFoldRand",
-        "--epsilon", "1e-3",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "DecomposeRz,CancelGates,PhaseFoldRand",
+        "--epsilon",
+        "1e-3",
     ]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let gates = gate_lines_from(&fs::read_to_string(&output).unwrap());
-    assert!(!gates.iter().any(|g| g.starts_with("rz(")),
-        "no rz gates should remain, got: {gates:?}");
+    assert!(
+        !gates.iter().any(|g| g.starts_with("rz(")),
+        "no rz gates should remain, got: {gates:?}"
+    );
     assert!(!gates.is_empty());
 }
 
@@ -468,8 +618,16 @@ fn passes_conflicts_with_decompose_rz() {
     let input = dir.path().join("in.qasm");
     fs::write(&input, HHTT_QASM).unwrap();
 
-    let out = tzap_run(&[input.to_str().unwrap(), "--passes", "CancelGates", "--decompose-rz"]);
-    assert!(!out.status.success(), "should reject --passes with --decompose-rz");
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "--passes",
+        "CancelGates",
+        "--decompose-rz",
+    ]);
+    assert!(
+        !out.status.success(),
+        "should reject --passes with --decompose-rz"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cannot be combined"), "got: {stderr}");
 }
@@ -496,12 +654,113 @@ fn passes_unknown_name_errors_with_valid_list() {
     assert!(!out.status.success(), "unknown pass should fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Unknown pass 'Foo'"), "got: {stderr}");
-    assert!(stderr.contains("CancelGates"), "error should list valid passes, got: {stderr}");
+    assert!(
+        stderr.contains("CancelGates"),
+        "error should list valid passes, got: {stderr}"
+    );
+}
+
+#[test]
+fn superopt_pass_builds_table_behind_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[
+        "--passes",
+        "PhaseFoldRand,",
+        "SuperOpt",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        gate_lines_from(&fs::read_to_string(output).unwrap()),
+        ["s q[0];"]
+    );
+}
+
+// --- --max pipeline ---
+
+#[test]
+fn max_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("rz.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, rz_qasm("pi/5")).unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--max",
+        "--decompose-rz",
+        "--epsilon",
+        "1e-3",
+    ]);
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Iteration 1 ·") && stderr.contains("Iteration 2 ·"),
+        "expected compact progress for at least two iterations:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(" gates · ") && stderr.contains(" T"),
+        "progress should contain the latest gate counts:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Gate cancellation")
+            && !stderr.contains("Phase folding")
+            && !stderr.contains("Rz → Clifford+T decomposition"),
+        "fixpoint progress should not print per-pass logs:\n{stderr}"
+    );
+    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+
+    let gates = gate_lines_from(&fs::read_to_string(output).unwrap());
+    assert!(
+        !gates.iter().any(|g| g.starts_with("rz(")),
+        "no rz gates should remain, got: {gates:?}"
+    );
+}
+
+#[test]
+fn max_conflicts_with_passes_and_fixpoint() {
+    for conflicting in [
+        ["--passes", "CancelGates"].as_slice(),
+        ["--fixpoint"].as_slice(),
+    ] {
+        let mut args = vec![TEST_QASM, "--max"];
+        args.extend_from_slice(conflicting);
+        let out = tzap_run(&args);
+        assert!(
+            !out.status.success(),
+            "should reject --max with {conflicting:?}"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--max cannot be combined with --passes or --fixpoint"),
+            "got: {stderr}"
+        );
+    }
 }
 
 fn gate_lines_from(stdout: &str) -> Vec<String> {
-    stdout.lines()
-        .filter(|l| !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg"))
+    stdout
+        .lines()
+        .filter(|l| {
+            !l.starts_with("OPENQASM") && !l.starts_with("include") && !l.starts_with("qreg")
+        })
         .filter(|l| !l.is_empty())
         .map(|l| l.to_string())
         .collect()
@@ -513,7 +772,11 @@ fn run_qasm(qasm: &str) -> (Vec<String>, String) {
     let output = dir.path().join("output.qasm");
     fs::write(&input, qasm).unwrap();
     let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
-    assert!(out.status.success(), "tzap failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let content = fs::read_to_string(&output).unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     (gate_lines_from(&content), stderr)
@@ -521,121 +784,148 @@ fn run_qasm(qasm: &str) -> (Vec<String>, String) {
 
 #[test]
 fn s_sdg_cancels() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 s q[0];
 sdg q[0];
-");
+",
+    );
     assert!(gates.is_empty(), "S+Sdg should cancel, got: {gates:?}");
 }
 
 #[test]
 fn sdg_s_cancels() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 sdg q[0];
 s q[0];
-");
+",
+    );
     assert!(gates.is_empty(), "Sdg+S should cancel, got: {gates:?}");
 }
 
 #[test]
 fn z_z_cancels() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 z q[0];
 z q[0];
-");
+",
+    );
     assert!(gates.is_empty(), "Z+Z should cancel, got: {gates:?}");
 }
 
 #[test]
 fn s_s_becomes_z() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 s q[0];
 s q[0];
-");
-    assert_eq!(gates.len(), 1, "S+S should fold to one gate, got: {gates:?}");
+",
+    );
+    assert_eq!(
+        gates.len(),
+        1,
+        "S+S should fold to one gate, got: {gates:?}"
+    );
     assert_eq!(gates[0], "z q[0];");
 }
 
 #[test]
 fn sdg_sdg_becomes_z() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 sdg q[0];
 sdg q[0];
-");
-    assert_eq!(gates.len(), 1, "Sdg+Sdg should fold to one gate, got: {gates:?}");
+",
+    );
+    assert_eq!(
+        gates.len(),
+        1,
+        "Sdg+Sdg should fold to one gate, got: {gates:?}"
+    );
     assert_eq!(gates[0], "z q[0];");
 }
 
 #[test]
 fn z_s_becomes_sdg() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 z q[0];
 s q[0];
-");
+",
+    );
     assert_eq!(gates.len(), 1, "Z+S should fold to Sdg, got: {gates:?}");
     assert_eq!(gates[0], "sdg q[0];");
 }
 
 #[test]
 fn z_sdg_becomes_s() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 z q[0];
 sdg q[0];
-");
+",
+    );
     assert_eq!(gates.len(), 1, "Z+Sdg should fold to S, got: {gates:?}");
     assert_eq!(gates[0], "s q[0];");
 }
 
 #[test]
 fn sdg_t_becomes_tdg() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 sdg q[0];
 t q[0];
-");
+",
+    );
     assert_eq!(gates.len(), 1, "Sdg+T should fold to Tdg, got: {gates:?}");
     assert_eq!(gates[0], "tdg q[0];");
 }
 
 #[test]
 fn s_tdg_becomes_t() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
 s q[0];
 tdg q[0];
-");
+",
+    );
     assert_eq!(gates.len(), 1, "S+Tdg should fold to T, got: {gates:?}");
     assert_eq!(gates[0], "t q[0];");
 }
 
 #[test]
 fn six_t_becomes_sdg() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
@@ -645,14 +935,16 @@ t q[0];
 t q[0];
 t q[0];
 t q[0];
-");
+",
+    );
     assert_eq!(gates.len(), 1, "6T should fold to Sdg, got: {gates:?}");
     assert_eq!(gates[0], "sdg q[0];");
 }
 
 #[test]
 fn four_t_becomes_z() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
@@ -660,14 +952,16 @@ t q[0];
 t q[0];
 t q[0];
 t q[0];
-");
+",
+    );
     assert_eq!(gates.len(), 1, "4T should fold to Z, got: {gates:?}");
     assert_eq!(gates[0], "z q[0];");
 }
 
 #[test]
 fn four_s_cancels() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
@@ -675,40 +969,58 @@ s q[0];
 s q[0];
 s q[0];
 s q[0];
-");
-    assert!(gates.is_empty(), "4S should cancel to identity, got: {gates:?}");
+",
+    );
+    assert!(
+        gates.is_empty(),
+        "4S should cancel to identity, got: {gates:?}"
+    );
 }
 
 #[test]
 fn z_roundtrip_qasm() {
     // z gate should survive a round trip
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 z q[0];
 cx q[0],q[1];
-");
-    assert!(gates.iter().any(|g| g == "z q[0];"), "z gate should be in output, got: {gates:?}");
-    assert!(gates.iter().any(|g| g.starts_with("cx ")), "cx should be in output, got: {gates:?}");
+",
+    );
+    assert!(
+        gates.iter().any(|g| g == "z q[0];"),
+        "z gate should be in output, got: {gates:?}"
+    );
+    assert!(
+        gates.iter().any(|g| g.starts_with("cx ")),
+        "cx should be in output, got: {gates:?}"
+    );
 }
 
 #[test]
 fn sdg_roundtrip_qasm() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 sdg q[0];
 cx q[0],q[1];
-");
-    assert!(gates.iter().any(|g| g == "sdg q[0];"), "sdg gate should be in output, got: {gates:?}");
+",
+    );
+    assert!(
+        gates.iter().any(|g| g == "sdg q[0];"),
+        "sdg gate should be in output, got: {gates:?}"
+    );
 }
 
 #[test]
 fn no_rz_for_known_angles() {
     // After optimization, known angles should never produce raw rz
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[1];
@@ -728,14 +1040,16 @@ t q[0];
 t q[0];
 t q[0];
 t q[0];
-");
+",
+    );
     // 16T = 2*2π = identity
     assert!(gates.is_empty(), "16T should cancel, got: {gates:?}");
 }
 
 #[test]
 fn mixed_z_sdg_pipeline() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
@@ -744,12 +1058,16 @@ sdg q[1];
 cx q[0],q[1];
 s q[0];
 t q[1];
-");
+",
+    );
     // z + s = 3π/2 = sdg on q0
     // sdg + t = -π/4 = tdg on q1
     // Should not contain any rz gates
     for g in &gates {
-        assert!(!g.starts_with("rz("), "should not have raw rz, got: {gates:?}");
+        assert!(
+            !g.starts_with("rz("),
+            "should not have raw rz, got: {gates:?}"
+        );
     }
 }
 
@@ -760,7 +1078,9 @@ fn output_idempotent_with_z_sdg() {
     let input = dir.path().join("in.qasm");
     let pass1 = dir.path().join("p1.qasm");
     let pass2 = dir.path().join("p2.qasm");
-    fs::write(&input, "\
+    fs::write(
+        &input,
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[3];
@@ -771,7 +1091,9 @@ cx q[0],q[1];
 cx q[1],q[2];
 t q[0];
 tdg q[2];
-").unwrap();
+",
+    )
+    .unwrap();
 
     let out1 = tzap_run(&[input.to_str().unwrap(), pass1.to_str().unwrap()]);
     assert!(out1.status.success());
@@ -785,26 +1107,34 @@ tdg q[2];
 
 #[test]
 fn native_cz_is_preserved_by_default() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 cz q[0],q[1];
-");
+",
+    );
     assert_eq!(gates, vec!["cz q[0],q[1];"]);
 }
 
 #[test]
 fn phase_fold_through_native_cz_on_second_operand() {
-    let (gates, _) = run_qasm("\
+    let (gates, _) = run_qasm(
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 t q[1];
 cz q[0],q[1];
 t q[1];
-");
-    assert_eq!(gates.len(), 2, "expected native CZ plus folded S: {gates:?}");
+",
+    );
+    assert_eq!(
+        gates.len(),
+        2,
+        "expected native CZ plus folded S: {gates:?}"
+    );
     assert_eq!(gates[0], "cz q[0],q[1];");
     assert_eq!(gates[1], "s q[1];");
 }
@@ -814,12 +1144,16 @@ fn explicit_decompose_cz_pass_emits_h_cx_h() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("cz.qasm");
     let output = dir.path().join("out.qasm");
-    fs::write(&input, "\
+    fs::write(
+        &input,
+        "\
 OPENQASM 2.0;
 include \"qelib1.inc\";
 qreg q[2];
 cz q[1],q[0];
-").unwrap();
+",
+    )
+    .unwrap();
 
     let out = tzap_run(&[
         input.to_str().unwrap(),
@@ -828,10 +1162,15 @@ cz q[1],q[0];
         "--passes",
         "DecomposeCz",
     ]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let content = fs::read_to_string(output).unwrap();
     assert!(!content.lines().any(|line| line.starts_with("cz ")));
-    let gates: Vec<_> = content.lines()
+    let gates: Vec<_> = content
+        .lines()
         .filter(|line| line.starts_with("h ") || line.starts_with("cx "))
         .collect();
     assert_eq!(gates, vec!["h q[0];", "cx q[1],q[0];", "h q[0];"]);
