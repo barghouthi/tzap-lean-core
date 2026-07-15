@@ -839,7 +839,7 @@ pub struct SuperOptRewrite {
     pub replacement: Vec<Gate>,
 }
 
-/// Results and matrix-cache statistics from [`SuperOptPass::run`].
+/// Results and matrix-cache statistics from [`SuperOpt::run`].
 #[derive(Clone, Debug)]
 pub struct SuperOptResult {
     /// Input circuit with a non-overlapping set of strictly smaller rewrites applied.
@@ -857,7 +857,7 @@ pub struct SuperOptResult {
 
 /// Configuration for the connected anchored-window analysis.
 #[derive(Clone, Debug)]
-pub struct SuperOptPass {
+pub struct SuperOpt {
     /// Maximum number of distinct qubits in a tracked window.
     pub max_qubits: usize,
     /// Maximum number of connected gates in a reported window.
@@ -878,7 +878,7 @@ struct CachedMatrix {
     synthesized_replacement: Option<Vec<Gate>>,
 }
 
-impl SuperOptPass {
+impl SuperOpt {
     pub fn new(
         max_qubits: usize,
         window_gates: usize,
@@ -1074,14 +1074,14 @@ impl SuperOptPass {
     }
 }
 
-impl Pass for SuperOptPass {
+impl Pass for SuperOpt {
     fn name(&self) -> &str {
-        SuperOptPass::name(self)
+        SuperOpt::name(self)
     }
 
     fn run(&self, circuit: &Circuit) -> Circuit {
-        SuperOptPass::run(self, circuit)
-            .expect("SuperOptPass requires a valid unitary circuit")
+        SuperOpt::run(self, circuit)
+            .expect("SuperOpt requires a valid unitary circuit")
             .circuit
     }
 }

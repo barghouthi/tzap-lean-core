@@ -11,7 +11,7 @@ use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use tzap::pass::{Pass, count_t};
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
-use tzap::super_opt::{SuperOptPass, SuperOptTableConfig};
+use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
 
 /// Chunks (and rayon threads) per logical core.
 const CHUNK_MULTIPLIER: usize = 4;
@@ -395,7 +395,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         let superopt_pass = if uses_superopt {
             let start = Instant::now();
             let pass =
-                SuperOptPass::new(4, 8, SuperOptTableConfig::default()).unwrap_or_else(|error| {
+                SuperOpt::new(4, 8, SuperOptTableConfig::default()).unwrap_or_else(|error| {
                     eprintln!("Failed to initialize SuperOpt: {error}");
                     process::exit(1);
                 });

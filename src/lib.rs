@@ -10,7 +10,7 @@ pub mod super_opt;
 #[deprecated(note = "use tzap::super_opt instead")]
 pub mod subcircuit_matrix {
     pub use crate::super_opt::{
-        SuperOptError as SubcircuitMatrixError, SuperOptPass as SubcircuitMatrixPass,
+        SuperOptError as SubcircuitMatrixError, SuperOpt as SubcircuitMatrixPass,
         SuperOptResult as SubcircuitMatrixResult, SuperOptRewrite as SubcircuitRewrite,
         SuperOptTableConfig as SubcircuitMatrixTableConfig, SuperOptWindow as SubcircuitMatrix,
     };

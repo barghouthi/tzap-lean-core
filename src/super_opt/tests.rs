@@ -94,7 +94,7 @@ fn disjoint_prefix_can_be_connected_by_later_gate() {
         target: 1,
     });
 
-    let result = SuperOptPass::analyzer(2, 3).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(2, 3).run(&circuit).unwrap();
     let window = result
         .subcircuits
         .iter()
@@ -113,7 +113,7 @@ fn emits_one_window_per_anchor_not_all_combinations() {
     circuit.apply(Gate::s(0));
     circuit.apply(Gate::t(0));
 
-    let result = SuperOptPass::analyzer(1, 2).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(1, 2).run(&circuit).unwrap();
     let indices: Vec<_> = result
         .subcircuits
         .iter()
@@ -139,7 +139,7 @@ fn disconnected_completed_window_is_not_emitted() {
     circuit.apply(Gate::h(0));
     circuit.apply(Gate::x(1));
 
-    let result = SuperOptPass::analyzer(2, 2).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(2, 2).run(&circuit).unwrap();
     assert!(
         !result
             .subcircuits
@@ -156,7 +156,7 @@ fn unrelated_gates_are_skipped_until_anchor_reconnects() {
     circuit.apply(Gate::z(2));
     circuit.apply(Gate::h(0));
 
-    let result = SuperOptPass::analyzer(1, 2).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(1, 2).run(&circuit).unwrap();
     assert!(
         result
             .subcircuits
@@ -176,7 +176,7 @@ fn bridge_pulls_in_entire_intervening_component() {
         target: 1,
     });
 
-    let three_gate = SuperOptPass::analyzer(2, 3).run(&circuit).unwrap();
+    let three_gate = SuperOpt::analyzer(2, 3).run(&circuit).unwrap();
     assert!(
         !three_gate
             .subcircuits
@@ -190,7 +190,7 @@ fn bridge_pulls_in_entire_intervening_component() {
             .any(|window| window.gate_indices == [1, 2, 3])
     );
 
-    let four_gate = SuperOptPass::analyzer(2, 4).run(&circuit).unwrap();
+    let four_gate = SuperOpt::analyzer(2, 4).run(&circuit).unwrap();
     assert!(
         four_gate
             .subcircuits
@@ -209,7 +209,7 @@ fn over_width_partial_window_is_dropped() {
     });
     circuit.apply(Gate::t(0));
 
-    let result = SuperOptPass::analyzer(1, 2).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(1, 2).run(&circuit).unwrap();
     assert!(
         result
             .subcircuits
@@ -226,7 +226,7 @@ fn canonical_cache_reuses_shifted_windows() {
     circuit.apply(Gate::h(1));
     circuit.apply(Gate::x(1));
 
-    let result = SuperOptPass::analyzer(1, 2).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(1, 2).run(&circuit).unwrap();
     assert_eq!(result.subcircuits.len(), 6);
     assert_eq!(result.cache_hits, 3);
     assert_eq!(result.cache_misses, 3);
@@ -464,7 +464,7 @@ fn random_short_library_circuits_never_synthesize_longer() {
 
 #[test]
 fn empty_circuit_produces_empty_result() {
-    let result = SuperOptPass::analyzer(2, 4).run(&Circuit::new(2)).unwrap();
+    let result = SuperOpt::analyzer(2, 4).run(&Circuit::new(2)).unwrap();
     assert!(result.subcircuits.is_empty());
     assert!(result.rewrites.is_empty());
     assert!(result.circuit.gates.is_empty());
@@ -479,7 +479,7 @@ fn gate_wider_than_max_qubits_is_left_alone() {
         control2: 1,
         target: 2,
     });
-    let result = SuperOptPass::analyzer(2, 4).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(2, 4).run(&circuit).unwrap();
     assert!(result.subcircuits.is_empty());
     assert_eq!(result.circuit.gates.len(), 1);
 }
@@ -489,7 +489,7 @@ fn rz_inverse_pair_is_removed_as_identity() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::rz(0.37, 0));
     circuit.apply(Gate::rz(-0.37, 0));
-    let result = SuperOptPass::analyzer(1, 2)
+    let result = SuperOpt::analyzer(1, 2)
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
@@ -502,7 +502,7 @@ fn rz_pair_is_rewritten_to_library_gate() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::rz(std::f64::consts::FRAC_PI_4, 0));
     circuit.apply(Gate::rz(std::f64::consts::FRAC_PI_4, 0));
-    let pass = SuperOptPass::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
     let result = pass.run(&circuit).unwrap();
     assert_eq!(result.circuit.gates.len(), 1);
     assert!(matches!(result.circuit.gates[0], Gate::s(0)));
@@ -518,7 +518,7 @@ fn equal_length_synthesis_is_not_applied() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::x(0));
     circuit.apply(Gate::h(0));
-    let pass = SuperOptPass::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 2));
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 2));
     let result = pass.run(&circuit).unwrap();
     assert!(result.rewrites.is_empty());
     assert_eq!(result.circuit.gates.len(), 2);
@@ -529,7 +529,7 @@ fn identity_removal_wins_over_synthesis() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::h(0));
     circuit.apply(Gate::h(0));
-    let pass = SuperOptPass::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 2));
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 2));
     let result = pass.run(&circuit).unwrap();
     assert!(result.circuit.gates.is_empty());
     assert_eq!(result.removed_subcircuits, vec![vec![0, 1]]);
@@ -542,7 +542,7 @@ fn consecutive_synth_rewrites_do_not_double_claim() {
     for _ in 0..4 {
         circuit.apply(Gate::s(0));
     }
-    let pass = SuperOptPass::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
     let result = pass.run(&circuit).unwrap();
     assert_eq!(result.rewrites.len(), 2);
     assert_eq!(result.circuit.gates.len(), 2);
@@ -557,7 +557,7 @@ fn consecutive_synth_rewrites_do_not_double_claim() {
 fn rejects_reset_gate() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::reset(0));
-    let error = SuperOptPass::analyzer(1, 1).run(&circuit).unwrap_err();
+    let error = SuperOpt::analyzer(1, 1).run(&circuit).unwrap_err();
     assert_eq!(error, SuperOptError::NonUnitaryGate { gate_index: 0 });
 }
 
@@ -568,7 +568,7 @@ fn rejects_out_of_range_qubit() {
         control: 0,
         target: 1,
     });
-    let error = SuperOptPass::analyzer(2, 1).run(&circuit).unwrap_err();
+    let error = SuperOpt::analyzer(2, 1).run(&circuit).unwrap_err();
     assert_eq!(
         error,
         SuperOptError::InvalidQubit {
@@ -584,7 +584,7 @@ fn rejects_out_of_range_qubit() {
 fn pass_trait_panics_on_non_unitary_circuit() {
     let mut circuit = Circuit::with_cbits(1, 1);
     circuit.apply(Gate::measure { qubit: 0, cbit: 0 });
-    let pass = SuperOptPass::analyzer(1, 1);
+    let pass = SuperOpt::analyzer(1, 1);
     Pass::run(&pass, &circuit);
 }
 
@@ -607,10 +607,10 @@ fn error_messages_name_the_offending_values() {
 
 #[test]
 fn constructor_rejects_invalid_table_config() {
-    let error = SuperOptPass::new(4, 8, SuperOptTableConfig::new(0, 8, 1_000)).unwrap_err();
+    let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(0, 8, 1_000)).unwrap_err();
     assert!(matches!(error, SuperOptError::InvalidTableConfig { .. }));
 
-    let error = SuperOptPass::new(4, 8, SuperOptTableConfig::new(4, 8, 0)).unwrap_err();
+    let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(4, 8, 0)).unwrap_err();
     assert!(matches!(error, SuperOptError::InvalidTableConfig { .. }));
 }
 
@@ -630,7 +630,7 @@ fn cache_stats_count_every_emission() {
             },
         });
     }
-    let result = SuperOptPass::analyzer(3, 5).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(3, 5).run(&circuit).unwrap();
     assert_eq!(
         result.cache_hits + result.cache_misses,
         result.subcircuits.len()
@@ -646,7 +646,7 @@ fn result_lists_are_sorted() {
         circuit.apply(Gate::h(0));
         circuit.apply(Gate::x(1));
     }
-    let result = SuperOptPass::analyzer(1, 2).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(1, 2).run(&circuit).unwrap();
     assert!(
         result
             .subcircuits
@@ -674,11 +674,11 @@ fn without_subcircuits_matches_collected_run() {
     circuit.apply(Gate::s(1));
 
     let table = synthesis_table(2, 2);
-    let collected = SuperOptPass::analyzer(2, 4)
+    let collected = SuperOpt::analyzer(2, 4)
         .with_synthesis_table(Arc::clone(&table))
         .run(&circuit)
         .unwrap();
-    let skipped = SuperOptPass::analyzer(2, 4)
+    let skipped = SuperOpt::analyzer(2, 4)
         .with_synthesis_table(table)
         .without_subcircuits()
         .run(&circuit)
@@ -709,7 +709,7 @@ fn window_bound_counts_gates_not_index_span() {
     circuit.apply(Gate::x(1));
     circuit.apply(Gate::x(1));
     circuit.apply(Gate::h(0));
-    let result = SuperOptPass::analyzer(1, 2)
+    let result = SuperOpt::analyzer(1, 2)
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
@@ -752,7 +752,7 @@ fn replaces_subcircuit_with_shorter_synthesized_circuit() {
     circuit.apply(Gate::x(2));
     circuit.apply(Gate::h(2));
 
-    let pass = SuperOptPass::analyzer(1, 3).with_synthesis_table(synthesis_table(1, 1));
+    let pass = SuperOpt::analyzer(1, 3).with_synthesis_table(synthesis_table(1, 1));
     let result = pass.run(&circuit).unwrap();
 
     assert_eq!(result.rewrites.len(), 1);
@@ -779,7 +779,7 @@ fn synthesized_two_qubit_replacement_uses_physical_qubits() {
     });
     circuit.apply(Gate::h(3));
 
-    let pass = SuperOptPass::analyzer(2, 3).with_synthesis_table(synthesis_table(2, 1));
+    let pass = SuperOpt::analyzer(2, 3).with_synthesis_table(synthesis_table(2, 1));
     let result = pass.run(&circuit).unwrap();
 
     assert_eq!(result.circuit.gates.len(), 1);
@@ -804,7 +804,7 @@ fn overlapping_synthesized_rewrites_are_not_both_applied() {
     circuit.apply(Gate::s(0));
     circuit.apply(Gate::s(0));
 
-    let pass = SuperOptPass::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
     let result = pass.run(&circuit).unwrap();
 
     assert_eq!(result.rewrites.len(), 1);
@@ -912,7 +912,7 @@ fn randomized_synthesized_rewrites_preserve_unitary() {
             circuit.apply(gate);
         }
 
-        let pass = SuperOptPass::analyzer(3, 4).with_synthesis_table(Arc::clone(&table));
+        let pass = SuperOpt::analyzer(3, 4).with_synthesis_table(Arc::clone(&table));
         let optimized = pass.run(&circuit).unwrap().circuit;
         assert!(crate::unitary::circuits_equiv(
             &circuit,
@@ -1020,7 +1020,7 @@ fn randomized_production_config_rewrites_are_sound() {
             circuit.apply(gate);
         }
 
-        let pass = SuperOptPass::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
+        let pass = SuperOpt::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
         let result = pass.run(&circuit).unwrap();
         audit_rewrites(&circuit, &result);
         assert!(result.circuit.gates.len() <= circuit.gates.len());
@@ -1039,7 +1039,7 @@ fn removes_noncontiguous_identity_subcircuit_from_circuit() {
     circuit.apply(Gate::x(1));
     circuit.apply(Gate::h(0));
 
-    let result = SuperOptPass::analyzer(1, 2)
+    let result = SuperOpt::analyzer(1, 2)
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
@@ -1059,7 +1059,7 @@ fn checks_identity_windows_shorter_than_gate_limit() {
     circuit.apply(Gate::h(0));
     circuit.apply(Gate::h(0));
 
-    let result = SuperOptPass::analyzer(1, 8)
+    let result = SuperOpt::analyzer(1, 8)
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
@@ -1087,7 +1087,7 @@ fn removes_identity_up_to_global_phase() {
     circuit.apply(Gate::x(0));
     circuit.apply(Gate::z(0));
 
-    let result = SuperOptPass::analyzer(1, 4)
+    let result = SuperOpt::analyzer(1, 4)
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
@@ -1107,7 +1107,7 @@ fn overlapping_identity_windows_are_not_both_removed() {
     circuit.apply(Gate::x(0));
     circuit.apply(Gate::x(0));
 
-    let result = SuperOptPass::analyzer(1, 2)
+    let result = SuperOpt::analyzer(1, 2)
         .with_synthesis_table(synthesis_table(1, 0))
         .run(&circuit)
         .unwrap();
@@ -1127,7 +1127,7 @@ fn nonidentity_window_is_preserved() {
     circuit.apply(Gate::h(0));
     circuit.apply(Gate::x(0));
 
-    let result = SuperOptPass::analyzer(1, 2).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(1, 2).run(&circuit).unwrap();
     assert!(result.removed_subcircuits.is_empty());
     assert_eq!(result.circuit.gates.len(), 2);
 }
@@ -1138,7 +1138,7 @@ fn implements_optimization_pass_interface() {
     circuit.apply(Gate::h(0));
     circuit.apply(Gate::h(0));
 
-    let pass = SuperOptPass::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 0));
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 0));
     let optimized = Pass::run(&pass, &circuit);
     assert!(optimized.gates.is_empty());
 }
@@ -1168,7 +1168,7 @@ fn every_supported_unitary_gate_matches_naive_matrix() {
         target: 2,
     });
 
-    let result = SuperOptPass::analyzer(3, 3).run(&circuit).unwrap();
+    let result = SuperOpt::analyzer(3, 3).run(&circuit).unwrap();
     for window in &result.subcircuits {
         let expected = naive_matrix(&circuit, &window.gate_indices, &window.qubits);
         assert_matrix_close(&window.matrix, &expected);
@@ -1215,7 +1215,7 @@ fn randomized_results_match_naive_anchored_scan() {
 
         for max_qubits in 1..=3 {
             for window_gates in 1..=5 {
-                let result = SuperOptPass::analyzer(max_qubits, window_gates)
+                let result = SuperOpt::analyzer(max_qubits, window_gates)
                     .run(&circuit)
                     .unwrap();
                 let expected = naive_windows(&circuit, max_qubits, window_gates);
@@ -1240,13 +1240,13 @@ fn rejects_non_unitary_circuit() {
     circuit.apply(Gate::h(0));
     circuit.apply(Gate::measure { qubit: 0, cbit: 0 });
 
-    let error = SuperOptPass::analyzer(1, 1).run(&circuit).unwrap_err();
+    let error = SuperOpt::analyzer(1, 1).run(&circuit).unwrap_err();
     assert_eq!(error, SuperOptError::NonUnitaryGate { gate_index: 1 });
 }
 
 #[test]
 fn rejects_zero_gate_window() {
-    let error = SuperOptPass::analyzer(2, 0)
+    let error = SuperOpt::analyzer(2, 0)
         .run(&Circuit::new(2))
         .unwrap_err();
     assert_eq!(error, SuperOptError::ZeroWindowGates);
@@ -1283,7 +1283,7 @@ fn profile_thousands_of_gates() {
         }
 
         let start = Instant::now();
-        let result = SuperOptPass::analyzer(4, 8).run(&circuit).unwrap();
+        let result = SuperOpt::analyzer(4, 8).run(&circuit).unwrap();
         let elapsed = start.elapsed();
         println!(
             "{gate_count:>6} gates: {:>8.3} ms, {:>6} outputs, {:>6} cache hits, {:>6} misses",
@@ -1411,7 +1411,7 @@ fn verify_small_benchmarks_preserve_unitary() {
             env!("CARGO_MANIFEST_DIR")
         );
         let circuit = crate::qasm::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let pass = SuperOptPass::analyzer(4, 8)
+        let pass = SuperOpt::analyzer(4, 8)
             .with_synthesis_table(Arc::clone(&table))
             .without_subcircuits();
         let result = pass.run(&circuit).unwrap();
@@ -1465,7 +1465,7 @@ fn profile_cobble_circuits() {
         let parse_elapsed = parse_start.elapsed();
 
         let run_start = Instant::now();
-        let pass = SuperOptPass::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
+        let pass = SuperOpt::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
         let result = pass.run(&circuit).unwrap();
         let run_elapsed = run_start.elapsed();
         let removed_gates = circuit.gates.len() - result.circuit.gates.len();
@@ -1597,7 +1597,7 @@ fn fuzz_subcircuit_rewrites_change_circuit_and_preserve_unitary() {
             circuit.apply(gate);
         }
 
-        let pass = SuperOptPass::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
+        let pass = SuperOpt::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
         let result = pass.run(&circuit).unwrap();
         assert!(!result.rewrites.is_empty(), "round {round} made no rewrite");
         assert!(
@@ -1637,7 +1637,7 @@ fn audit_all_benchmark_rewrites() {
     paths.sort();
 
     let table = build_profile_table();
-    let pass = SuperOptPass::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
+    let pass = SuperOpt::analyzer(4, 8).with_synthesis_table(Arc::clone(&table));
 
     let mut total_rewrites = 0;
     for path in paths {
@@ -1662,7 +1662,7 @@ fn audit_all_benchmark_rewrites() {
 }
 
 /// Compare `CancelGates -> PhaseFoldRand` against
-/// `CancelGates -> SuperOptPass -> PhaseFoldRand`.
+/// `CancelGates -> SuperOpt -> PhaseFoldRand`.
 fn profile_default_pipeline_comparison(corpus: &str) {
     use std::time::Instant;
 
@@ -1682,7 +1682,7 @@ fn profile_default_pipeline_comparison(corpus: &str) {
     paths.sort();
 
     let table = load_optimizer_profile_table();
-    let subcircuit = SuperOptPass::analyzer(4, 8)
+    let subcircuit = SuperOpt::analyzer(4, 8)
         .with_synthesis_table(Arc::clone(&table))
         .without_subcircuits();
 
@@ -1790,7 +1790,7 @@ fn profile_feynman_subcircuit_fixpoint() {
     paths.sort();
 
     let table = load_optimizer_profile_table();
-    let subcircuit = SuperOptPass::analyzer(4, 8)
+    let subcircuit = SuperOpt::analyzer(4, 8)
         .with_synthesis_table(table)
         .without_subcircuits();
     let mut total_before_gates = 0;
@@ -1911,7 +1911,7 @@ fn sweep_superopt_window_fixpoint_feynman_cobble() {
     );
 
     for window_gates in min_window..=max_window {
-        let superopt = SuperOptPass::analyzer(4, window_gates)
+        let superopt = SuperOpt::analyzer(4, window_gates)
             .with_synthesis_table(Arc::clone(&table))
             .without_subcircuits();
         let mut total_gates = 0;
@@ -2051,7 +2051,7 @@ fn sweep_superopt_table_size_fixpoint_feynman_cobble() {
             .map(|num_qubits| table.is_saturated(num_qubits))
             .collect::<Vec<_>>();
 
-        let superopt = SuperOptPass::analyzer(4, 8)
+        let superopt = SuperOpt::analyzer(4, 8)
             .with_synthesis_table(table)
             .without_subcircuits();
         let mut total_gates = 0;
@@ -2144,7 +2144,7 @@ fn profile_feynman_circuits() {
         let parse_elapsed = parse_start.elapsed();
 
         let run_start = Instant::now();
-        let pass = SuperOptPass::analyzer(4, 8)
+        let pass = SuperOpt::analyzer(4, 8)
             .with_synthesis_table(Arc::clone(&table))
             .without_subcircuits();
         let result = pass.run(&circuit).unwrap();
