@@ -11,7 +11,9 @@ A super fast, Rust-based optimizer for large Clifford+T circuits.
 - tzap also implements standard optimizations for gate cancellation.
 - The core randomized phase folding algorithm is fully formalized in Lean under [`formalization`](formalization/).
 
-tzap accepts OpenQASM 2.0 circuits.
+tzap is **multiple orders of mangitude** faster than other optimizers---and way more scalable!
+![Runtime comparison of tzap, VOQC, Feynman, and QuiZX on GF multipliers](assets/comparison.png)
+
 
 ## Usage
 
@@ -48,14 +50,6 @@ $ tzap benchmarks/feynman/barenco_tof_5.qasm
 	├─ T/Tdg  84 → 40 (↓52.4%)
 	└─ Time   0.000s
 ```
-
-## Benchmarks
-
-The chart below shows runtimes on a standard suite of GF(2^k) multiplier circuits of increasing size, from 112 T-gates (k=4) up to ~115K T-gates (k=128). These are a common benchmark family in the T-gate optimization literature.
-
-![tzap vs quizx runtime](assets/comparison.png)
-
-tzap matches the T-gate reduction of [quizx](https://github.com/zxcalc/quizx) (the Rust port of PyZX) on every circuit, while running **orders of magnitude faster** — up to **92,000× faster** on the largest circuits. quizx times out (2hrs) entirely on the k=128 circuit where tzap finishes in 56 ms.
 
 ## Limitations
 
