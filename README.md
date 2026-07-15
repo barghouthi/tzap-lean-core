@@ -7,11 +7,12 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
 A super fast, Rust-based optimizer for large Clifford+T circuits.
-- tzap minimizes T-count with a novel phase folding technique that is O(n) in circuit size, based on [this paper](https://arxiv.org/abs/2605.13929).
+- tzap's **philosophy** is that each optimization pass should be **linear** in circuit size.
+- tzap minimizes T-count with a new linear-time phase folding algorithm, based on [this paper](https://arxiv.org/abs/2605.13929).
 - tzap also implements standard optimizations for gate cancellation.
 - The core randomized phase folding algorithm is fully formalized in Lean under [`formalization`](formalization/).
 
-tzap is **multiple orders of mangitude** faster than other optimizers---and way more scalable!
+tzap is **multiple orders of mangitude** faster than other optimizers&mdash;and **linearly** **scales** to **millions** of gates!
 <img src="assets/comparison.png"
      alt="Runtime comparison of tzap, VOQC, Feynman, and QuiZX on GF multipliers"
      style="width: 100%; height: auto;">
