@@ -80,11 +80,7 @@ impl LibraryGate {
                 self == other
                     && matches!(
                         self,
-                        Self::X(_)
-                            | Self::H(_)
-                            | Self::Z(_)
-                            | Self::Cnot(..)
-                            | Self::Cz(..)
+                        Self::X(_) | Self::H(_) | Self::Z(_) | Self::Cnot(..) | Self::Cz(..)
                     )
             }
         }
