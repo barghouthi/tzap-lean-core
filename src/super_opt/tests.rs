@@ -384,11 +384,40 @@ fn library_gate_disjointness() {
 
 #[test]
 fn library_gate_counts_per_width() {
-    // 7n singles + n(n-1) cnot + C(n,2) cz + n*C(n-1,2) ccx.
+    // 7n singles + n(n-1) cnot + C(n,2) cz. Toffoli is intentionally excluded.
     assert_eq!(library_gates(1).len(), 7);
     assert_eq!(library_gates(2).len(), 17);
-    assert_eq!(library_gates(3).len(), 33);
-    assert_eq!(library_gates(4).len(), 58);
+    assert_eq!(library_gates(3).len(), 30);
+    assert_eq!(library_gates(4).len(), 46);
+}
+
+#[test]
+fn library_never_enumerates_toffoli() {
+    for num_qubits in 1..=4 {
+        for gate in library_gates(num_qubits) {
+            assert!(
+                !matches!(gate.to_gate(), Gate::ccx { .. }),
+                "library must not contain Toffoli: {gate:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn table_does_not_synthesize_a_toffoli_representative() {
+    // A Toffoli's unitary has no Clifford+T representative within the small gate
+    // bound and Toffoli itself is not in the library, so it must not be found.
+    let table = synthesis_table(3, 5);
+    let mut toffoli = UnitaryMatrix::identity(3).unwrap();
+    toffoli.apply_gate_left(
+        &Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        },
+        &[0, 1, 2],
+    );
+    assert!(table.synthesize(&toffoli).is_none());
 }
 
 #[test]
@@ -957,6 +986,11 @@ fn audit_rewrites(circuit: &Circuit, result: &SuperOptResult) {
         );
         let mut replacement_matrix = UnitaryMatrix::identity(support.len()).unwrap();
         for gate in &rewrite.replacement {
+            assert!(
+                !matches!(gate, Gate::ccx { .. }),
+                "rewrite introduced a Toffoli: {:?}",
+                rewrite.gate_indices
+            );
             for qubit in unique_qubits(gate) {
                 assert!(
                     support.binary_search(&qubit).is_ok(),

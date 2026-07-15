@@ -291,6 +291,9 @@ enum LibraryGate {
     Tdg(u8),
     Cnot(u8, u8),
     Cz(u8, u8),
+    // Never enumerated into the table (SuperOpt must not introduce Toffolis); the
+    // variant is retained for the matrix engine and the table-file decode path.
+    #[cfg_attr(not(test), allow(dead_code))]
     Ccx(u8, u8, u8),
 }
 
@@ -808,15 +811,11 @@ fn library_gates(num_qubits: usize) -> Vec<LibraryGate> {
             gates.push(LibraryGate::Cz(left, right));
         }
     }
-    for target in 0..num_qubits as u8 {
-        for first in 0..num_qubits as u8 {
-            for second in first + 1..num_qubits as u8 {
-                if first != target && second != target {
-                    gates.push(LibraryGate::Ccx(first, second, target));
-                }
-            }
-        }
-    }
+    // Toffoli is deliberately excluded: SuperOpt must never rewrite a window into
+    // a circuit containing a Toffoli, since the pipeline decomposes Toffolis (a
+    // single CCX costs ~7 T once lowered). Input Toffolis are still simplified —
+    // their windows resolve to Clifford+T table representatives — but never
+    // introduced.
     gates
 }
 
