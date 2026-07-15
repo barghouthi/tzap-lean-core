@@ -17,27 +17,21 @@ tzap is **multiple orders of mangitude** faster than other optimizers&mdash;and 
      alt="Runtime comparison of tzap, VOQC, Feynman, and QuiZX on GF multipliers"
      style="width: 100%; height: auto;">
 
-## Usage
+## CLI Usage
 
-CLI usage or API usage (see [API.md](API.md)).
+tzap is a CLI optimization tool for quantum circuits. You can also use tzap as a Rust library; see the [Rust API documentation](API.md).
+
+**Optimize a circuit and inspect the results**
+
+Use the default pipeline when you want to optimize a circuit and inspect how much tzap reduces it. The `-o` option writes the optimized circuit to a new OpenQASM file; if you omit `-o`, tzap prints the statistics without writing the circuit.
 
 ```bash
-tzap input.qasm                           # optimize, print stats only
-tzap input.qasm -o output.qasm            # write optimized circuit to file
-tzap input.qasm -o output.qasm --decompose-rz              # decompose Rz via gridsynth (epsilon=1e-10)
-tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6  # coarser approximation
-tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand  # explicit pass pipeline
+tzap benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
 ```
 
-Output is written only when an output file is given (via `-o`).
+Output:
 
-**Gate handling:** Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is by default; pass `--decompose-rz` to decompose them into Clifford+T via [gridsynth](https://crates.io/crates/rsgridsynth), and `--epsilon <eps>` to control the approximation precision (default: `1e-10`; accepts scientific notation).
-
-### Example
-
-```bash
-$ tzap benchmarks/feynman/barenco_tof_5.qasm
-
+```text
 ⚡️ tzap
   Parsing benchmarks/feynman/barenco_tof_5.qasm (0.0 MB)
 	└─ 9 qubits · 218 gates · 84 T/Tdg · 0.000s
@@ -52,6 +46,26 @@ $ tzap benchmarks/feynman/barenco_tof_5.qasm
 	├─ T/Tdg  84 → 40 (↓52.4%)
 	└─ Time   0.000s
 ```
+
+**Decompose Rz gates into Clifford+T and choose the precision**
+
+Use `--decompose-rz` when the target backend accepts only Clifford+T gates. tzap decomposes `Rz` gates with [gridsynth](https://crates.io/crates/rsgridsynth). Use `--epsilon` to trade approximation accuracy for a potentially smaller circuit; a larger epsilon permits a coarser approximation. If you omit `--epsilon`, tzap uses `1e-10`.
+
+```bash
+tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6  # omit --epsilon to use 1e-10
+```
+
+**Run a custom optimization pipeline**
+
+tzap allows you to run a custom sequence of optimization passes with `--passes`. Use it when you need explicit control over which passes run and their order. The listed passes replace the default pipeline.
+
+```bash
+tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
+```
+
+**Gate handling**
+
+Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is unless you pass `--decompose-rz`.
 
 ## Limitations
 
