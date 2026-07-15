@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 
-use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
 /// Inline storage for a window's qubit support (bounded by `max_qubits`, at most
@@ -30,9 +29,17 @@ use crate::pass::Pass;
 
 mod config;
 mod error;
+mod matrix_cache;
+mod synthesis_arena;
 
 pub use config::SuperOptTableConfig;
 pub use error::SuperOptError;
+
+use matrix_cache::{
+    CachedMatrix, MatrixStore, append_compact_gate_key, compact_normalized_key,
+    has_lone_arbitrary_rz,
+};
+use synthesis_arena::WidthTable;
 
 const IDENTITY_TOLERANCE: f64 = 1e-10;
 
@@ -426,7 +433,7 @@ impl LibraryGate {
 struct UnitaryCircuitTable {
     #[cfg(test)]
     config: SuperOptTableConfig,
-    entries: Vec<HashMap<UnitaryFingerprint, Box<[LibraryGate]>>>,
+    entries: Vec<WidthTable>,
     #[cfg(test)]
     saturated: Vec<bool>,
     #[cfg(test)]
@@ -449,25 +456,31 @@ impl UnitaryCircuitTable {
             });
         }
 
-        let mut entries = vec![HashMap::new(); config.max_qubits + 1];
+        let mut entries = vec![WidthTable::default(); config.max_qubits + 1];
         let mut saturated = vec![false; config.max_qubits + 1];
         let mut completed_depth = vec![0; config.max_qubits + 1];
         for num_qubits in 1..=config.max_qubits {
             let identity = UnitaryMatrix::identity(num_qubits)?;
-            entries[num_qubits].insert(
-                unitary_fingerprint(&identity),
-                Vec::new().into_boxed_slice(),
-            );
+            entries[num_qubits] = WidthTable::with_identity(unitary_fingerprint(&identity));
             let gates = library_gates(num_qubits);
             let support: Vec<_> = (0..num_qubits).collect();
-            let mut frontier: Vec<Box<[LibraryGate]>> = vec![Vec::new().into_boxed_slice()];
+            let mut frontier = vec![(0, identity)];
 
             'depths: for depth in 1..=config.max_gates {
+                // If this layer can plausibly fill the table, retain only node
+                // ids. In the usual saturated case those child matrices would
+                // immediately be discarded. If pruning lets the layer finish,
+                // reconstruct them once for the next layer.
+                let possible_children = frontier.len().saturating_mul(gates.len());
+                let retain_child_matrices =
+                    entries[num_qubits].len().saturating_add(possible_children)
+                        < config.max_entries_per_qubit;
+                let mut next_nodes = Vec::new();
                 let mut next_frontier = Vec::new();
-                for circuit in frontier {
-                    let base = library_circuit_matrix(num_qubits, &circuit)?;
+                for (parent, base) in frontier {
+                    let last = entries[num_qubits].nodes[parent].gate;
                     for &gate in &gates {
-                        if let Some(&last) = circuit.last()
+                        if let Some(last) = last
                             && (last.is_inverse_of(gate) || (last.is_disjoint(gate) && gate < last))
                         {
                             continue;
@@ -484,18 +497,26 @@ impl UnitaryCircuitTable {
                             saturated[num_qubits] = true;
                             break 'depths;
                         }
-                        let mut candidate = circuit.to_vec();
-                        candidate.push(gate);
-                        let candidate = candidate.into_boxed_slice();
-                        entries[num_qubits].insert(fingerprint, candidate.clone());
-                        next_frontier.push(candidate);
+                        let node = entries[num_qubits].insert_child(fingerprint, parent, gate);
+                        next_nodes.push(node);
+                        if retain_child_matrices {
+                            next_frontier.push((node, matrix));
+                        }
                     }
                 }
-                if next_frontier.is_empty() {
+                if next_nodes.is_empty() {
                     completed_depth[num_qubits] = depth;
                     break;
                 }
                 completed_depth[num_qubits] = depth;
+                if !retain_child_matrices {
+                    next_frontier.reserve(next_nodes.len());
+                    for node in next_nodes {
+                        let circuit = entries[num_qubits].circuit(node);
+                        let matrix = library_circuit_matrix(num_qubits, &circuit)?;
+                        next_frontier.push((node, matrix));
+                    }
+                }
                 frontier = next_frontier;
             }
         }
@@ -513,7 +534,7 @@ impl UnitaryCircuitTable {
 
     #[cfg(test)]
     fn entry_count(&self, num_qubits: usize) -> usize {
-        self.entries.get(num_qubits).map_or(0, HashMap::len)
+        self.entries.get(num_qubits).map_or(0, WidthTable::len)
     }
 
     #[cfg(test)]
@@ -533,14 +554,13 @@ impl UnitaryCircuitTable {
     }
 
     fn synthesize(&self, matrix: &UnitaryMatrix) -> Option<Vec<Gate>> {
-        let circuit = self
-            .entries
-            .get(matrix.num_qubits())?
-            .get(&unitary_fingerprint(matrix))?;
-        let candidate = library_circuit_matrix(matrix.num_qubits(), circuit).ok()?;
+        let table = self.entries.get(matrix.num_qubits())?;
+        let node = table.node_for(&unitary_fingerprint(matrix))?;
+        let circuit = table.circuit(node);
+        let candidate = library_circuit_matrix(matrix.num_qubits(), &circuit).ok()?;
         matrix
             .equivalent_up_to_global_phase(&candidate, IDENTITY_TOLERANCE)
-            .then(|| circuit.iter().map(|gate| gate.to_gate()).collect())
+            .then(|| circuit.into_iter().map(LibraryGate::to_gate).collect())
     }
 
     /// Serialize this table in a deterministic compact binary format.
@@ -600,14 +620,15 @@ impl UnitaryCircuitTable {
             write_u64(writer, self.completed_depth[num_qubits] as u64)?;
             write_u64(writer, self.entries[num_qubits].len() as u64)?;
 
-            let mut ordered: Vec<_> = self.entries[num_qubits].iter().collect();
+            let mut ordered: Vec<_> = self.entries[num_qubits].fingerprints.iter().collect();
             ordered
                 .sort_unstable_by_key(|(fingerprint, _)| (fingerprint.first, fingerprint.second));
-            for (fingerprint, circuit) in ordered {
+            for (fingerprint, &node) in ordered {
+                let circuit = self.entries[num_qubits].circuit(node);
                 write_u64(writer, fingerprint.first)?;
                 write_u64(writer, fingerprint.second)?;
                 write_u64(writer, circuit.len() as u64)?;
-                for &gate in circuit.iter() {
+                for gate in circuit {
                     writer
                         .write_all(&gate.encode())
                         .map_err(|error| table_io_error("write", error))?;
@@ -640,7 +661,7 @@ impl UnitaryCircuitTable {
             return Err(invalid_table_file("zero entry bound"));
         }
 
-        let mut entries = vec![HashMap::new(); config.max_qubits + 1];
+        let mut entries = vec![WidthTable::default(); config.max_qubits + 1];
         let mut saturated = vec![false; config.max_qubits + 1];
         let mut completed_depth = vec![0; config.max_qubits + 1];
         for num_qubits in 1..=config.max_qubits {
@@ -661,7 +682,7 @@ impl UnitaryCircuitTable {
             if entry_count > config.max_entries_per_qubit {
                 return Err(invalid_table_file("entry count exceeds configured bound"));
             }
-            entries[num_qubits] = HashMap::with_capacity(entry_count.min(1_000_000));
+            entries[num_qubits] = WidthTable::with_capacity(entry_count.min(1_000_000));
 
             for _ in 0..entry_count {
                 let fingerprint = UnitaryFingerprint {
@@ -679,8 +700,8 @@ impl UnitaryCircuitTable {
                     circuit.push(LibraryGate::decode(encoded, num_qubits)?);
                 }
                 if entries[num_qubits]
-                    .insert(fingerprint, circuit.into_boxed_slice())
-                    .is_some()
+                    .insert_circuit(fingerprint, &circuit)
+                    .is_none()
                 {
                     return Err(invalid_table_file("duplicate unitary fingerprint"));
                 }
@@ -869,12 +890,7 @@ pub struct SuperOpt {
 struct ActiveWindow {
     gate_indices: IndexVec,
     qubits: QubitVec,
-}
-
-#[derive(Clone, Debug)]
-struct CachedMatrix {
-    matrix: Arc<UnitaryMatrix>,
-    synthesized_replacement: Option<Vec<Gate>>,
+    compact_key: Option<u128>,
 }
 
 impl SuperOpt {
@@ -950,6 +966,10 @@ impl SuperOpt {
                 let mut window = active[window_id]
                     .take()
                     .expect("qubit index only contains live windows");
+                if rewrites.is_claimed(gate_index) || rewrites.claims_any(&window.gate_indices) {
+                    unregister_window(window_id, &window.qubits, &[], &mut windows_by_qubit);
+                    continue;
+                }
                 let within_bounds = expand_component_closure(
                     circuit,
                     &mut window,
@@ -974,6 +994,15 @@ impl SuperOpt {
                     continue;
                 }
 
+                if added_qubits.is_empty() {
+                    window.compact_key = window
+                        .compact_key
+                        .and_then(|key| append_compact_gate_key(key, gate, &window.qubits));
+                } else {
+                    window.compact_key =
+                        compact_normalized_key(circuit, &window.gate_indices, &window.qubits);
+                }
+
                 let at_gate_limit = window.gate_indices.len() == self.window_gates;
                 if at_gate_limit {
                     unregister_window(
@@ -982,29 +1011,39 @@ impl SuperOpt {
                         &added_qubits,
                         &mut windows_by_qubit,
                     );
-                } else {
-                    for &qubit in &added_qubits {
-                        windows_by_qubit[qubit].push(window_id);
-                    }
                 }
 
-                self.analyze_window(
+                let selected = self.analyze_window(
                     circuit,
                     &window.gate_indices,
                     &window.qubits,
+                    window.compact_key,
                     &mut store,
                     &mut rewrites,
                     &mut subcircuits,
                 )?;
 
                 if !at_gate_limit {
-                    active[window_id] = Some(window);
+                    if selected {
+                        unregister_window(
+                            window_id,
+                            &window.qubits,
+                            &added_qubits,
+                            &mut windows_by_qubit,
+                        );
+                    } else {
+                        for &qubit in &added_qubits {
+                            windows_by_qubit[qubit].push(window_id);
+                        }
+                        active[window_id] = Some(window);
+                    }
                 }
             }
 
             // The current gate anchors a new one-gate closed component.
-            if gate_qubits.len() <= self.max_qubits {
+            if gate_qubits.len() <= self.max_qubits && !rewrites.is_claimed(gate_index) {
                 let indices: IndexVec = smallvec![gate_index];
+                let compact_key = compact_normalized_key(circuit, &indices, &gate_qubits);
                 // A single non-identity gate can only be rewritten to the empty
                 // circuit, which requires its matrix to be identity up to phase.
                 // Only `rz` can be that (rz(0)); every other library gate never
@@ -1015,13 +1054,14 @@ impl SuperOpt {
                         circuit,
                         &indices,
                         &gate_qubits,
+                        compact_key,
                         &mut store,
                         &mut rewrites,
                         &mut subcircuits,
                     )?;
                 }
 
-                if self.window_gates > 1 {
+                if self.window_gates > 1 && !rewrites.is_claimed(gate_index) {
                     let window_id = active.len();
                     for &qubit in &gate_qubits {
                         windows_by_qubit[qubit].push(window_id);
@@ -1029,6 +1069,7 @@ impl SuperOpt {
                     active.push(Some(ActiveWindow {
                         gate_indices: indices,
                         qubits: gate_qubits,
+                        compact_key,
                     }));
                 }
             }
@@ -1046,22 +1087,31 @@ impl SuperOpt {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn analyze_window(
         &self,
         circuit: &Circuit,
         gate_indices: &[usize],
         qubits: &[Qubit],
+        compact_key: Option<u128>,
         store: &mut MatrixStore,
         rewrites: &mut RewriteSet,
         subcircuits: &mut Vec<SuperOptWindow>,
-    ) -> Result<(), SuperOptError> {
+    ) -> Result<bool, SuperOptError> {
+        if !self.collect_subcircuits
+            && self.synthesis_table.is_some()
+            && has_lone_arbitrary_rz(circuit, gate_indices)
+        {
+            return Ok(false);
+        }
         let cached = store.lookup(
             circuit,
             gate_indices,
             qubits,
+            compact_key,
             self.synthesis_table.as_deref(),
         )?;
-        rewrites.consider(cached, gate_indices, qubits);
+        let selected = rewrites.consider(cached, gate_indices, qubits);
         if self.collect_subcircuits {
             subcircuits.push(SuperOptWindow {
                 gate_indices: gate_indices.to_vec(),
@@ -1069,7 +1119,7 @@ impl SuperOpt {
                 matrix: Arc::clone(&cached.matrix),
             });
         }
-        Ok(())
+        Ok(selected)
     }
 }
 
@@ -1216,15 +1266,28 @@ impl RewriteSet {
         }
     }
 
-    fn consider(&mut self, cached: &CachedMatrix, gate_indices: &[usize], qubits: &[Qubit]) {
-        if gate_indices.iter().any(|&index| self.claimed[index]) {
-            return;
+    fn is_claimed(&self, gate_index: usize) -> bool {
+        self.claimed[gate_index]
+    }
+
+    fn claims_any(&self, gate_indices: &[usize]) -> bool {
+        gate_indices.iter().any(|&index| self.claimed[index])
+    }
+
+    fn consider(
+        &mut self,
+        cached: &CachedMatrix,
+        gate_indices: &[usize],
+        qubits: &[Qubit],
+    ) -> bool {
+        if self.claims_any(gate_indices) {
+            return false;
         }
         let Some(local) = cached.synthesized_replacement.as_ref() else {
-            return;
+            return false;
         };
         if local.len() >= gate_indices.len() {
-            return;
+            return false;
         }
 
         let replacement: Vec<_> = local
@@ -1242,6 +1305,7 @@ impl RewriteSet {
             gate_indices: gate_indices.to_vec(),
             replacement,
         });
+        true
     }
 
     fn apply(mut self, circuit: &Circuit) -> (Circuit, Vec<Vec<usize>>, Vec<SuperOptRewrite>) {
@@ -1293,52 +1357,6 @@ fn map_gate_to_physical(gate: &Gate, qubits: &[Qubit]) -> Gate {
     }
 }
 
-/// Interned canonical-window matrices. Lookups reuse one scratch key and
-/// return a borrowed entry, so the per-emission hot path never allocates on a
-/// cache hit.
-#[derive(Default)]
-struct MatrixStore {
-    // FxHash: this is probed once per emitted window (millions of times on
-    // large circuits), and the keys are short gate sequences where SipHash's
-    // per-lookup overhead dominates.
-    cache: FxHashMap<Box<[NormalizedGate]>, usize>,
-    entries: Vec<CachedMatrix>,
-    scratch: Vec<NormalizedGate>,
-    hits: usize,
-    misses: usize,
-}
-
-impl MatrixStore {
-    fn lookup(
-        &mut self,
-        circuit: &Circuit,
-        gate_indices: &[usize],
-        qubits: &[Qubit],
-        table: Option<&UnitaryCircuitTable>,
-    ) -> Result<&CachedMatrix, SuperOptError> {
-        normalized_gate_key(circuit, gate_indices, qubits, &mut self.scratch);
-        if let Some(&entry_index) = self.cache.get(self.scratch.as_slice()) {
-            self.hits += 1;
-            return Ok(&self.entries[entry_index]);
-        }
-
-        self.misses += 1;
-        let mut matrix = UnitaryMatrix::identity(qubits.len())?;
-        for &gate_index in gate_indices {
-            matrix.apply_gate_left(&circuit.gates[gate_index], qubits);
-        }
-        let synthesized_replacement = table.and_then(|table| table.synthesize(&matrix));
-        let entry_index = self.entries.len();
-        self.entries.push(CachedMatrix {
-            synthesized_replacement,
-            matrix: Arc::new(matrix),
-        });
-        self.cache
-            .insert(self.scratch.as_slice().into(), entry_index);
-        Ok(&self.entries[entry_index])
-    }
-}
-
 fn unique_qubits(gate: &Gate) -> QubitVec {
     let mut qubits: QubitVec = match gate {
         Gate::x(q)
@@ -1377,59 +1395,6 @@ fn union_qubits(left: &[Qubit], right: &[Qubit]) -> Vec<Qubit> {
 
 fn qubit_bit(num_qubits: usize, position: usize) -> usize {
     1usize << (num_qubits - 1 - position)
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum NormalizedGate {
-    X(usize),
-    H(usize),
-    S(usize),
-    Sdg(usize),
-    Z(usize),
-    T(usize),
-    Tdg(usize),
-    Rz(u64, usize),
-    Cnot(usize, usize),
-    Cz(usize, usize),
-    Ccx(usize, usize, usize),
-}
-
-fn normalized_gate_key(
-    circuit: &Circuit,
-    gate_indices: &[usize],
-    support: &[Qubit],
-    key: &mut Vec<NormalizedGate>,
-) {
-    let local = |q| {
-        support
-            .binary_search(&q)
-            .expect("window qubit is in support")
-    };
-    key.clear();
-    key.extend(
-        gate_indices
-            .iter()
-            .map(|&gate_index| match &circuit.gates[gate_index] {
-                Gate::x(q) => NormalizedGate::X(local(*q)),
-                Gate::h(q) => NormalizedGate::H(local(*q)),
-                Gate::s(q) => NormalizedGate::S(local(*q)),
-                Gate::sdg(q) => NormalizedGate::Sdg(local(*q)),
-                Gate::z(q) => NormalizedGate::Z(local(*q)),
-                Gate::t(q) => NormalizedGate::T(local(*q)),
-                Gate::tdg(q) => NormalizedGate::Tdg(local(*q)),
-                Gate::rz(theta, q) => NormalizedGate::Rz(theta.to_bits(), local(*q)),
-                Gate::cnot { control, target } => {
-                    NormalizedGate::Cnot(local(*control), local(*target))
-                }
-                Gate::cz { control, target } => NormalizedGate::Cz(local(*control), local(*target)),
-                Gate::ccx {
-                    control1,
-                    control2,
-                    target,
-                } => NormalizedGate::Ccx(local(*control1), local(*control2), local(*target)),
-                Gate::measure { .. } | Gate::reset(_) => unreachable!("validated as unitary"),
-            }),
-    );
 }
 
 fn gate_x() -> [[Complex64; 2]; 2] {

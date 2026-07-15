@@ -527,6 +527,35 @@ fn rz_inverse_pair_is_removed_as_identity() {
 }
 
 #[test]
+fn lone_arbitrary_rz_windows_skip_clifford_t_lookup() {
+    let table = synthesis_table(1, 0);
+
+    let mut lone = Circuit::new(1);
+    lone.apply(Gate::rz(0.37, 0));
+    lone.apply(Gate::h(0));
+    let result = SuperOpt::analyzer(1, 2)
+        .with_synthesis_table(Arc::clone(&table))
+        .without_subcircuits()
+        .run(&lone)
+        .unwrap();
+    assert!(result.rewrites.is_empty());
+    assert_eq!(result.cache_hits + result.cache_misses, 0);
+
+    // Two arbitrary rotations can cancel, so those windows must still reach
+    // the table and find the identity representative.
+    let mut cancelling = Circuit::new(1);
+    cancelling.apply(Gate::rz(0.37, 0));
+    cancelling.apply(Gate::rz(-0.37, 0));
+    let result = SuperOpt::analyzer(1, 2)
+        .with_synthesis_table(table)
+        .without_subcircuits()
+        .run(&cancelling)
+        .unwrap();
+    assert!(result.circuit.gates.is_empty());
+    assert_eq!(result.cache_hits + result.cache_misses, 1);
+}
+
+#[test]
 fn rz_pair_is_rewritten_to_library_gate() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::rz(std::f64::consts::FRAC_PI_4, 0));
