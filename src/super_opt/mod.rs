@@ -7,869 +7,35 @@
 //! windows are looked up in a bounded synthesis table and replaced when the
 //! table has a smaller equivalent circuit.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 
-use rayon::prelude::*;
 use smallvec::{SmallVec, smallvec};
+
+use crate::circuit::{Circuit, Gate, Qubit};
+use crate::pass::Pass;
 
 /// Inline storage for a window's qubit support (bounded by `max_qubits`, at most
 /// four in practice) and its gate indices (bounded by `window_gates`), so the
 /// per-gate window bookkeeping stays off the heap.
 type QubitVec = SmallVec<[Qubit; 4]>;
 type IndexVec = SmallVec<[usize; 8]>;
-#[cfg(test)]
-use std::io::Read;
-#[cfg(test)]
-use std::io::Write;
-#[cfg(test)]
-use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
-
-use crate::circuit::{Circuit, Gate, Qubit};
-use crate::pass::Pass;
 
 mod config;
 mod error;
+mod matrix;
 mod matrix_cache;
 mod synthesis_arena;
+mod table;
 
 pub use config::SuperOptTableConfig;
 pub use error::SuperOptError;
+pub use matrix::{Complex64, UnitaryMatrix};
 
 use matrix_cache::{
     CachedMatrix, MatrixStore, append_compact_gate_key, compact_normalized_key,
     has_lone_arbitrary_rz,
 };
-use synthesis_arena::WidthTable;
-
-const IDENTITY_TOLERANCE: f64 = 1e-10;
-
-/// A double-precision complex number used by [`UnitaryMatrix`].
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Complex64 {
-    pub re: f64,
-    pub im: f64,
-}
-
-impl Complex64 {
-    pub const ZERO: Self = Self { re: 0.0, im: 0.0 };
-    pub const ONE: Self = Self { re: 1.0, im: 0.0 };
-
-    pub const fn new(re: f64, im: f64) -> Self {
-        Self { re, im }
-    }
-
-    fn polar(radius: f64, angle: f64) -> Self {
-        Self::new(radius * angle.cos(), radius * angle.sin())
-    }
-
-    pub fn norm_sqr(self) -> f64 {
-        self.re * self.re + self.im * self.im
-    }
-
-    fn conj(self) -> Self {
-        Self::new(self.re, -self.im)
-    }
-}
-
-impl std::ops::Add for Complex64 {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self::new(self.re + rhs.re, self.im + rhs.im)
-    }
-}
-
-impl std::ops::Mul for Complex64 {
-    type Output = Self;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        Self::new(
-            self.re * rhs.re - self.im * rhs.im,
-            self.re * rhs.im + self.im * rhs.re,
-        )
-    }
-}
-
-impl std::ops::Mul<f64> for Complex64 {
-    type Output = Self;
-
-    fn mul(self, rhs: f64) -> Self::Output {
-        Self::new(self.re * rhs, self.im * rhs)
-    }
-}
-
-/// A dense `2^n` by `2^n` unitary matrix in row-major order.
-///
-/// Qubit zero is the most significant basis-state bit.
-#[derive(Clone, Debug, PartialEq)]
-pub struct UnitaryMatrix {
-    num_qubits: usize,
-    dim: usize,
-    data: Vec<Complex64>,
-}
-
-impl UnitaryMatrix {
-    fn identity(num_qubits: usize) -> Result<Self, SuperOptError> {
-        let dim = 1usize
-            .checked_shl(num_qubits.try_into().unwrap_or(u32::MAX))
-            .ok_or(SuperOptError::MatrixTooLarge { num_qubits })?;
-        let len = dim
-            .checked_mul(dim)
-            .ok_or(SuperOptError::MatrixTooLarge { num_qubits })?;
-        let mut data = vec![Complex64::ZERO; len];
-        for i in 0..dim {
-            data[i * dim + i] = Complex64::ONE;
-        }
-        Ok(Self {
-            num_qubits,
-            dim,
-            data,
-        })
-    }
-
-    pub fn num_qubits(&self) -> usize {
-        self.num_qubits
-    }
-
-    pub fn dimension(&self) -> usize {
-        self.dim
-    }
-
-    pub fn get(&self, row: usize, column: usize) -> Complex64 {
-        self.data[row * self.dim + column]
-    }
-
-    pub fn as_slice(&self) -> &[Complex64] {
-        &self.data
-    }
-
-    fn equivalent_up_to_global_phase(&self, other: &Self, tolerance: f64) -> bool {
-        if self.num_qubits != other.num_qubits {
-            return false;
-        }
-        let Some(left_phase) = canonical_phase(self, tolerance) else {
-            return false;
-        };
-        let Some(right_phase) = canonical_phase(other, tolerance) else {
-            return false;
-        };
-        self.data.iter().zip(&other.data).all(|(&left, &right)| {
-            let left = left * left_phase;
-            let right = right * right_phase;
-            let delta = Complex64::new(left.re - right.re, left.im - right.im);
-            delta.norm_sqr() <= tolerance * tolerance
-        })
-    }
-
-    /// Copy `source` into `self`, reusing the existing allocation.
-    fn copy_from(&mut self, source: &Self) {
-        self.num_qubits = source.num_qubits;
-        self.dim = source.dim;
-        if self.data.len() == source.data.len() {
-            self.data.copy_from_slice(&source.data);
-        } else {
-            self.data.clone_from(&source.data);
-        }
-    }
-
-    /// Disjoint mutable views of rows `row0` and `row1`, requiring `row0 < row1`.
-    fn row_pair_mut(&mut self, row0: usize, row1: usize) -> (&mut [Complex64], &mut [Complex64]) {
-        let dim = self.dim;
-        let (head, tail) = self.data.split_at_mut(row1 * dim);
-        (&mut head[row0 * dim..(row0 + 1) * dim], &mut tail[..dim])
-    }
-
-    fn apply_single_left(&mut self, gate: [[Complex64; 2]; 2], q: usize) {
-        let bit = qubit_bit(self.num_qubits, q);
-        for row0 in 0..self.dim {
-            if row0 & bit != 0 {
-                continue;
-            }
-            let (top, bottom) = self.row_pair_mut(row0, row0 | bit);
-            for (a, b) in top.iter_mut().zip(bottom) {
-                let (x, y) = (*a, *b);
-                *a = gate[0][0] * x + gate[0][1] * y;
-                *b = gate[1][0] * x + gate[1][1] * y;
-            }
-        }
-    }
-
-    fn apply_cnot_left(&mut self, control: usize, target: usize) {
-        let control_bit = qubit_bit(self.num_qubits, control);
-        let target_bit = qubit_bit(self.num_qubits, target);
-        for row0 in 0..self.dim {
-            if row0 & control_bit != 0 && row0 & target_bit == 0 {
-                let (top, bottom) = self.row_pair_mut(row0, row0 | target_bit);
-                top.swap_with_slice(bottom);
-            }
-        }
-    }
-
-    fn apply_cz_left(&mut self, control: usize, target: usize) {
-        let control_bit = qubit_bit(self.num_qubits, control);
-        let target_bit = qubit_bit(self.num_qubits, target);
-        let minus_one = Complex64::new(-1.0, 0.0);
-        for row in 0..self.dim {
-            if row & control_bit != 0 && row & target_bit != 0 {
-                for value in &mut self.data[row * self.dim..(row + 1) * self.dim] {
-                    *value = minus_one * *value;
-                }
-            }
-        }
-    }
-
-    fn apply_ccx_left(&mut self, control1: usize, control2: usize, target: usize) {
-        let control1_bit = qubit_bit(self.num_qubits, control1);
-        let control2_bit = qubit_bit(self.num_qubits, control2);
-        let target_bit = qubit_bit(self.num_qubits, target);
-        for row0 in 0..self.dim {
-            if row0 & control1_bit != 0 && row0 & control2_bit != 0 && row0 & target_bit == 0 {
-                let (top, bottom) = self.row_pair_mut(row0, row0 | target_bit);
-                top.swap_with_slice(bottom);
-            }
-        }
-    }
-
-    fn apply_gate_left(&mut self, gate: &Gate, support: &[Qubit]) {
-        let local = |q| support.binary_search(&q).expect("gate qubit is in support");
-        match gate {
-            Gate::x(q) => self.apply_single_left(gate_x(), local(*q)),
-            Gate::h(q) => self.apply_single_left(gate_h(), local(*q)),
-            Gate::s(q) => self.apply_single_left(gate_s(), local(*q)),
-            Gate::sdg(q) => self.apply_single_left(gate_sdg(), local(*q)),
-            Gate::z(q) => self.apply_single_left(gate_z(), local(*q)),
-            Gate::t(q) => self.apply_single_left(gate_t(), local(*q)),
-            Gate::tdg(q) => self.apply_single_left(gate_tdg(), local(*q)),
-            Gate::rz(theta, q) => self.apply_single_left(gate_rz(*theta), local(*q)),
-            Gate::cnot { control, target } => {
-                self.apply_cnot_left(local(*control), local(*target));
-            }
-            Gate::cz { control, target } => {
-                self.apply_cz_left(local(*control), local(*target));
-            }
-            Gate::ccx {
-                control1,
-                control2,
-                target,
-            } => self.apply_ccx_left(local(*control1), local(*control2), local(*target)),
-            Gate::measure { .. } | Gate::reset(_) => {
-                unreachable!("measurement and reset are window barriers")
-            }
-        }
-    }
-}
-
-fn canonical_phase(matrix: &UnitaryMatrix, tolerance: f64) -> Option<Complex64> {
-    matrix.data.iter().find_map(|&entry| {
-        let norm = entry.norm_sqr().sqrt();
-        (norm > tolerance).then(|| entry.conj() * (1.0 / norm))
-    })
-}
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-struct UnitaryFingerprint {
-    first: u64,
-    second: u64,
-}
-
-fn unitary_fingerprint(matrix: &UnitaryMatrix) -> UnitaryFingerprint {
-    const SCALE: f64 = 1e9;
-    let phase = canonical_phase(matrix, IDENTITY_TOLERANCE).unwrap_or(Complex64::ONE);
-    let mut first = 0xcbf2_9ce4_8422_2325u64;
-    let mut second = 0x9e37_79b9_7f4a_7c15u64;
-    for &entry in &matrix.data {
-        let normalized = entry * phase;
-        for word in [
-            (normalized.re * SCALE).round() as i64 as u64,
-            (normalized.im * SCALE).round() as i64 as u64,
-        ] {
-            first ^= word;
-            first = first.wrapping_mul(0x0000_0100_0000_01b3);
-            second ^= word.wrapping_add(0x517c_c1b7_2722_0a95);
-            second = second.rotate_left(27).wrapping_mul(0x94d0_49bb_1331_11eb);
-        }
-    }
-    UnitaryFingerprint { first, second }
-}
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-enum LibraryGate {
-    X(u8),
-    H(u8),
-    S(u8),
-    Sdg(u8),
-    Z(u8),
-    T(u8),
-    Tdg(u8),
-    Cnot(u8, u8),
-    Cz(u8, u8),
-    // Never enumerated into the table (SuperOpt must not introduce Toffolis); the
-    // variant is retained for the matrix engine and the table-file decode path.
-    #[cfg_attr(not(test), allow(dead_code))]
-    Ccx(u8, u8, u8),
-}
-
-impl LibraryGate {
-    fn to_gate(self) -> Gate {
-        match self {
-            Self::X(q) => Gate::x(q.into()),
-            Self::H(q) => Gate::h(q.into()),
-            Self::S(q) => Gate::s(q.into()),
-            Self::Sdg(q) => Gate::sdg(q.into()),
-            Self::Z(q) => Gate::z(q.into()),
-            Self::T(q) => Gate::t(q.into()),
-            Self::Tdg(q) => Gate::tdg(q.into()),
-            Self::Cnot(control, target) => Gate::cnot {
-                control: control.into(),
-                target: target.into(),
-            },
-            Self::Cz(control, target) => Gate::cz {
-                control: control.into(),
-                target: target.into(),
-            },
-            Self::Ccx(control1, control2, target) => Gate::ccx {
-                control1: control1.into(),
-                control2: control2.into(),
-                target: target.into(),
-            },
-        }
-    }
-
-    fn qubits(self) -> [Option<u8>; 3] {
-        match self {
-            Self::X(q)
-            | Self::H(q)
-            | Self::S(q)
-            | Self::Sdg(q)
-            | Self::Z(q)
-            | Self::T(q)
-            | Self::Tdg(q) => [Some(q), None, None],
-            Self::Cnot(left, right) | Self::Cz(left, right) => [Some(left), Some(right), None],
-            Self::Ccx(first, second, third) => [Some(first), Some(second), Some(third)],
-        }
-    }
-
-    fn is_disjoint(self, other: Self) -> bool {
-        let left = self.qubits();
-        let right = other.qubits();
-        left.into_iter()
-            .flatten()
-            .all(|qubit| !right.contains(&Some(qubit)))
-    }
-
-    fn is_inverse_of(self, other: Self) -> bool {
-        match (self, other) {
-            (Self::S(q), Self::Sdg(r))
-            | (Self::Sdg(q), Self::S(r))
-            | (Self::T(q), Self::Tdg(r))
-            | (Self::Tdg(q), Self::T(r)) => q == r,
-            _ => {
-                self == other
-                    && matches!(
-                        self,
-                        Self::X(_)
-                            | Self::H(_)
-                            | Self::Z(_)
-                            | Self::Cnot(..)
-                            | Self::Cz(..)
-                            | Self::Ccx(..)
-                    )
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn encode(self) -> [u8; 4] {
-        match self {
-            Self::X(q) => [0, q, u8::MAX, u8::MAX],
-            Self::H(q) => [1, q, u8::MAX, u8::MAX],
-            Self::S(q) => [2, q, u8::MAX, u8::MAX],
-            Self::Sdg(q) => [3, q, u8::MAX, u8::MAX],
-            Self::Z(q) => [4, q, u8::MAX, u8::MAX],
-            Self::T(q) => [5, q, u8::MAX, u8::MAX],
-            Self::Tdg(q) => [6, q, u8::MAX, u8::MAX],
-            Self::Cnot(control, target) => [7, control, target, u8::MAX],
-            Self::Cz(control, target) => [8, control, target, u8::MAX],
-            Self::Ccx(control1, control2, target) => [9, control1, control2, target],
-        }
-    }
-
-    #[cfg(test)]
-    fn decode(encoded: [u8; 4], num_qubits: usize) -> Result<Self, SuperOptError> {
-        let [tag, first, second, third] = encoded;
-        let gate = match tag {
-            0 => Self::X(first),
-            1 => Self::H(first),
-            2 => Self::S(first),
-            3 => Self::Sdg(first),
-            4 => Self::Z(first),
-            5 => Self::T(first),
-            6 => Self::Tdg(first),
-            7 => Self::Cnot(first, second),
-            8 => Self::Cz(first, second),
-            9 => Self::Ccx(first, second, third),
-            _ => return Err(invalid_table_file(format!("unknown gate tag {tag}"))),
-        };
-        let qubits: Vec<_> = gate.qubits().into_iter().flatten().collect();
-        if qubits.iter().any(|&qubit| qubit as usize >= num_qubits) {
-            return Err(invalid_table_file(format!(
-                "gate {gate:?} is outside a {num_qubits}-qubit table"
-            )));
-        }
-        let valid_operands = match gate {
-            Self::Cnot(control, target) => control != target,
-            Self::Cz(left, right) => left < right,
-            Self::Ccx(control1, control2, target) => {
-                control1 < control2 && control1 != target && control2 != target
-            }
-            _ => true,
-        };
-        if !valid_operands {
-            return Err(invalid_table_file(format!(
-                "gate {gate:?} has invalid operands"
-            )));
-        }
-        Ok(gate)
-    }
-}
-
-/// Breadth-first map from a unitary fingerprint to the smallest circuit found.
-#[derive(Clone, Debug)]
-struct UnitaryCircuitTable {
-    #[cfg(test)]
-    config: SuperOptTableConfig,
-    entries: Vec<WidthTable>,
-    #[cfg(test)]
-    saturated: Vec<bool>,
-    #[cfg(test)]
-    completed_depth: Vec<usize>,
-}
-
-impl UnitaryCircuitTable {
-    #[cfg(test)]
-    const FILE_MAGIC: [u8; 8] = *b"TZUCTBL1";
-
-    fn build(config: SuperOptTableConfig) -> Result<Self, SuperOptError> {
-        if !(1..=4).contains(&config.max_qubits) {
-            return Err(SuperOptError::InvalidTableConfig {
-                reason: format!("max_qubits must be in 1..=4, got {}", config.max_qubits),
-            });
-        }
-        if config.max_entries_per_qubit == 0 {
-            return Err(SuperOptError::InvalidTableConfig {
-                reason: "max_entries_per_qubit must be greater than zero".to_owned(),
-            });
-        }
-
-        let mut entries = vec![WidthTable::default(); config.max_qubits + 1];
-        let mut saturated = vec![false; config.max_qubits + 1];
-        let mut completed_depth = vec![0; config.max_qubits + 1];
-        for num_qubits in 1..=config.max_qubits {
-            let identity = UnitaryMatrix::identity(num_qubits)?;
-            entries[num_qubits] = WidthTable::with_identity(unitary_fingerprint(&identity));
-            let gates = library_gates(num_qubits);
-            let support: Vec<_> = (0..num_qubits).collect();
-            let mut frontier = vec![(0, identity)];
-
-            // Parents per parallel batch: enough candidates to spread across
-            // threads while a batch's survivor list stays small in memory.
-            let batch_parents = (65_536 / gates.len()).max(1);
-
-            'depths: for depth in 1..=config.max_gates {
-                // Accepted children this layer as (frontier position, node, gate).
-                let mut accepted = Vec::new();
-                for (batch_index, batch) in frontier.chunks(batch_parents).enumerate() {
-                    // Matrix products and fingerprints dominate the build, so
-                    // candidates are generated in parallel against a read-only
-                    // view of the table. Survivors are then inserted serially
-                    // in enumeration order, which keeps the table (and the
-                    // exact saturation point) identical to a sequential build;
-                    // candidates already present at batch start would have been
-                    // skipped by the sequential scan too, so pre-filtering them
-                    // in the parallel phase changes nothing.
-                    let table = &entries[num_qubits];
-                    let batch_survivors: Vec<Vec<(LibraryGate, UnitaryFingerprint)>> = batch
-                        .par_iter()
-                        .map(|(parent, base)| {
-                            let last = table.nodes[*parent].gate;
-                            let mut scratch = base.clone();
-                            let mut survivors = Vec::new();
-                            for &gate in &gates {
-                                if let Some(last) = last
-                                    && (last.is_inverse_of(gate)
-                                        || (last.is_disjoint(gate) && gate < last))
-                                {
-                                    continue;
-                                }
-                                scratch.copy_from(base);
-                                scratch.apply_gate_left(&gate.to_gate(), &support);
-                                let fingerprint = unitary_fingerprint(&scratch);
-                                if !table.contains_key(&fingerprint) {
-                                    survivors.push((gate, fingerprint));
-                                }
-                            }
-                            survivors
-                        })
-                        .collect();
-
-                    let table = &mut entries[num_qubits];
-                    for (offset, survivors) in batch_survivors.into_iter().enumerate() {
-                        let position = batch_index * batch_parents + offset;
-                        let parent = frontier[position].0;
-                        for (gate, fingerprint) in survivors {
-                            if table.contains_key(&fingerprint) {
-                                continue;
-                            }
-                            if table.len() >= config.max_entries_per_qubit {
-                                saturated[num_qubits] = true;
-                                break 'depths;
-                            }
-                            let node = table.insert_child(fingerprint, parent, gate);
-                            accepted.push((position, node, gate));
-                        }
-                    }
-                }
-                completed_depth[num_qubits] = depth;
-                if accepted.is_empty() {
-                    break;
-                }
-                // Re-deriving each child from its parent repeats one gate
-                // application per accepted node, in exchange for never holding
-                // matrices for the (mostly duplicate) rejected candidates.
-                let next_frontier = accepted
-                    .into_par_iter()
-                    .map(|(position, node, gate)| {
-                        let mut matrix = frontier[position].1.clone();
-                        matrix.apply_gate_left(&gate.to_gate(), &support);
-                        (node, matrix)
-                    })
-                    .collect();
-                frontier = next_frontier;
-            }
-        }
-
-        Ok(Self {
-            #[cfg(test)]
-            config,
-            entries,
-            #[cfg(test)]
-            saturated,
-            #[cfg(test)]
-            completed_depth,
-        })
-    }
-
-    #[cfg(test)]
-    fn entry_count(&self, num_qubits: usize) -> usize {
-        self.entries.get(num_qubits).map_or(0, WidthTable::len)
-    }
-
-    #[cfg(test)]
-    fn is_saturated(&self, num_qubits: usize) -> bool {
-        self.saturated.get(num_qubits).copied().unwrap_or(false)
-    }
-
-    #[cfg(test)]
-    fn max_gates(&self) -> usize {
-        self.config.max_gates
-    }
-
-    /// Largest gate count whose entire breadth-first layer was enumerated.
-    #[cfg(test)]
-    fn completed_depth(&self, num_qubits: usize) -> usize {
-        self.completed_depth.get(num_qubits).copied().unwrap_or(0)
-    }
-
-    fn synthesize(&self, matrix: &UnitaryMatrix) -> Option<Vec<Gate>> {
-        let table = self.entries.get(matrix.num_qubits())?;
-        let node = table.node_for(&unitary_fingerprint(matrix))?;
-        let circuit = table.circuit(node);
-        // The fingerprint is a lossy, rounded hash. This comparison is the
-        // release-mode collision guard that makes accepting a rewrite sound;
-        // it is not a redundant post-rewrite audit.
-        let candidate = library_circuit_matrix(matrix.num_qubits(), &circuit).ok()?;
-        matrix
-            .equivalent_up_to_global_phase(&candidate, IDENTITY_TOLERANCE)
-            .then(|| circuit.into_iter().map(LibraryGate::to_gate).collect())
-    }
-
-    /// Serialize this table in a deterministic compact binary format.
-    ///
-    /// The file is written to a sibling temporary path and atomically renamed
-    /// after it has been flushed, so an interrupted save does not replace an
-    /// existing table with a partial file.
-    #[cfg(test)]
-    fn save(&self, path: impl AsRef<Path>) -> Result<(), SuperOptError> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).map_err(|error| table_io_error("create", error))?;
-        }
-        let temporary =
-            path.with_extension(match path.extension().and_then(|value| value.to_str()) {
-                Some(extension) => format!("{extension}.tmp"),
-                None => "tmp".to_owned(),
-            });
-        let file =
-            std::fs::File::create(&temporary).map_err(|error| table_io_error("create", error))?;
-        let mut writer = std::io::BufWriter::new(file);
-        self.write_to(&mut writer)?;
-        writer
-            .flush()
-            .map_err(|error| table_io_error("flush", error))?;
-        writer
-            .get_ref()
-            .sync_all()
-            .map_err(|error| table_io_error("sync", error))?;
-        drop(writer);
-        std::fs::rename(&temporary, path).map_err(|error| table_io_error("rename", error))?;
-        Ok(())
-    }
-
-    /// Load a table previously written by [`Self::save`].
-    #[cfg(test)]
-    fn load(path: impl AsRef<Path>) -> Result<Self, SuperOptError> {
-        let file = std::fs::File::open(path).map_err(|error| table_io_error("open", error))?;
-        Self::read_from(&mut std::io::BufReader::new(file))
-    }
-
-    #[cfg(test)]
-    fn write_to(&self, writer: &mut impl Write) -> Result<(), SuperOptError> {
-        writer
-            .write_all(&Self::FILE_MAGIC)
-            .map_err(|error| table_io_error("write", error))?;
-        write_u64(writer, self.config.max_qubits as u64)?;
-        write_u64(writer, self.config.max_gates as u64)?;
-        write_u64(writer, self.config.max_entries_per_qubit as u64)?;
-
-        for num_qubits in 1..=self.config.max_qubits {
-            writer
-                .write_all(&[num_qubits as u8, u8::from(self.saturated[num_qubits])])
-                .map_err(|error| table_io_error("write", error))?;
-            write_u64(writer, self.completed_depth[num_qubits] as u64)?;
-            write_u64(writer, self.entries[num_qubits].len() as u64)?;
-
-            let mut ordered: Vec<_> = self.entries[num_qubits].fingerprints.iter().collect();
-            ordered
-                .sort_unstable_by_key(|(fingerprint, _)| (fingerprint.first, fingerprint.second));
-            for (fingerprint, &node) in ordered {
-                let circuit = self.entries[num_qubits].circuit(node);
-                write_u64(writer, fingerprint.first)?;
-                write_u64(writer, fingerprint.second)?;
-                write_u64(writer, circuit.len() as u64)?;
-                for gate in circuit {
-                    writer
-                        .write_all(&gate.encode())
-                        .map_err(|error| table_io_error("write", error))?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn read_from(reader: &mut impl Read) -> Result<Self, SuperOptError> {
-        let mut magic = [0; 8];
-        read_exact(reader, &mut magic)?;
-        if magic != Self::FILE_MAGIC {
-            return Err(invalid_table_file("invalid magic or unsupported version"));
-        }
-
-        let config = SuperOptTableConfig {
-            max_qubits: read_usize(reader, "max_qubits")?,
-            max_gates: read_usize(reader, "max_gates")?,
-            max_entries_per_qubit: read_usize(reader, "max_entries_per_qubit")?,
-        };
-        if config.max_qubits == 0 || config.max_qubits > 4 {
-            return Err(invalid_table_file(format!(
-                "invalid qubit bound {}",
-                config.max_qubits
-            )));
-        }
-        if config.max_entries_per_qubit == 0 {
-            return Err(invalid_table_file("zero entry bound"));
-        }
-
-        let mut entries = vec![WidthTable::default(); config.max_qubits + 1];
-        let mut saturated = vec![false; config.max_qubits + 1];
-        let mut completed_depth = vec![0; config.max_qubits + 1];
-        for num_qubits in 1..=config.max_qubits {
-            let mut header = [0; 2];
-            read_exact(reader, &mut header)?;
-            if header[0] as usize != num_qubits || header[1] > 1 {
-                return Err(invalid_table_file(format!(
-                    "invalid width header {:?} for {num_qubits} qubits",
-                    header
-                )));
-            }
-            saturated[num_qubits] = header[1] == 1;
-            completed_depth[num_qubits] = read_usize(reader, "completed_depth")?;
-            if completed_depth[num_qubits] > config.max_gates {
-                return Err(invalid_table_file("completed depth exceeds gate bound"));
-            }
-            let entry_count = read_usize(reader, "entry_count")?;
-            if entry_count > config.max_entries_per_qubit {
-                return Err(invalid_table_file("entry count exceeds configured bound"));
-            }
-            entries[num_qubits] = WidthTable::with_capacity(entry_count.min(1_000_000));
-
-            for _ in 0..entry_count {
-                let fingerprint = UnitaryFingerprint {
-                    first: read_u64(reader)?,
-                    second: read_u64(reader)?,
-                };
-                let gate_count = read_usize(reader, "gate_count")?;
-                if gate_count > config.max_gates {
-                    return Err(invalid_table_file("circuit exceeds gate bound"));
-                }
-                let mut circuit = Vec::with_capacity(gate_count);
-                for _ in 0..gate_count {
-                    let mut encoded = [0; 4];
-                    read_exact(reader, &mut encoded)?;
-                    circuit.push(LibraryGate::decode(encoded, num_qubits)?);
-                }
-                if entries[num_qubits]
-                    .insert_circuit(fingerprint, &circuit)
-                    .is_none()
-                {
-                    return Err(invalid_table_file("duplicate unitary fingerprint"));
-                }
-            }
-
-            let identity = UnitaryMatrix::identity(num_qubits)?;
-            if !entries[num_qubits].contains_key(&unitary_fingerprint(&identity)) {
-                return Err(invalid_table_file(format!(
-                    "{num_qubits}-qubit table is missing identity"
-                )));
-            }
-        }
-
-        let mut trailing = [0; 1];
-        match reader.read(&mut trailing) {
-            Ok(0) => {}
-            Ok(_) => return Err(invalid_table_file("trailing bytes after table")),
-            Err(error) => return Err(table_io_error("read", error)),
-        }
-
-        Ok(Self {
-            #[cfg(test)]
-            config,
-            entries,
-            #[cfg(test)]
-            saturated,
-            #[cfg(test)]
-            completed_depth,
-        })
-    }
-}
-
-type SharedTable = Result<Arc<UnitaryCircuitTable>, SuperOptError>;
-type TableCache = HashMap<SuperOptTableConfig, SharedTable>;
-
-fn shared_synthesis_table(config: SuperOptTableConfig) -> SharedTable {
-    static TABLES: OnceLock<Mutex<TableCache>> = OnceLock::new();
-
-    let tables = TABLES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut tables = tables
-        .lock()
-        .expect("SuperOpt synthesis-table cache mutex was poisoned");
-    if let Some(table) = tables.get(&config) {
-        return table.clone();
-    }
-
-    let table = UnitaryCircuitTable::build(config).map(Arc::new);
-    tables.insert(config, table.clone());
-    table
-}
-
-#[cfg(test)]
-fn write_u64(writer: &mut impl Write, value: u64) -> Result<(), SuperOptError> {
-    writer
-        .write_all(&value.to_le_bytes())
-        .map_err(|error| table_io_error("write", error))
-}
-
-#[cfg(test)]
-fn read_u64(reader: &mut impl Read) -> Result<u64, SuperOptError> {
-    let mut bytes = [0; 8];
-    read_exact(reader, &mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
-}
-
-#[cfg(test)]
-fn read_usize(reader: &mut impl Read, field: &'static str) -> Result<usize, SuperOptError> {
-    usize::try_from(read_u64(reader)?)
-        .map_err(|_| invalid_table_file(format!("{field} does not fit usize")))
-}
-
-#[cfg(test)]
-fn read_exact(reader: &mut impl Read, bytes: &mut [u8]) -> Result<(), SuperOptError> {
-    reader
-        .read_exact(bytes)
-        .map_err(|error| table_io_error("read", error))
-}
-
-#[cfg(test)]
-fn table_io_error(operation: &'static str, error: std::io::Error) -> SuperOptError {
-    SuperOptError::TableIo {
-        operation,
-        message: error.to_string(),
-    }
-}
-
-#[cfg(test)]
-fn invalid_table_file(reason: impl Into<String>) -> SuperOptError {
-    SuperOptError::InvalidTableFile {
-        reason: reason.into(),
-    }
-}
-
-fn library_circuit_matrix(
-    num_qubits: usize,
-    circuit: &[LibraryGate],
-) -> Result<UnitaryMatrix, SuperOptError> {
-    let support: Vec<_> = (0..num_qubits).collect();
-    let mut matrix = UnitaryMatrix::identity(num_qubits)?;
-    for &gate in circuit {
-        matrix.apply_gate_left(&gate.to_gate(), &support);
-    }
-    Ok(matrix)
-}
-
-fn library_gates(num_qubits: usize) -> Vec<LibraryGate> {
-    let mut gates = Vec::new();
-    for q in 0..num_qubits as u8 {
-        gates.extend([
-            LibraryGate::X(q),
-            LibraryGate::H(q),
-            LibraryGate::S(q),
-            LibraryGate::Sdg(q),
-            LibraryGate::Z(q),
-            LibraryGate::T(q),
-            LibraryGate::Tdg(q),
-        ]);
-    }
-    for control in 0..num_qubits as u8 {
-        for target in 0..num_qubits as u8 {
-            if control != target {
-                gates.push(LibraryGate::Cnot(control, target));
-            }
-        }
-    }
-    for left in 0..num_qubits as u8 {
-        for right in left + 1..num_qubits as u8 {
-            gates.push(LibraryGate::Cz(left, right));
-        }
-    }
-    // Toffoli is deliberately excluded: SuperOpt must never rewrite a window into
-    // a circuit containing a Toffoli, since the pipeline decomposes Toffolis (a
-    // single CCX costs ~7 T once lowered). Input Toffolis are still simplified —
-    // their windows resolve to Clifford+T table representatives — but never
-    // introduced.
-    gates
-}
+use table::{UnitaryCircuitTable, shared_synthesis_table};
 
 /// Matrix and location information for one completed anchored window.
 #[derive(Clone, Debug)]
@@ -977,11 +143,6 @@ impl SuperOpt {
         let mut subcircuits = Vec::new();
         let mut rewrites = RewriteSet::new(circuit.gates.len());
         let mut touched_windows = Vec::new();
-        // Reused across every window expansion so the common append-only path
-        // allocates nothing: `added` collects qubits this step introduced,
-        // `pending` is the BFS queue over only those new qubits.
-        let mut added_qubits: Vec<Qubit> = Vec::new();
-        let mut pending_qubits: Vec<Qubit> = Vec::new();
 
         for (gate_index, gate) in circuit.gates.iter().enumerate() {
             let gate_qubits = unique_qubits(gate);
@@ -1015,7 +176,10 @@ impl SuperOpt {
                     unregister_window(window_id, &window.qubits, &[], &mut windows_by_qubit);
                     continue;
                 }
-                let within_bounds = expand_component_closure(
+                // `added_qubits` were inserted into `window.qubits` but never
+                // registered, so unregistration must skip them; the remaining
+                // qubits are exactly the set this window was registered on.
+                let (within_bounds, added_qubits) = expand_component_closure(
                     circuit,
                     &mut window,
                     gate_index,
@@ -1023,12 +187,7 @@ impl SuperOpt {
                     &gates_by_qubit,
                     self.max_qubits,
                     self.window_gates,
-                    &mut added_qubits,
-                    &mut pending_qubits,
                 );
-                // `added_qubits` were inserted into `window.qubits` but never
-                // registered, so unregistration must skip them; the remaining
-                // qubits are exactly the set this window was registered on.
                 if !within_bounds {
                     unregister_window(
                         window_id,
@@ -1049,15 +208,6 @@ impl SuperOpt {
                 }
 
                 let at_gate_limit = window.gate_indices.len() == self.window_gates;
-                if at_gate_limit {
-                    unregister_window(
-                        window_id,
-                        &window.qubits,
-                        &added_qubits,
-                        &mut windows_by_qubit,
-                    );
-                }
-
                 let selected = self.analyze_window(
                     circuit,
                     &window.gate_indices,
@@ -1068,20 +218,18 @@ impl SuperOpt {
                     &mut subcircuits,
                 )?;
 
-                if !at_gate_limit {
-                    if selected {
-                        unregister_window(
-                            window_id,
-                            &window.qubits,
-                            &added_qubits,
-                            &mut windows_by_qubit,
-                        );
-                    } else {
-                        for &qubit in &added_qubits {
-                            windows_by_qubit[qubit].push(window_id);
-                        }
-                        active[window_id] = Some(window);
+                if at_gate_limit || selected {
+                    unregister_window(
+                        window_id,
+                        &window.qubits,
+                        &added_qubits,
+                        &mut windows_by_qubit,
+                    );
+                } else {
+                    for &qubit in &added_qubits {
+                        windows_by_qubit[qubit].push(window_id);
                     }
+                    active[window_id] = Some(window);
                 }
             }
 
@@ -1224,12 +372,12 @@ fn unregister_window(
 /// The window already holds the connected closure of its anchor over earlier
 /// gates, and every gate touching a window qubit expands the window when it is
 /// processed, so all history on qubits already in the window is present. Only a
-/// gate that bridges in a *new* qubit requires scanning, so `pending` is seeded
-/// with new qubits alone rather than the whole support. Returns `false` when the
-/// window would exceed `max_gates` or `max_qubits`; `added` always lists exactly
-/// the qubits inserted this call (even on the `false` path), none of which have
-/// been registered yet.
-#[allow(clippy::too_many_arguments)]
+/// gate that bridges in a *new* qubit requires scanning, so the BFS queue is
+/// seeded with new qubits alone rather than the whole support.
+///
+/// Returns whether the window stayed within `max_gates` and `max_qubits`, and
+/// the qubits inserted into `window.qubits` by this call (on both paths), none
+/// of which have been registered yet.
 fn expand_component_closure(
     circuit: &Circuit,
     window: &mut ActiveWindow,
@@ -1238,16 +386,14 @@ fn expand_component_closure(
     gates_by_qubit: &[Vec<usize>],
     max_qubits: usize,
     max_gates: usize,
-    added: &mut Vec<Qubit>,
-    pending: &mut Vec<Qubit>,
-) -> bool {
-    added.clear();
-    pending.clear();
+) -> (bool, QubitVec) {
+    let mut added = QubitVec::new();
+    let mut pending = QubitVec::new();
 
     let anchor = window.gate_indices[0];
     window.gate_indices.push(current_gate);
     if window.gate_indices.len() > max_gates {
-        return false;
+        return (false, added);
     }
 
     for &qubit in current_qubits {
@@ -1256,7 +402,7 @@ fn expand_component_closure(
             added.push(qubit);
             pending.push(qubit);
             if window.qubits.len() > max_qubits {
-                return false;
+                return (false, added);
             }
         }
     }
@@ -1272,14 +418,14 @@ fn expand_component_closure(
                 circuit.gates[gate_index],
                 Gate::measure { .. } | Gate::reset(_)
             ) {
-                return false;
+                return (false, added);
             }
             let Err(position) = window.gate_indices.binary_search(&gate_index) else {
                 continue;
             };
             window.gate_indices.insert(position, gate_index);
             if window.gate_indices.len() > max_gates {
-                return false;
+                return (false, added);
             }
 
             for gate_qubit in unique_qubits(&circuit.gates[gate_index]) {
@@ -1288,20 +434,20 @@ fn expand_component_closure(
                     added.push(gate_qubit);
                     pending.push(gate_qubit);
                     if window.qubits.len() > max_qubits {
-                        return false;
+                        return (false, added);
                     }
                 }
             }
         }
     }
 
-    true
+    (true, added)
 }
 
 struct RewriteSet {
     claimed: Vec<bool>,
-    replacements: Vec<Option<Vec<Gate>>>,
-    removed: Vec<Vec<usize>>,
+    /// Index into `selected` for the rewrite anchored at each gate position.
+    anchored: Vec<Option<usize>>,
     selected: Vec<SuperOptRewrite>,
 }
 
@@ -1309,8 +455,7 @@ impl RewriteSet {
     fn new(gate_count: usize) -> Self {
         Self {
             claimed: vec![false; gate_count],
-            replacements: vec![None; gate_count],
-            removed: Vec::new(),
+            anchored: vec![None; gate_count],
             selected: Vec::new(),
         }
     }
@@ -1346,10 +491,7 @@ impl RewriteSet {
         for &index in gate_indices {
             self.claimed[index] = true;
         }
-        self.replacements[gate_indices[0]] = Some(replacement.clone());
-        if replacement.is_empty() {
-            self.removed.push(gate_indices.to_vec());
-        }
+        self.anchored[gate_indices[0]] = Some(self.selected.len());
         self.selected.push(SuperOptRewrite {
             gate_indices: gate_indices.to_vec(),
             replacement,
@@ -1357,20 +499,26 @@ impl RewriteSet {
         true
     }
 
-    fn apply(mut self, circuit: &Circuit) -> (Circuit, Vec<Vec<usize>>, Vec<SuperOptRewrite>) {
+    fn apply(self, circuit: &Circuit) -> (Circuit, Vec<Vec<usize>>, Vec<SuperOptRewrite>) {
         let mut optimized = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for (index, gate) in circuit.gates.iter().enumerate() {
-            if let Some(replacement) = self.replacements[index].take() {
-                for gate in replacement {
-                    optimized.apply(gate);
+            if let Some(rewrite) = self.anchored[index] {
+                for gate in &self.selected[rewrite].replacement {
+                    optimized.apply(gate.clone());
                 }
             }
             if !self.claimed[index] {
                 optimized.apply(gate.clone());
             }
         }
-        self.removed.sort();
-        (optimized, self.removed, self.selected)
+        let mut removed: Vec<_> = self
+            .selected
+            .iter()
+            .filter(|rewrite| rewrite.replacement.is_empty())
+            .map(|rewrite| rewrite.gate_indices.clone())
+            .collect();
+        removed.sort();
+        (optimized, removed, self.selected)
     }
 }
 
@@ -1430,82 +578,6 @@ fn unique_qubits(gate: &Gate) -> QubitVec {
     qubits.sort_unstable();
     qubits.dedup();
     qubits
-}
-
-#[cfg(test)]
-fn union_qubits(left: &[Qubit], right: &[Qubit]) -> Vec<Qubit> {
-    let mut union = Vec::with_capacity(left.len() + right.len());
-    union.extend_from_slice(left);
-    union.extend_from_slice(right);
-    union.sort_unstable();
-    union.dedup();
-    union
-}
-
-fn qubit_bit(num_qubits: usize, position: usize) -> usize {
-    1usize << (num_qubits - 1 - position)
-}
-
-fn gate_x() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ZERO, Complex64::ONE],
-        [Complex64::ONE, Complex64::ZERO],
-    ]
-}
-
-fn gate_h() -> [[Complex64; 2]; 2] {
-    let value = std::f64::consts::FRAC_1_SQRT_2;
-    let positive = Complex64::new(value, 0.0);
-    let negative = Complex64::new(-value, 0.0);
-    [[positive, positive], [positive, negative]]
-}
-
-fn gate_s() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ONE, Complex64::ZERO],
-        [Complex64::ZERO, Complex64::new(0.0, 1.0)],
-    ]
-}
-
-fn gate_sdg() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ONE, Complex64::ZERO],
-        [Complex64::ZERO, Complex64::new(0.0, -1.0)],
-    ]
-}
-
-fn gate_z() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ONE, Complex64::ZERO],
-        [Complex64::ZERO, Complex64::new(-1.0, 0.0)],
-    ]
-}
-
-fn gate_t() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ONE, Complex64::ZERO],
-        [
-            Complex64::ZERO,
-            Complex64::polar(1.0, std::f64::consts::FRAC_PI_4),
-        ],
-    ]
-}
-
-fn gate_tdg() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ONE, Complex64::ZERO],
-        [
-            Complex64::ZERO,
-            Complex64::polar(1.0, -std::f64::consts::FRAC_PI_4),
-        ],
-    ]
-}
-
-fn gate_rz(theta: f64) -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::polar(1.0, -theta / 2.0), Complex64::ZERO],
-        [Complex64::ZERO, Complex64::polar(1.0, theta / 2.0)],
-    ]
 }
 
 #[cfg(test)]

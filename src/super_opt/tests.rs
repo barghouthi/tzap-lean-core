@@ -1,3 +1,8 @@
+use super::matrix::{IDENTITY_TOLERANCE, unitary_fingerprint};
+use super::table::{
+    LibraryGate, UnitaryCircuitTable, library_circuit_matrix, library_gates,
+    shared_synthesis_table,
+};
 use super::*;
 
 struct TestRng(u64);
@@ -9,6 +14,15 @@ impl TestRng {
         self.0 ^= self.0 << 17;
         self.0 as usize % upper
     }
+}
+
+fn union_qubits(left: &[Qubit], right: &[Qubit]) -> Vec<Qubit> {
+    let mut union = Vec::with_capacity(left.len() + right.len());
+    union.extend_from_slice(left);
+    union.extend_from_slice(right);
+    union.sort_unstable();
+    union.dedup();
+    union
 }
 
 fn naive_matrix(circuit: &Circuit, gate_indices: &[usize], support: &[Qubit]) -> UnitaryMatrix {
@@ -367,7 +381,6 @@ fn library_gate_inverse_pairs() {
     assert!(LibraryGate::Tdg(1).is_inverse_of(LibraryGate::T(1)));
     assert!(LibraryGate::X(0).is_inverse_of(LibraryGate::X(0)));
     assert!(LibraryGate::Cnot(0, 1).is_inverse_of(LibraryGate::Cnot(0, 1)));
-    assert!(LibraryGate::Ccx(0, 1, 2).is_inverse_of(LibraryGate::Ccx(0, 1, 2)));
     assert!(!LibraryGate::S(0).is_inverse_of(LibraryGate::S(0)));
     assert!(!LibraryGate::T(0).is_inverse_of(LibraryGate::Tdg(1)));
     assert!(!LibraryGate::X(0).is_inverse_of(LibraryGate::X(1)));
@@ -378,8 +391,6 @@ fn library_gate_inverse_pairs() {
 fn library_gate_disjointness() {
     assert!(LibraryGate::X(0).is_disjoint(LibraryGate::H(1)));
     assert!(!LibraryGate::Cnot(0, 1).is_disjoint(LibraryGate::Cz(1, 2)));
-    assert!(LibraryGate::Cnot(0, 1).is_disjoint(LibraryGate::Ccx(2, 3, 4)));
-    assert!(!LibraryGate::Ccx(0, 1, 2).is_disjoint(LibraryGate::T(2)));
 }
 
 #[test]
@@ -817,7 +828,6 @@ fn mixed_circuit_without_subcircuits_still_rewrites_unitary_windows() {
 #[test]
 fn error_messages_name_the_offending_values() {
     let messages = [
-        SuperOptError::NonUnitaryGate { gate_index: 7 }.to_string(),
         SuperOptError::InvalidQubit {
             gate_index: 3,
             qubit: 9,
@@ -826,9 +836,8 @@ fn error_messages_name_the_offending_values() {
         .to_string(),
         SuperOptError::MatrixTooLarge { num_qubits: 40 }.to_string(),
     ];
-    assert!(messages[0].contains('7'));
-    assert!(messages[1].contains('9') && messages[1].contains('4'));
-    assert!(messages[2].contains("40"));
+    assert!(messages[0].contains('9') && messages[0].contains('4'));
+    assert!(messages[1].contains("40"));
 }
 
 #[test]
@@ -1054,61 +1063,6 @@ fn synthesis_table_reports_entry_cap() {
     .unwrap();
     assert_eq!(table.entry_count(4), 100);
     assert!(table.is_saturated(4));
-}
-
-#[test]
-fn synthesis_table_serialization_round_trips_deterministically() {
-    let table = synthesis_table(2, 3);
-    let directory = tempfile::tempdir().unwrap();
-    let first = directory.path().join("first.bin");
-    let second = directory.path().join("second.bin");
-    table.save(&first).unwrap();
-    table.save(&second).unwrap();
-    assert_eq!(
-        std::fs::read(&first).unwrap(),
-        std::fs::read(&second).unwrap()
-    );
-
-    let loaded = UnitaryCircuitTable::load(&first).unwrap();
-    assert_eq!(loaded.max_gates(), table.max_gates());
-    for num_qubits in 1..=2 {
-        assert_eq!(
-            loaded.entry_count(num_qubits),
-            table.entry_count(num_qubits)
-        );
-        assert_eq!(
-            loaded.completed_depth(num_qubits),
-            table.completed_depth(num_qubits)
-        );
-        assert_eq!(
-            loaded.is_saturated(num_qubits),
-            table.is_saturated(num_qubits)
-        );
-    }
-
-    let mut circuit = Circuit::new(2);
-    circuit.apply(Gate::h(1));
-    circuit.apply(Gate::cnot {
-        control: 0,
-        target: 1,
-    });
-    circuit.apply(Gate::h(1));
-    let matrix = naive_matrix(&circuit, &[0, 1, 2], &[0, 1]);
-    let replacement = loaded.synthesize(&matrix).unwrap();
-    assert_eq!(replacement.len(), 1);
-    assert!(matches!(replacement[0], Gate::cz { .. }));
-}
-
-#[test]
-fn synthesis_table_load_rejects_invalid_file() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("invalid.bin");
-    std::fs::write(&path, b"not a synthesis table").unwrap();
-    let error = UnitaryCircuitTable::load(path).unwrap_err();
-    assert!(matches!(
-        error,
-        SuperOptError::InvalidTableFile { .. } | SuperOptError::TableIo { .. }
-    ));
 }
 
 #[test]

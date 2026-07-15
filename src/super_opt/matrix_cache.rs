@@ -4,7 +4,9 @@ use rustc_hash::FxHashMap;
 
 use crate::circuit::{Circuit, Gate, Qubit};
 
-use super::{SuperOptError, UnitaryCircuitTable, UnitaryMatrix};
+use super::SuperOptError;
+use super::matrix::UnitaryMatrix;
+use super::table::UnitaryCircuitTable;
 
 #[derive(Clone, Debug)]
 pub(super) struct CachedMatrix {

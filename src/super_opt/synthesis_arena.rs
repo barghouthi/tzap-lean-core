@@ -1,6 +1,7 @@
 use rustc_hash::FxHashMap;
 
-use super::{LibraryGate, UnitaryFingerprint};
+use super::matrix::UnitaryFingerprint;
+use super::table::LibraryGate;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CircuitNode {
@@ -11,7 +12,7 @@ pub(super) struct CircuitNode {
 /// One synthesis-table width stored as a prefix-sharing circuit arena.
 #[derive(Clone, Debug, Default)]
 pub(super) struct WidthTable {
-    pub(super) fingerprints: FxHashMap<UnitaryFingerprint, usize>,
+    fingerprints: FxHashMap<UnitaryFingerprint, usize>,
     pub(super) nodes: Vec<CircuitNode>,
 }
 
@@ -24,14 +25,6 @@ impl WidthTable {
         });
         table.fingerprints.insert(fingerprint, 0);
         table
-    }
-
-    #[cfg(test)]
-    pub(super) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            fingerprints: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
-            nodes: Vec::with_capacity(capacity),
-        }
     }
 
     pub(super) fn len(&self) -> usize {
@@ -59,36 +52,6 @@ impl WidthTable {
         });
         self.fingerprints.insert(fingerprint, node);
         node
-    }
-
-    #[cfg(test)]
-    pub(super) fn insert_circuit(
-        &mut self,
-        fingerprint: UnitaryFingerprint,
-        circuit: &[LibraryGate],
-    ) -> Option<usize> {
-        if self.fingerprints.contains_key(&fingerprint) {
-            return None;
-        }
-        let mut parent = None;
-        for &gate in circuit {
-            let node = self.nodes.len();
-            self.nodes.push(CircuitNode {
-                parent,
-                gate: Some(gate),
-            });
-            parent = Some(node);
-        }
-        let node = parent.unwrap_or_else(|| {
-            let node = self.nodes.len();
-            self.nodes.push(CircuitNode {
-                parent: None,
-                gate: None,
-            });
-            node
-        });
-        self.fingerprints.insert(fingerprint, node);
-        Some(node)
     }
 
     pub(super) fn circuit(&self, mut node: usize) -> Vec<LibraryGate> {
