@@ -133,7 +133,7 @@ circuits only.
 ```rust
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
 
-let pass = SuperOpt::new(4, 8, SuperOptTableConfig::default())?;
+let pass = SuperOpt::new(3, 10, SuperOptTableConfig::default())?;
 let result = pass.run(&circuit)?;
 println!("{} rewrites", result.rewrites.len());
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -145,7 +145,7 @@ Parameters:
 - `window_gates` — maximum gates in a scanned window.
 - `SuperOptTableConfig::new(max_qubits, max_gates, max_entries_per_qubit)` — bounds
   for the synthesis table, independent of the window size; `default()` is
-  `(4, 8, 1_000_000)`. Tables are built on first use and shared for the life of the
+  `(3, 8, 200_000)`. Tables are built on first use and shared for the life of the
   process.
 
 `SuperOpt` also implements `tzap::pass::Pass`. Chain `.without_subcircuits()` when

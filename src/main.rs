@@ -395,7 +395,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         let superopt_pass = if uses_superopt {
             let start = Instant::now();
             let pass =
-                SuperOpt::new(4, 8, SuperOptTableConfig::default()).unwrap_or_else(|error| {
+                SuperOpt::new(3, 10, SuperOptTableConfig::default()).unwrap_or_else(|error| {
                     eprintln!("Failed to initialize SuperOpt: {error}");
                     process::exit(1);
                 });

@@ -9,7 +9,7 @@ pub struct SuperOptTableConfig {
 
 impl Default for SuperOptTableConfig {
     fn default() -> Self {
-        Self::new(4, 8, 1_000_000)
+        Self::new(3, 8, 200_000)
     }
 }
 
