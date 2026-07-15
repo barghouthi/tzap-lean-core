@@ -54,7 +54,7 @@ impl PassName {
         (
             "SuperOpt",
             PassName::SuperOpt,
-            "Replace up-to-4-qubit, up-to-8-gate windows using a synthesis table",
+            "Replace small subcircuit windows using a synthesis table",
         ),
         (
             "PhaseFoldRand",
@@ -69,9 +69,6 @@ impl PassName {
     ];
 
     fn parse(s: &str) -> Option<PassName> {
-        if s == "SubcircuitMatrix" {
-            return Some(PassName::SuperOpt);
-        }
         Self::ALL
             .iter()
             .find(|(n, _, _)| *n == s)
