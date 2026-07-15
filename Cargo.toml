@@ -15,6 +15,7 @@ readme = "README.md"
 rayon = "1"
 rsgridsynth = "0.2"
 rustc-hash = "2"
+smallvec = "1"
 
 [dev-dependencies]
 tempfile = "3"

@@ -45,7 +45,7 @@ fn naive_windows(
         let mut previous_indices = Vec::new();
         for end in anchor..circuit.gates.len() {
             let mut indices = vec![anchor];
-            let mut qubits = unique_qubits(&circuit.gates[anchor]);
+            let mut qubits: Vec<Qubit> = unique_qubits(&circuit.gates[anchor]).to_vec();
             loop {
                 let mut changed = false;
                 for gate_index in anchor..=end {
@@ -686,14 +686,20 @@ fn without_subcircuits_matches_collected_run() {
 
     assert!(skipped.subcircuits.is_empty());
     assert!(!collected.subcircuits.is_empty());
+    // The optimization result must be identical regardless of collection.
     assert_eq!(
         format!("{:?}", collected.circuit.gates),
         format!("{:?}", skipped.circuit.gates)
     );
     assert_eq!(collected.removed_subcircuits, skipped.removed_subcircuits);
     assert_eq!(collected.rewrites.len(), skipped.rewrites.len());
-    assert_eq!(collected.cache_hits, skipped.cache_hits);
-    assert_eq!(collected.cache_misses, skipped.cache_misses);
+    // Cache statistics may differ: without subcircuit collection the pass skips
+    // the provably-unshortenable single-gate windows, so it performs strictly
+    // fewer lookups here (h, cnot, h, s, s each anchor a skipped single-gate
+    // window) while reaching the same rewrites.
+    let collected_lookups = collected.cache_hits + collected.cache_misses;
+    let skipped_lookups = skipped.cache_hits + skipped.cache_misses;
+    assert!(skipped_lookups < collected_lookups);
 }
 
 #[test]

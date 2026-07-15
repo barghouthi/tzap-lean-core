@@ -8,6 +8,15 @@
 //! table has a smaller equivalent circuit.
 
 use std::collections::HashMap;
+
+use rustc_hash::FxHashMap;
+use smallvec::{SmallVec, smallvec};
+
+/// Inline storage for a window's qubit support (bounded by `max_qubits`, at most
+/// four in practice) and its gate indices (bounded by `window_gates`), so the
+/// per-gate window bookkeeping stays off the heap.
+type QubitVec = SmallVec<[Qubit; 4]>;
+type IndexVec = SmallVec<[usize; 8]>;
 #[cfg(test)]
 use std::io::Read;
 #[cfg(test)]
@@ -16,7 +25,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::circuit::{Circuit, Gate, Qubit, qubits_of};
+use crate::circuit::{Circuit, Gate, Qubit};
 use crate::pass::Pass;
 
 mod config;
@@ -859,8 +868,8 @@ pub struct SuperOptPass {
 
 #[derive(Debug)]
 struct ActiveWindow {
-    gate_indices: Vec<usize>,
-    qubits: Vec<Qubit>,
+    gate_indices: IndexVec,
+    qubits: QubitVec,
 }
 
 #[derive(Clone, Debug)]
@@ -996,15 +1005,22 @@ impl SuperOptPass {
 
             // The current gate anchors a new one-gate closed component.
             if gate_qubits.len() <= self.max_qubits {
-                let indices = vec![gate_index];
-                self.analyze_window(
-                    circuit,
-                    &indices,
-                    &gate_qubits,
-                    &mut store,
-                    &mut rewrites,
-                    &mut subcircuits,
-                )?;
+                let indices: IndexVec = smallvec![gate_index];
+                // A single non-identity gate can only be rewritten to the empty
+                // circuit, which requires its matrix to be identity up to phase.
+                // Only `rz` can be that (rz(0)); every other library gate never
+                // is, so its lookup can never yield a rewrite. Skip it unless we
+                // must collect the window's diagnostics.
+                if self.collect_subcircuits || matches!(gate, Gate::rz(..)) {
+                    self.analyze_window(
+                        circuit,
+                        &indices,
+                        &gate_qubits,
+                        &mut store,
+                        &mut rewrites,
+                        &mut subcircuits,
+                    )?;
+                }
 
                 if self.window_gates > 1 {
                     let window_id = active.len();
@@ -1283,7 +1299,10 @@ fn map_gate_to_physical(gate: &Gate, qubits: &[Qubit]) -> Gate {
 /// cache hit.
 #[derive(Default)]
 struct MatrixStore {
-    cache: HashMap<Box<[NormalizedGate]>, usize>,
+    // FxHash: this is probed once per emitted window (millions of times on
+    // large circuits), and the keys are short gate sequences where SipHash's
+    // per-lookup overhead dominates.
+    cache: FxHashMap<Box<[NormalizedGate]>, usize>,
     entries: Vec<CachedMatrix>,
     scratch: Vec<NormalizedGate>,
     hits: usize,
@@ -1321,8 +1340,27 @@ impl MatrixStore {
     }
 }
 
-fn unique_qubits(gate: &Gate) -> Vec<Qubit> {
-    let mut qubits = qubits_of(gate);
+fn unique_qubits(gate: &Gate) -> QubitVec {
+    let mut qubits: QubitVec = match gate {
+        Gate::x(q)
+        | Gate::h(q)
+        | Gate::s(q)
+        | Gate::sdg(q)
+        | Gate::z(q)
+        | Gate::t(q)
+        | Gate::tdg(q)
+        | Gate::rz(_, q)
+        | Gate::reset(q) => smallvec![*q],
+        Gate::cnot { control, target } | Gate::cz { control, target } => {
+            smallvec![*control, *target]
+        }
+        Gate::ccx {
+            control1,
+            control2,
+            target,
+        } => smallvec![*control1, *control2, *target],
+        Gate::measure { qubit, .. } => smallvec![*qubit],
+    };
     qubits.sort_unstable();
     qubits.dedup();
     qubits
