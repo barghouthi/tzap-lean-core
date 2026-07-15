@@ -142,7 +142,9 @@ fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
             target,
         } => encode(9, local(*control1), local(*control2), local(*target)),
         Gate::rz(..) => return None,
-        Gate::measure { .. } | Gate::reset(_) => unreachable!("validated as unitary"),
+        Gate::measure { .. } | Gate::reset(_) => {
+            unreachable!("measurement and reset are window barriers")
+        }
     })
 }
 
@@ -201,7 +203,9 @@ fn normalized_gate_key(
                     control2,
                     target,
                 } => NormalizedGate::Ccx(local(*control1), local(*control2), local(*target)),
-                Gate::measure { .. } | Gate::reset(_) => unreachable!("validated as unitary"),
+                Gate::measure { .. } | Gate::reset(_) => {
+                    unreachable!("measurement and reset are window barriers")
+                }
             }),
     );
 }

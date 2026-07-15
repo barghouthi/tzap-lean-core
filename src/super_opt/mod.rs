@@ -249,7 +249,9 @@ impl UnitaryMatrix {
                 control2,
                 target,
             } => self.apply_ccx_left(local(*control1), local(*control2), local(*target)),
-            Gate::measure { .. } | Gate::reset(_) => unreachable!("validated as unitary"),
+            Gate::measure { .. } | Gate::reset(_) => {
+                unreachable!("measurement and reset are window barriers")
+            }
         }
     }
 }
@@ -557,6 +559,9 @@ impl UnitaryCircuitTable {
         let table = self.entries.get(matrix.num_qubits())?;
         let node = table.node_for(&unitary_fingerprint(matrix))?;
         let circuit = table.circuit(node);
+        // The fingerprint is a lossy, rounded hash. This comparison is the
+        // release-mode collision guard that makes accepting a rewrite sound;
+        // it is not a redundant post-rewrite audit.
         let candidate = library_circuit_matrix(matrix.num_qubits(), &circuit).ok()?;
         matrix
             .equivalent_up_to_global_phase(&candidate, IDENTITY_TOLERANCE)
@@ -931,7 +936,8 @@ impl SuperOpt {
         "SuperOpt"
     }
 
-    /// Run one forward scan while maintaining one closed component per anchor.
+    /// Run one forward scan while maintaining one closed unitary component per
+    /// anchor. Measurement and reset terminate windows on their qubits.
     pub fn run(&self, circuit: &Circuit) -> Result<SuperOptResult, SuperOptError> {
         if self.window_gates == 0 {
             return Err(SuperOptError::ZeroWindowGates);
@@ -961,6 +967,19 @@ impl SuperOpt {
             }
             touched_windows.sort_unstable();
             touched_windows.dedup();
+
+            // Measurement and reset terminate every unitary window touching
+            // their qubit. Keep the gate in the per-qubit history so a window
+            // on a disjoint qubit cannot later bridge across this barrier.
+            if matches!(gate, Gate::measure { .. } | Gate::reset(_)) {
+                for &window_id in &touched_windows {
+                    let window = active[window_id]
+                        .take()
+                        .expect("qubit index only contains live windows");
+                    unregister_window(window_id, &window.qubits, &[], &mut windows_by_qubit);
+                }
+                continue;
+            }
 
             for &window_id in &touched_windows {
                 let mut window = active[window_id]
@@ -1129,17 +1148,15 @@ impl Pass for SuperOpt {
     }
 
     fn run(&self, circuit: &Circuit) -> Circuit {
-        SuperOpt::run(self, circuit)
-            .expect("SuperOpt requires a valid unitary circuit")
-            .circuit
+        match SuperOpt::run(self, circuit) {
+            Ok(result) => result.circuit,
+            Err(error) => panic!("SuperOpt failed: {error}"),
+        }
     }
 }
 
 fn validate_circuit(circuit: &Circuit) -> Result<(), SuperOptError> {
     for (gate_index, gate) in circuit.gates.iter().enumerate() {
-        if matches!(gate, Gate::measure { .. } | Gate::reset(_)) {
-            return Err(SuperOptError::NonUnitaryGate { gate_index });
-        }
         for qubit in unique_qubits(gate) {
             if qubit >= circuit.num_qubits {
                 return Err(SuperOptError::InvalidQubit {
@@ -1224,6 +1241,12 @@ fn expand_component_closure(
         for &gate_index in &history[start..] {
             if gate_index > current_gate {
                 break;
+            }
+            if matches!(
+                circuit.gates[gate_index],
+                Gate::measure { .. } | Gate::reset(_)
+            ) {
+                return false;
             }
             let Err(position) = window.gate_indices.binary_search(&gate_index) else {
                 continue;

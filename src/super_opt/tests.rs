@@ -612,11 +612,28 @@ fn consecutive_synth_rewrites_do_not_double_claim() {
 }
 
 #[test]
-fn rejects_reset_gate() {
-    let mut circuit = Circuit::new(1);
+fn optimizes_unitary_regions_around_measure_and_reset() {
+    let mut circuit = Circuit::with_cbits(1, 1);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::measure { qubit: 0, cbit: 0 });
     circuit.apply(Gate::reset(0));
-    let error = SuperOpt::analyzer(1, 1).run(&circuit).unwrap_err();
-    assert_eq!(error, SuperOptError::NonUnitaryGate { gate_index: 0 });
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::h(0));
+
+    let result = SuperOpt::analyzer(1, 2)
+        .with_synthesis_table(synthesis_table(1, 2))
+        .run(&circuit)
+        .unwrap();
+    assert_eq!(result.circuit.gates.len(), 2);
+    assert!(matches!(result.circuit.gates[0], Gate::measure { .. }));
+    assert!(matches!(result.circuit.gates[1], Gate::reset(0)));
+    assert_eq!(result.removed_subcircuits, vec![vec![0, 1], vec![4, 5]]);
+    assert!(
+        result.subcircuits.iter().all(|window| {
+            !window.gate_indices.contains(&2) && !window.gate_indices.contains(&3)
+        })
+    );
 }
 
 #[test]
@@ -638,12 +655,163 @@ fn rejects_out_of_range_qubit() {
 }
 
 #[test]
-#[should_panic(expected = "valid unitary circuit")]
-fn pass_trait_panics_on_non_unitary_circuit() {
-    let mut circuit = Circuit::with_cbits(1, 1);
-    circuit.apply(Gate::measure { qubit: 0, cbit: 0 });
-    let pass = SuperOpt::analyzer(1, 1);
-    Pass::run(&pass, &circuit);
+fn pass_trait_optimizes_unitary_regions_in_mixed_circuit() {
+    let mut circuit = Circuit::with_cbits(2, 1);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::measure { qubit: 1, cbit: 0 });
+    circuit.apply(Gate::h(0));
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 2));
+    let optimized = Pass::run(&pass, &circuit);
+
+    assert_eq!(optimized.gates.len(), 1);
+    assert!(matches!(optimized.gates[0], Gate::measure { .. }));
+    assert_eq!(optimized.num_qubits, circuit.num_qubits);
+    assert_eq!(optimized.num_cbits, circuit.num_cbits);
+    assert!(optimized.has_measurement);
+}
+
+#[test]
+fn measurement_blocks_a_later_bridge_into_its_qubit() {
+    let mut circuit = Circuit::with_cbits(2, 1);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::measure { qubit: 1, cbit: 0 });
+    circuit.apply(Gate::cnot {
+        control: 0,
+        target: 1,
+    });
+
+    let result = SuperOpt::analyzer(2, 3).run(&circuit).unwrap();
+    assert!(
+        result.subcircuits.iter().all(|window| {
+            !(window.gate_indices.contains(&0) && window.gate_indices.contains(&2))
+        })
+    );
+    assert!(matches!(result.circuit.gates[1], Gate::measure { .. }));
+}
+
+#[test]
+fn measure_and_reset_each_block_same_qubit_windows() {
+    let barriers = [Gate::measure { qubit: 0, cbit: 0 }, Gate::reset(0)];
+    let table = synthesis_table(1, 2);
+
+    for barrier in barriers {
+        let mut circuit = Circuit::with_cbits(1, 1);
+        circuit.apply(Gate::h(0));
+        circuit.apply(barrier);
+        circuit.apply(Gate::h(0));
+
+        let result = SuperOpt::analyzer(1, 3)
+            .with_synthesis_table(Arc::clone(&table))
+            .run(&circuit)
+            .unwrap();
+        assert!(result.rewrites.is_empty());
+        assert_eq!(result.circuit.gates.len(), 3);
+        assert!(
+            result
+                .subcircuits
+                .iter()
+                .all(|window| !window.gate_indices.contains(&1))
+        );
+        assert!(
+            result
+                .subcircuits
+                .iter()
+                .all(|window| window.gate_indices != [0, 2])
+        );
+    }
+}
+
+#[test]
+fn disjoint_measure_and_reset_do_not_block_unitary_window() {
+    let mut circuit = Circuit::with_cbits(3, 1);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::measure { qubit: 1, cbit: 0 });
+    circuit.apply(Gate::reset(2));
+    circuit.apply(Gate::h(0));
+
+    let result = SuperOpt::analyzer(1, 2)
+        .with_synthesis_table(synthesis_table(1, 2))
+        .run(&circuit)
+        .unwrap();
+    assert_eq!(result.removed_subcircuits, vec![vec![0, 3]]);
+    assert_eq!(result.circuit.gates.len(), 2);
+    assert!(matches!(result.circuit.gates[0], Gate::measure { .. }));
+    assert!(matches!(result.circuit.gates[1], Gate::reset(2)));
+    assert!(
+        result.subcircuits.iter().all(|window| {
+            !window.gate_indices.contains(&1) && !window.gate_indices.contains(&2)
+        })
+    );
+}
+
+#[test]
+fn reset_blocks_a_later_bridge_into_its_qubit() {
+    let mut circuit = Circuit::new(2);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::reset(1));
+    circuit.apply(Gate::cnot {
+        control: 0,
+        target: 1,
+    });
+
+    let result = SuperOpt::analyzer(2, 3).run(&circuit).unwrap();
+    assert!(
+        result.subcircuits.iter().all(|window| {
+            !(window.gate_indices.contains(&0) && window.gate_indices.contains(&2))
+        })
+    );
+    assert!(matches!(result.circuit.gates[1], Gate::reset(1)));
+}
+
+#[test]
+fn circuit_containing_only_measure_and_reset_is_unchanged() {
+    let mut circuit = Circuit::with_cbits(2, 2);
+    circuit.apply(Gate::measure { qubit: 0, cbit: 1 });
+    circuit.apply(Gate::reset(1));
+    circuit.apply(Gate::measure { qubit: 1, cbit: 0 });
+
+    let result = SuperOpt::analyzer(2, 8).run(&circuit).unwrap();
+    assert_eq!(result.circuit.to_qasm(), circuit.to_qasm());
+    assert_eq!(result.circuit.num_cbits, 2);
+    assert!(result.circuit.has_measurement);
+    assert!(result.subcircuits.is_empty());
+    assert!(result.rewrites.is_empty());
+    assert_eq!(result.cache_hits + result.cache_misses, 0);
+}
+
+#[test]
+fn invalid_measure_and_reset_qubits_are_still_rejected() {
+    for gate in [Gate::measure { qubit: 2, cbit: 0 }, Gate::reset(2)] {
+        let mut circuit = Circuit::with_cbits(2, 1);
+        circuit.apply(gate);
+        let error = SuperOpt::analyzer(2, 2).run(&circuit).unwrap_err();
+        assert_eq!(
+            error,
+            SuperOptError::InvalidQubit {
+                gate_index: 0,
+                qubit: 2,
+                num_qubits: 2,
+            }
+        );
+    }
+}
+
+#[test]
+fn mixed_circuit_without_subcircuits_still_rewrites_unitary_windows() {
+    let mut circuit = Circuit::new(2);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::reset(1));
+    circuit.apply(Gate::h(0));
+
+    let result = SuperOpt::analyzer(1, 2)
+        .with_synthesis_table(synthesis_table(1, 2))
+        .without_subcircuits()
+        .run(&circuit)
+        .unwrap();
+    assert!(result.subcircuits.is_empty());
+    assert_eq!(result.removed_subcircuits, vec![vec![0, 2]]);
+    assert_eq!(result.circuit.gates.len(), 1);
+    assert!(matches!(result.circuit.gates[0], Gate::reset(1)));
 }
 
 #[test]
@@ -1295,16 +1463,6 @@ fn randomized_results_match_naive_anchored_scan() {
             }
         }
     }
-}
-
-#[test]
-fn rejects_non_unitary_circuit() {
-    let mut circuit = Circuit::with_cbits(1, 1);
-    circuit.apply(Gate::h(0));
-    circuit.apply(Gate::measure { qubit: 0, cbit: 0 });
-
-    let error = SuperOpt::analyzer(1, 1).run(&circuit).unwrap_err();
-    assert_eq!(error, SuperOptError::NonUnitaryGate { gate_index: 1 });
 }
 
 #[test]
