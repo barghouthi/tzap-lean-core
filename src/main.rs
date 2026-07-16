@@ -129,8 +129,16 @@ struct Opts {
     passes: Option<Vec<PassName>>,
     /// Re-run the optimization pipeline until gate count stops decreasing.
     fixpoint: bool,
-    /// Run the maximum optimization pipeline to a fixpoint.
-    max: bool,
+    /// Explicit optimization level. Absence also uses O1, but keeps custom
+    /// `--passes` and `--fixpoint` available.
+    optimization_level: Option<OptimizationLevel>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OptimizationLevel {
+    O1,
+    O2,
+    O3,
 }
 
 fn fmt_num<N: std::fmt::Display>(n: N) -> String {
@@ -422,10 +430,10 @@ fn run_to_fixpoint(
     (c, total, round)
 }
 
-/// Run the maximum optimization pipeline to a fixpoint. When Rz decomposition
+/// Run the O3 optimization pipeline to a fixpoint. When Rz decomposition
 /// is requested, insert it exactly once after the first optimization sweep and
 /// force another sweep when there were Rz gates to decompose.
-fn run_max_to_fixpoint(
+fn run_o3_to_fixpoint(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     rz_decompose: Option<&dyn Pass>,
@@ -554,21 +562,27 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
     let baseline_gates = circuit.gates.len();
     let baseline_t = count_t(&circuit);
 
-    let (result, total_pass_time) = if opts.max {
+    let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
+    let (result, total_pass_time) = if optimization_level == OptimizationLevel::O3 {
         let superopt_pass = initialize_superopt();
         let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
         let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
-        let (r, t, rounds) =
-            run_max_to_fixpoint(&circuit, &passes, decompose, parallel, num_chunks);
+        let (r, t, rounds) = run_o3_to_fixpoint(&circuit, &passes, decompose, parallel, num_chunks);
         eprintln!("  Fixpoint reached after {rounds} iteration(s)");
         (r, t)
     } else {
+        let superopt_pass = (optimization_level == OptimizationLevel::O2).then(initialize_superopt);
+        let mut optimization_passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
+        if let Some(pass) = &superopt_pass {
+            optimization_passes.insert(1, pass);
+        }
+
         // Optimize, then (for --decompose-rz) decompose Rz and optimize the result
-        // again — so cancellation + phase folding run both before and after gridsynth.
-        let mut passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
+        // again — so the selected optimization pipeline runs on both sides of gridsynth.
+        let mut passes = optimization_passes.clone();
         if opts.decompose_rz && circuit.gates.iter().any(|g| matches!(g, Gate::rz(..))) {
             passes.push(&rz_decompose);
-            passes.extend(build_passes(&cancel_pass, &global, &global_expr, opts.expr));
+            passes.extend(optimization_passes);
         }
 
         if opts.fixpoint {
@@ -602,7 +616,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
 
 fn print_help() {
     println!();
-    println!("  \x1b[1m⚡\u{FE0F} tzap\x1b[0m  —  fast T-gate optimizer for Clifford+T circuits");
+    println!("  \x1b[1m⚡\u{FE0F} tzap\x1b[0m  —  fast quantum circuit optimizer");
     println!();
     println!("  Decomposes Toffoli (ccx) gates into Clifford+T by default.");
     println!("  Pass --decompose-rz to also decompose Rz gates via gridsynth.");
@@ -629,13 +643,16 @@ fn print_help() {
     println!(
         "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
     );
-    println!(
-        "    \x1b[1m--max\x1b[0m            Run CancelGates, SuperOpt, and PhaseFoldRand to a fixpoint"
-    );
+    println!("    \x1b[1m-O1\x1b[0m              Default, fast optimization pass schedule");
+    println!("    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1");
+    println!("    \x1b[1m-O3\x1b[0m              Runs O2 iteratively until a fixpoint is reached");
     println!("    \x1b[1m-h, --help\x1b[0m       Print this help message");
     println!();
     println!("  \x1b[1;33mPASSES\x1b[0m (names for --passes)");
-    for (name, _, desc) in PassName::ALL {
+    for (name, pass, desc) in PassName::ALL {
+        if matches!(pass, PassName::PhaseFoldGlobalExpr) {
+            continue;
+        }
         println!("    \x1b[1m{name:<19}\x1b[0m  {desc}");
     }
     println!();
@@ -650,7 +667,7 @@ fn parse_args(args: &[String]) -> Opts {
     let mut parallel = false;
     let mut passes: Option<Vec<PassName>> = None;
     let mut fixpoint = false;
-    let mut max = false;
+    let mut optimization_level = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -686,7 +703,18 @@ fn parse_args(args: &[String]) -> Opts {
             }
             "--parallel" => parallel = true,
             "--fixpoint" => fixpoint = true,
-            "--max" => max = true,
+            "-O1" | "-O2" | "-O3" => {
+                if optimization_level.is_some() {
+                    eprintln!("-O1, -O2, and -O3 cannot be combined");
+                    process::exit(1);
+                }
+                optimization_level = Some(match args[i].as_str() {
+                    "-O1" => OptimizationLevel::O1,
+                    "-O2" => OptimizationLevel::O2,
+                    "-O3" => OptimizationLevel::O3,
+                    _ => unreachable!(),
+                });
+            }
             "-o" => {
                 i += 1;
                 output_path = args.get(i).cloned();
@@ -708,13 +736,13 @@ fn parse_args(args: &[String]) -> Opts {
 
     let Some(input_path) = input_path else {
         eprintln!(
-            "\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint] [--max]"
+            "\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [-O1|-O2|-O3] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]"
         );
         process::exit(1);
     };
 
-    if max && (passes.is_some() || fixpoint) {
-        eprintln!("--max cannot be combined with --passes or --fixpoint");
+    if optimization_level.is_some() && (passes.is_some() || fixpoint) {
+        eprintln!("-O1, -O2, and -O3 cannot be combined with --passes or --fixpoint");
         process::exit(1);
     }
     if passes.is_some() && (expr || decompose_rz) {
@@ -730,7 +758,7 @@ fn parse_args(args: &[String]) -> Opts {
         parallel,
         passes,
         fixpoint,
-        max,
+        optimization_level,
     }
 }
 

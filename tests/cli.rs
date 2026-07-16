@@ -686,10 +686,49 @@ fn superopt_pass_builds_table_behind_cli() {
     );
 }
 
-// --- --max pipeline ---
+// --- optimization levels ---
 
 #[test]
-fn max_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
+fn o1_is_the_default_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let default_output = dir.path().join("default.qasm");
+    let o1_output = dir.path().join("o1.qasm");
+    let default = tzap_run(&[TEST_QASM, "-o", default_output.to_str().unwrap()]);
+    let o1 = tzap_run(&[TEST_QASM, "-o", o1_output.to_str().unwrap(), "-O1"]);
+    assert!(default.status.success());
+    assert!(o1.status.success());
+    assert_eq!(
+        fs::read_to_string(default_output).unwrap(),
+        fs::read_to_string(o1_output).unwrap()
+    );
+
+    let stderr = String::from_utf8_lossy(&o1.stderr);
+    assert!(stderr.contains("Gate cancellation"), "got: {stderr}");
+    assert!(stderr.contains("Phase folding"), "got: {stderr}");
+    assert!(!stderr.contains("Initialized SuperOpt"), "got: {stderr}");
+}
+
+#[test]
+fn o2_inserts_superopt_after_cancel_gates() {
+    let out = tzap_run(&[TEST_QASM, "-O2"]);
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let cancel = stderr.find("Gate cancellation").unwrap();
+    let superopt = stderr.find("\n  SuperOpt\n").unwrap();
+    let phase_fold = stderr.find("Phase folding").unwrap();
+    assert!(
+        cancel < superopt && superopt < phase_fold,
+        "unexpected O2 pass order:\n{stderr}"
+    );
+}
+
+#[test]
+fn o3_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("rz.qasm");
     let output = dir.path().join("out.qasm");
@@ -699,7 +738,7 @@ fn max_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
         input.to_str().unwrap(),
         "-o",
         output.to_str().unwrap(),
-        "--max",
+        "-O3",
         "--decompose-rz",
         "--epsilon",
         "1e-3",
@@ -735,24 +774,37 @@ fn max_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
 }
 
 #[test]
-fn max_conflicts_with_passes_and_fixpoint() {
-    for conflicting in [
-        ["--passes", "CancelGates"].as_slice(),
-        ["--fixpoint"].as_slice(),
-    ] {
-        let mut args = vec![TEST_QASM, "--max"];
-        args.extend_from_slice(conflicting);
-        let out = tzap_run(&args);
-        assert!(
-            !out.status.success(),
-            "should reject --max with {conflicting:?}"
-        );
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("--max cannot be combined with --passes or --fixpoint"),
-            "got: {stderr}"
-        );
+fn optimization_levels_conflict_with_passes_and_fixpoint() {
+    for level in ["-O1", "-O2", "-O3"] {
+        for conflicting in [
+            ["--passes", "CancelGates"].as_slice(),
+            ["--fixpoint"].as_slice(),
+        ] {
+            let mut args = vec![TEST_QASM, level];
+            args.extend_from_slice(conflicting);
+            let out = tzap_run(&args);
+            assert!(
+                !out.status.success(),
+                "should reject {level} with {conflicting:?}"
+            );
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                stderr.contains("cannot be combined with --passes or --fixpoint"),
+                "got: {stderr}"
+            );
+        }
     }
+}
+
+#[test]
+fn optimization_levels_are_mutually_exclusive() {
+    let out = tzap_run(&[TEST_QASM, "-O1", "-O2"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("-O1, -O2, and -O3 cannot be combined"),
+        "got: {stderr}"
+    );
 }
 
 fn gate_lines_from(stdout: &str) -> Vec<String> {
