@@ -12,8 +12,8 @@ correctness theorems.
 
 | Theorem | File | Statement (informal) |
 |---|---|---|
-| `SuperOptAnchored.optimize_correct` | `TZap/SuperOptAnchored.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics. |
-| `SuperOpt.unitary_agrees` | `TZap/SuperOpt.lean` | SuperOpt's dense unitary matrix semantics is exactly equal to the weighted-relation semantics after swapping the matrix indices. |
+| `SuperOpt.Algorithm.optimize_correct` | `TZap/SuperOpt/Algorithm.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics. |
+| `Unitary.unitary_agrees` | `TZap/Unitary.lean` | Dense unitary matrix semantics is exactly equal to the weighted-relation semantics after swapping the matrix indices. |
 | `RandomizedAlgorithm.randomized_fold_correct` | `TZap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
 | `RandomizedSoundness.randomized_analysis_sound` | `TZap/RandomizedSoundness.lean` | A semantically false equality reported by the randomized analysis with `k`-bit hashes has probability at most `2⁻ᵏ`. |
 | `Algorithm.fold_correct` | `TZap/Algorithm.lean` | The exact Algorithm 1 preserves circuit semantics: `⟦fold C⟧ = ⟦C⟧`. |
@@ -53,13 +53,16 @@ The modules, in dependency order:
   `phase_add` (`Rz` angles add on equal parity bits) and nonzero-amplitude
   shape lemmas used throughout the soundness proofs.
 
-- **`TZap/SuperOpt.lean`** — Exact dense-matrix semantics matching SuperOpt's
-  row-output/column-input convention and left-applied gate kernels. Its
-  gates use the formalization's weighted-relation convention, including
+- **`TZap/Unitary.lean`** — General exact dense-matrix semantics using the
+  row-output/column-input convention and left-applied gate matrices. Its gates
+  use the formalization's weighted-relation convention, including
   `Rz θ = diag(1, e^{iθ})`. `unitary_agrees` proves literal equality after
   swapping the matrix indices.
 
-- **`TZap/SuperOptAnchored.lean`** — The Rust-style connected-window pass.
+- **`TZap/SuperOpt/Table.lean`** — The optimizer-specific abstract
+  unitary-to-circuit synthesis table and its exact soundness contract.
+
+- **`TZap/SuperOpt/Algorithm.lean`** — The Rust-style connected-window pass.
   Every gate becomes an anchor; its component grows across later gates while
   unrelated gates are skipped, and later bridge gates retroactively pull in
   earlier disconnected components. Windows are bounded by gate count and
