@@ -1,6 +1,8 @@
 import TZap.WeightedRelation
 import TZap.Circuit
 import TZap.Semantics
+import TZap.SuperOpt
+import TZap.SuperOptAnchored
 import TZap.Symbolic
 import TZap.Soundness
 import TZap.Affine
