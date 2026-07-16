@@ -69,19 +69,6 @@ tzap allows you to run a custom sequence of optimization passes with `--passes`.
 tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
 ```
 
-**Choose an optimization level**
-
-- `-O1`: Default, fast optimization pass schedule.
-- `-O2`: Adds a superoptimization pass to O1.
-- `-O3`: Runs O2 iteratively until a fixpoint is reached.
-
-With `-O3 --decompose-rz`, Rz decomposition runs once after the first optimization iteration, and optimization then continues to a fixpoint. Explicit optimization-level flags cannot be combined with `--passes` or `--fixpoint`.
-
-```bash
-tzap -O2 input.qasm -o output.qasm
-tzap -O3 input.qasm -o output.qasm --decompose-rz --epsilon 1e-6
-```
-
 ## Circuit support
 
 tzap supports a subset of OpenQASM 2.0:
