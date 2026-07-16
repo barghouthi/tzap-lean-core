@@ -59,6 +59,128 @@ fn assert_matrix_close(actual: &UnitaryMatrix, expected: &UnitaryMatrix) {
     }
 }
 
+#[derive(Clone)]
+struct ChannelBranch {
+    amplitudes: Vec<Complex64>,
+    cbits: Vec<bool>,
+}
+
+fn apply_unitary_to_state(gate: &Gate, num_qubits: usize, state: &[Complex64]) -> Vec<Complex64> {
+    let support: Vec<_> = (0..num_qubits).collect();
+    let mut matrix = UnitaryMatrix::identity(num_qubits).unwrap();
+    matrix.apply_gate_left(gate, &support);
+    (0..state.len())
+        .map(|row| {
+            (0..state.len()).fold(Complex64::ZERO, |sum, column| {
+                sum + matrix.get(row, column) * state[column]
+            })
+        })
+        .collect()
+}
+
+/// Exact small-circuit reference channel, represented as one density matrix
+/// per final classical-bit valuation. Measurement and reset split branches;
+/// unitary gates evolve each branch independently.
+fn reference_channel(circuit: &Circuit) -> std::collections::BTreeMap<Vec<bool>, Vec<Complex64>> {
+    let dim = 1 << circuit.num_qubits;
+    let mut initial = vec![Complex64::ZERO; dim];
+    initial[0] = Complex64::ONE;
+    let mut branches = vec![ChannelBranch {
+        amplitudes: initial,
+        cbits: vec![false; circuit.num_cbits],
+    }];
+
+    for gate in &circuit.gates {
+        let mut next = Vec::new();
+        for branch in branches {
+            match gate {
+                Gate::measure { qubit, cbit } => {
+                    let bit = 1 << (circuit.num_qubits - 1 - qubit);
+                    for outcome in [false, true] {
+                        let mut measured = branch.clone();
+                        measured.cbits[*cbit] = outcome;
+                        for (basis, amplitude) in measured.amplitudes.iter_mut().enumerate() {
+                            if (basis & bit != 0) != outcome {
+                                *amplitude = Complex64::ZERO;
+                            }
+                        }
+                        if measured
+                            .amplitudes
+                            .iter()
+                            .any(|value| value.norm_sqr() > 1e-24)
+                        {
+                            next.push(measured);
+                        }
+                    }
+                }
+                Gate::reset(qubit) => {
+                    let bit = 1 << (circuit.num_qubits - 1 - qubit);
+                    for outcome in [false, true] {
+                        let mut reset = vec![Complex64::ZERO; dim];
+                        for (basis, &amplitude) in branch.amplitudes.iter().enumerate() {
+                            if (basis & bit != 0) == outcome {
+                                reset[if outcome { basis ^ bit } else { basis }] = amplitude;
+                            }
+                        }
+                        if reset.iter().any(|value| value.norm_sqr() > 1e-24) {
+                            next.push(ChannelBranch {
+                                amplitudes: reset,
+                                cbits: branch.cbits.clone(),
+                            });
+                        }
+                    }
+                }
+                _ => next.push(ChannelBranch {
+                    amplitudes: apply_unitary_to_state(
+                        gate,
+                        circuit.num_qubits,
+                        &branch.amplitudes,
+                    ),
+                    cbits: branch.cbits,
+                }),
+            }
+        }
+        branches = next;
+    }
+
+    let mut channel = std::collections::BTreeMap::new();
+    for branch in branches {
+        let density = channel
+            .entry(branch.cbits)
+            .or_insert_with(|| vec![Complex64::ZERO; dim * dim]);
+        for row in 0..dim {
+            for column in 0..dim {
+                let conjugate =
+                    Complex64::new(branch.amplitudes[column].re, -branch.amplitudes[column].im);
+                density[row * dim + column] =
+                    density[row * dim + column] + branch.amplitudes[row] * conjugate;
+            }
+        }
+    }
+    channel
+}
+
+fn assert_channels_equivalent(actual: &Circuit, expected: &Circuit) {
+    assert_eq!(actual.num_qubits, expected.num_qubits);
+    assert_eq!(actual.num_cbits, expected.num_cbits);
+    let actual = reference_channel(actual);
+    let expected = reference_channel(expected);
+    assert_eq!(
+        actual.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>()
+    );
+    for (cbits, expected_density) in expected {
+        let actual_density = &actual[&cbits];
+        for (index, (&left, &right)) in actual_density.iter().zip(&expected_density).enumerate() {
+            let delta = Complex64::new(left.re - right.re, left.im - right.im);
+            assert!(
+                delta.norm_sqr() <= 1e-20,
+                "channel differs for classical state {cbits:?} at density entry {index}: {left:?} != {right:?}"
+            );
+        }
+    }
+}
+
 fn naive_windows(
     circuit: &Circuit,
     max_qubits: usize,
@@ -260,6 +382,73 @@ fn canonical_cache_reuses_shifted_windows() {
     ));
 }
 
+#[test]
+fn compact_cache_boundary_falls_back_without_changing_matrices() {
+    let sequence = [
+        Gate::h(0),
+        Gate::t(0),
+        Gate::s(0),
+        Gate::x(0),
+        Gate::tdg(0),
+        Gate::z(0),
+        Gate::sdg(0),
+        Gate::h(0),
+        Gate::t(0),
+        Gate::x(0),
+        Gate::s(0),
+    ];
+    let mut circuit = Circuit::new(2);
+    for gate in &sequence {
+        circuit.apply(gate.clone());
+    }
+    for gate in &sequence {
+        circuit.apply(match gate {
+            Gate::x(_) => Gate::x(1),
+            Gate::h(_) => Gate::h(1),
+            Gate::s(_) => Gate::s(1),
+            Gate::sdg(_) => Gate::sdg(1),
+            Gate::z(_) => Gate::z(1),
+            Gate::t(_) => Gate::t(1),
+            Gate::tdg(_) => Gate::tdg(1),
+            _ => unreachable!(),
+        });
+    }
+
+    let first_indices: Vec<_> = (0..sequence.len()).collect();
+    let second_indices: Vec<_> = (sequence.len()..2 * sequence.len()).collect();
+    assert!(compact_normalized_key(&circuit, &first_indices[..10], &[0]).is_some());
+    assert!(compact_normalized_key(&circuit, &first_indices, &[0]).is_none());
+
+    let result = SuperOpt::analyzer(1, sequence.len()).run(&circuit).unwrap();
+    let first = result
+        .subcircuits
+        .iter()
+        .find(|window| window.gate_indices == first_indices)
+        .unwrap();
+    let second = result
+        .subcircuits
+        .iter()
+        .find(|window| window.gate_indices == second_indices)
+        .unwrap();
+    assert!(Arc::ptr_eq(&first.matrix, &second.matrix));
+    assert_matrix_close(&first.matrix, &naive_matrix(&circuit, &first_indices, &[0]));
+    assert_matrix_close(
+        &second.matrix,
+        &naive_matrix(&circuit, &second_indices, &[1]),
+    );
+}
+
+#[test]
+fn compact_key_rejects_supports_wider_than_operand_encoding() {
+    let mut circuit = Circuit::new(5);
+    circuit.apply(Gate::cnot {
+        control: 0,
+        target: 1,
+    });
+    assert!(compact_normalized_key(&circuit, &[0], &[0, 1, 2, 3]).is_some());
+    assert!(compact_normalized_key(&circuit, &[0], &[0, 1, 2, 3, 4]).is_none());
+}
+
 fn synthesis_table(max_qubits: usize, max_gates: usize) -> Arc<UnitaryCircuitTable> {
     Arc::new(
         UnitaryCircuitTable::build(SuperOptTableConfig {
@@ -300,6 +489,47 @@ fn cnot_matrix_matches_truth_table() {
     );
     for (input, output) in [(0, 0), (1, 1), (2, 3), (3, 2)] {
         assert_eq!(matrix.get(output, input), Complex64::ONE);
+    }
+}
+
+#[test]
+fn directional_gate_matrices_cover_every_target_position() {
+    for (control, target) in [(0, 1), (1, 0)] {
+        let mut matrix = UnitaryMatrix::identity(2).unwrap();
+        matrix.apply_gate_left(&Gate::cnot { control, target }, &[0, 1]);
+        let control_bit = 1 << (1 - control);
+        let target_bit = 1 << (1 - target);
+        for input in 0..4 {
+            let output = if input & control_bit == 0 {
+                input
+            } else {
+                input ^ target_bit
+            };
+            assert_eq!(matrix.get(output, input), Complex64::ONE);
+        }
+    }
+
+    for target in 0..3 {
+        let controls: Vec<_> = (0..3).filter(|&qubit| qubit != target).collect();
+        let mut matrix = UnitaryMatrix::identity(3).unwrap();
+        matrix.apply_gate_left(
+            &Gate::ccx {
+                control1: controls[0],
+                control2: controls[1],
+                target,
+            },
+            &[0, 1, 2],
+        );
+        let control_mask = (1 << (2 - controls[0])) | (1 << (2 - controls[1]));
+        let target_bit = 1 << (2 - target);
+        for input in 0..8 {
+            let output = if input & control_mask == control_mask {
+                input ^ target_bit
+            } else {
+                input
+            };
+            assert_eq!(matrix.get(output, input), Complex64::ONE);
+        }
     }
 }
 
@@ -468,6 +698,19 @@ fn synthesize_returns_none_for_unknown_width_or_depth() {
 }
 
 #[test]
+fn synthesis_rejects_a_forced_fingerprint_collision() {
+    let mut table = UnitaryCircuitTable::build(SuperOptTableConfig::new(1, 1, 100)).unwrap();
+    let query = single_qubit_matrix(&[Gate::s(0)]);
+    let wrong_candidate = single_qubit_matrix(&[Gate::x(0)]);
+    table.inject_fingerprint_alias(&query, &wrong_candidate);
+
+    assert!(
+        table.synthesize(&query).is_none(),
+        "the exact matrix guard must reject a fingerprint hit for the wrong circuit"
+    );
+}
+
+#[test]
 fn hzh_synthesizes_to_x() {
     let table = synthesis_table(1, 1);
     let hzh = single_qubit_matrix(&[Gate::h(0), Gate::z(0), Gate::h(0)]);
@@ -535,6 +778,31 @@ fn gate_wider_than_max_qubits_is_left_alone() {
 }
 
 #[test]
+fn toffoli_metadata_tracks_surviving_and_removed_gates() {
+    let ccx = Gate::ccx {
+        control1: 0,
+        control2: 1,
+        target: 2,
+    };
+
+    let mut surviving = Circuit::new(3);
+    surviving.apply(ccx.clone());
+    let surviving = SuperOpt::analyzer(3, 2).run(&surviving).unwrap().circuit;
+    assert!(surviving.has_toffoli);
+
+    let mut cancelling = Circuit::new(3);
+    cancelling.apply(ccx.clone());
+    cancelling.apply(ccx);
+    let removed = SuperOpt::analyzer(3, 2)
+        .with_synthesis_table(synthesis_table(3, 0))
+        .run(&cancelling)
+        .unwrap()
+        .circuit;
+    assert!(removed.gates.is_empty());
+    assert!(!removed.has_toffoli);
+}
+
+#[test]
 fn rz_inverse_pair_is_removed_as_identity() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::rz(0.37, 0));
@@ -574,6 +842,41 @@ fn lone_arbitrary_rz_windows_skip_clifford_t_lookup() {
         .unwrap();
     assert!(result.circuit.gates.is_empty());
     assert_eq!(result.cache_hits + result.cache_misses, 1);
+}
+
+#[test]
+fn arbitrary_rz_shortcut_respects_tolerance_and_nonfinite_angles() {
+    let step = std::f64::consts::FRAC_PI_4;
+    for (theta, arbitrary) in [
+        (0.0, false),
+        (-0.0, false),
+        (std::f64::consts::TAU, false),
+        (step + 3.9e-10, false),
+        (step - 3.9e-10, false),
+        (step + 4.1e-10, true),
+        (step - 4.1e-10, true),
+        (f64::INFINITY, true),
+        (f64::NEG_INFINITY, true),
+        (f64::NAN, true),
+    ] {
+        let mut circuit = Circuit::new(1);
+        circuit.apply(Gate::rz(theta, 0));
+        assert_eq!(has_lone_arbitrary_rz(&circuit, &[0]), arbitrary);
+    }
+
+    // Optimization-only mode must safely skip non-finite arbitrary rotations
+    // rather than attempting to fingerprint their non-unitary matrices.
+    for theta in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        let mut circuit = Circuit::new(1);
+        circuit.apply(Gate::rz(theta, 0));
+        let result = SuperOpt::analyzer(1, 1)
+            .with_synthesis_table(synthesis_table(1, 1))
+            .without_subcircuits()
+            .run(&circuit)
+            .unwrap();
+        assert!(result.rewrites.is_empty());
+        assert_eq!(result.cache_hits + result.cache_misses, 0);
+    }
 }
 
 #[test]
@@ -628,6 +931,26 @@ fn consecutive_synth_rewrites_do_not_double_claim() {
     assert!(crate::unitary::circuits_equiv(
         &circuit,
         &result.circuit,
+        IDENTITY_TOLERANCE,
+    ));
+}
+
+#[test]
+fn a_second_superopt_pass_can_expose_a_new_rewrite() {
+    let mut circuit = Circuit::new(1);
+    for _ in 0..4 {
+        circuit.apply(Gate::s(0));
+    }
+    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
+    let first = pass.run(&circuit).unwrap().circuit;
+    assert_eq!(first.gates.len(), 2);
+    assert!(first.gates.iter().all(|gate| matches!(gate, Gate::z(0))));
+
+    let second = pass.run(&first).unwrap().circuit;
+    assert!(second.gates.is_empty());
+    assert!(crate::unitary::circuits_equiv(
+        &circuit,
+        &second,
         IDENTITY_TOLERANCE,
     ));
 }
@@ -785,6 +1108,73 @@ fn reset_blocks_a_later_bridge_into_its_qubit() {
 }
 
 #[test]
+fn retroactive_multihop_closure_stops_at_measurement_and_reset() {
+    for barrier in [Gate::measure { qubit: 3, cbit: 0 }, Gate::reset(3)] {
+        let mut circuit = Circuit::with_cbits(4, 1);
+        circuit.apply(Gate::h(0));
+        circuit.apply(barrier);
+        circuit.apply(Gate::h(2));
+        circuit.apply(Gate::cnot {
+            control: 2,
+            target: 3,
+        });
+        circuit.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        circuit.apply(Gate::x(0));
+
+        let result = SuperOpt::analyzer(4, 6).run(&circuit).unwrap();
+        assert!(result.subcircuits.iter().all(|window| {
+            !(window.gate_indices.contains(&0) && window.gate_indices.contains(&4))
+        }));
+        assert!(
+            result
+                .subcircuits
+                .iter()
+                .any(|window| window.gate_indices == [4, 5])
+        );
+    }
+}
+
+#[test]
+fn mixed_circuit_rewrites_preserve_the_full_quantum_classical_channel() {
+    let mut circuit = Circuit::with_cbits(2, 1);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::cnot {
+        control: 0,
+        target: 1,
+    });
+    circuit.apply(Gate::h(1));
+    circuit.apply(Gate::h(1));
+    circuit.apply(Gate::measure { qubit: 0, cbit: 0 });
+    circuit.apply(Gate::reset(0));
+    circuit.apply(Gate::x(1));
+    circuit.apply(Gate::x(1));
+
+    let optimized = SuperOpt::analyzer(2, 2)
+        .with_synthesis_table(synthesis_table(2, 2))
+        .run(&circuit)
+        .unwrap()
+        .circuit;
+    assert_eq!(optimized.gates.len(), 4);
+    assert_channels_equivalent(&optimized, &circuit);
+
+    // A noncontiguous identity may span a measurement on a disjoint qubit.
+    let mut disjoint = Circuit::with_cbits(2, 1);
+    disjoint.apply(Gate::h(0));
+    disjoint.apply(Gate::measure { qubit: 1, cbit: 0 });
+    disjoint.apply(Gate::h(0));
+    let optimized = SuperOpt::analyzer(1, 2)
+        .with_synthesis_table(synthesis_table(1, 2))
+        .run(&disjoint)
+        .unwrap()
+        .circuit;
+    assert_eq!(optimized.gates.len(), 1);
+    assert_channels_equivalent(&optimized, &disjoint);
+}
+
+#[test]
 fn circuit_containing_only_measure_and_reset_is_unchanged() {
     let mut circuit = Circuit::with_cbits(2, 2);
     circuit.apply(Gate::measure { qubit: 0, cbit: 1 });
@@ -853,6 +1243,9 @@ fn error_messages_name_the_offending_values() {
 #[test]
 fn constructor_rejects_invalid_table_config() {
     let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(0, 8, 1_000)).unwrap_err();
+    assert!(matches!(error, SuperOptError::InvalidTableConfig { .. }));
+
+    let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(5, 8, 1_000)).unwrap_err();
     assert!(matches!(error, SuperOptError::InvalidTableConfig { .. }));
 
     let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(4, 8, 0)).unwrap_err();
@@ -1042,6 +1435,34 @@ fn synthesized_two_qubit_replacement_uses_physical_qubits() {
 }
 
 #[test]
+fn synthesized_cnot_preserves_direction_on_sparse_physical_qubits() {
+    for (control, target) in [(1, 3), (3, 1)] {
+        let mut circuit = Circuit::new(5);
+        circuit.apply(Gate::h(target));
+        circuit.apply(Gate::cz { control, target });
+        circuit.apply(Gate::h(target));
+
+        let result = SuperOpt::analyzer(2, 3)
+            .with_synthesis_table(synthesis_table(2, 1))
+            .run(&circuit)
+            .unwrap();
+        assert_eq!(result.circuit.gates.len(), 1);
+        assert!(matches!(
+            result.circuit.gates[0],
+            Gate::cnot {
+                control: actual_control,
+                target: actual_target,
+            } if actual_control == control && actual_target == target
+        ));
+        assert!(crate::unitary::circuits_equiv(
+            &circuit,
+            &result.circuit,
+            IDENTITY_TOLERANCE,
+        ));
+    }
+}
+
+#[test]
 fn overlapping_synthesized_rewrites_are_not_both_applied() {
     let mut circuit = Circuit::new(1);
     circuit.apply(Gate::s(0));
@@ -1072,6 +1493,81 @@ fn synthesis_table_reports_entry_cap() {
     .unwrap();
     assert_eq!(table.entry_count(4), 100);
     assert!(table.is_saturated(4));
+}
+
+#[test]
+fn synthesis_table_handles_identity_only_and_layer_boundary_caps() {
+    let identity_only = UnitaryCircuitTable::build(SuperOptTableConfig::new(2, 3, 1)).unwrap();
+    for width in 1..=2 {
+        assert_eq!(identity_only.entry_count(width), 1);
+        assert!(identity_only.is_saturated(width));
+        assert_eq!(identity_only.completed_depth(width), 0);
+    }
+
+    // One-qubit depth one contains identity plus all seven library gates.
+    let complete_first_layer =
+        UnitaryCircuitTable::build(SuperOptTableConfig::new(1, 2, 8)).unwrap();
+    assert_eq!(complete_first_layer.entry_count(1), 8);
+    assert!(complete_first_layer.is_saturated(1));
+    assert_eq!(complete_first_layer.completed_depth(1), 1);
+}
+
+#[test]
+fn parallel_table_build_is_deterministic_across_thread_counts() {
+    let config = SuperOptTableConfig::new(2, 3, 20_000);
+    let build = |threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| UnitaryCircuitTable::build(config).unwrap())
+    };
+    let sequential = build(1);
+    let parallel = build(4);
+    for width in 1..=2 {
+        assert_eq!(sequential.entry_count(width), parallel.entry_count(width));
+        assert_eq!(sequential.is_saturated(width), parallel.is_saturated(width));
+        assert_eq!(
+            sequential.completed_depth(width),
+            parallel.completed_depth(width)
+        );
+    }
+
+    let gates = library_gates(2);
+    for &first in &gates {
+        for &second in &gates {
+            for &third in &gates {
+                let matrix = library_circuit_matrix(2, &[first, second, third]).unwrap();
+                let left = sequential.synthesize(&matrix).unwrap();
+                let right = parallel.synthesize(&matrix).unwrap();
+                assert_eq!(format!("{left:?}"), format!("{right:?}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn shared_table_cache_returns_one_arc_under_concurrency() {
+    let config = SuperOptTableConfig::new(1, 2, 97);
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                shared_synthesis_table(config).unwrap()
+            })
+        })
+        .collect();
+    let tables: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert!(
+        tables[1..]
+            .iter()
+            .all(|table| Arc::ptr_eq(&tables[0], table))
+    );
 }
 
 #[test]

@@ -39,6 +39,15 @@ impl WidthTable {
         self.fingerprints.get(fingerprint).copied()
     }
 
+    #[cfg(test)]
+    pub(super) fn insert_fingerprint_alias(
+        &mut self,
+        fingerprint: UnitaryFingerprint,
+        node: usize,
+    ) {
+        self.fingerprints.insert(fingerprint, node);
+    }
+
     pub(super) fn insert_child(
         &mut self,
         fingerprint: UnitaryFingerprint,

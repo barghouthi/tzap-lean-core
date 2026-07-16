@@ -221,6 +221,21 @@ impl UnitaryCircuitTable {
         self.completed_depth.get(num_qubits).copied().unwrap_or(0)
     }
 
+    /// Test seam for exercising the release-mode fingerprint collision guard.
+    #[cfg(test)]
+    pub(super) fn inject_fingerprint_alias(
+        &mut self,
+        query: &UnitaryMatrix,
+        wrong_candidate: &UnitaryMatrix,
+    ) {
+        assert_eq!(query.num_qubits(), wrong_candidate.num_qubits());
+        let width = query.num_qubits();
+        let candidate = self.entries[width]
+            .node_for(&unitary_fingerprint(wrong_candidate))
+            .expect("wrong candidate is present in the test table");
+        self.entries[width].insert_fingerprint_alias(unitary_fingerprint(query), candidate);
+    }
+
     pub(super) fn synthesize(&self, matrix: &UnitaryMatrix) -> Option<Vec<Gate>> {
         let table = self.entries.get(matrix.num_qubits())?;
         let node = table.node_for(&unitary_fingerprint(matrix))?;

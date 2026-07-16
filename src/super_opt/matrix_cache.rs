@@ -120,6 +120,11 @@ pub(super) fn append_compact_gate_key(key: u128, gate: &Gate, support: &[Qubit])
 }
 
 fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
+    // Operand positions use two bits each. Wider analyzer-only windows must use
+    // the general normalized key instead of silently aliasing local qubits.
+    if support.len() > 4 {
+        return None;
+    }
     let local = |q| {
         support
             .binary_search(&q)
