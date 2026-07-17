@@ -146,6 +146,25 @@ fn toffoli_decomposition_increases_gate_count() {
 }
 
 #[test]
+fn ccz_is_decomposed_by_default() {
+    let (gates, _) = run_qasm(
+        "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[3];
+ccz q[0],q[1],q[2];
+",
+    );
+
+    assert!(gates.len() > 1);
+    assert!(
+        !gates
+            .iter()
+            .any(|g| g.starts_with("ccx ") || g.starts_with("ccz "))
+    );
+}
+
+#[test]
 fn mod5_4_reduces_t_count() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");

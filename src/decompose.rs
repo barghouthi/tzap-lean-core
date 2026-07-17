@@ -1,6 +1,5 @@
 //! Gate-decomposition passes:
-//!   * `DecomposeToffoli` — rewrites every `ccx` into the canonical 15-gate
-//!     Clifford+T circuit.
+//!   * `DecomposeToffoli` — rewrites every `ccx` and `ccz` into Clifford+T.
 //!   * `DecomposeCz` — rewrites every `cz` into `H · CNOT · H`.
 //!   * `DecomposeRz` — synthesizes each `rz(θ)` into Clifford+T via
 //!     gridsynth (`rsgridsynth`), in parallel across the gate list.
@@ -16,6 +15,42 @@ use rsgridsynth::gridsynth::gridsynth_gates;
 
 pub struct DecomposeToffoli;
 
+fn emit_ccx_decomposition(output: &mut Circuit, c0: usize, c1: usize, t: usize) {
+    output.apply(Gate::h(t));
+    output.apply(Gate::cnot {
+        control: c1,
+        target: t,
+    });
+    output.apply(Gate::tdg(t));
+    output.apply(Gate::cnot {
+        control: c0,
+        target: t,
+    });
+    output.apply(Gate::t(t));
+    output.apply(Gate::cnot {
+        control: c1,
+        target: t,
+    });
+    output.apply(Gate::tdg(t));
+    output.apply(Gate::cnot {
+        control: c0,
+        target: t,
+    });
+    output.apply(Gate::t(c1));
+    output.apply(Gate::t(t));
+    output.apply(Gate::h(t));
+    output.apply(Gate::cnot {
+        control: c0,
+        target: c1,
+    });
+    output.apply(Gate::t(c0));
+    output.apply(Gate::tdg(c1));
+    output.apply(Gate::cnot {
+        control: c0,
+        target: c1,
+    });
+}
+
 impl Pass for DecomposeToffoli {
     fn name(&self) -> &str {
         "Toffoli decomposition"
@@ -29,42 +64,19 @@ impl Pass for DecomposeToffoli {
                     control2,
                     target,
                 } => {
-                    let c0 = *control1;
-                    let c1 = *control2;
-                    let t = *target;
-                    output.apply(Gate::h(t));
-                    output.apply(Gate::cnot {
-                        control: c1,
-                        target: t,
-                    });
-                    output.apply(Gate::tdg(t));
-                    output.apply(Gate::cnot {
-                        control: c0,
-                        target: t,
-                    });
-                    output.apply(Gate::t(t));
-                    output.apply(Gate::cnot {
-                        control: c1,
-                        target: t,
-                    });
-                    output.apply(Gate::tdg(t));
-                    output.apply(Gate::cnot {
-                        control: c0,
-                        target: t,
-                    });
-                    output.apply(Gate::t(c1));
-                    output.apply(Gate::t(t));
-                    output.apply(Gate::h(t));
-                    output.apply(Gate::cnot {
-                        control: c0,
-                        target: c1,
-                    });
-                    output.apply(Gate::t(c0));
-                    output.apply(Gate::tdg(c1));
-                    output.apply(Gate::cnot {
-                        control: c0,
-                        target: c1,
-                    });
+                    emit_ccx_decomposition(&mut output, *control1, *control2, *target);
+                }
+                Gate::ccz {
+                    control1,
+                    control2,
+                    target,
+                } => {
+                    // CCZ = H(target) · CCX · H(target). Keep this explicit;
+                    // the cancellation pass removes the adjacent Hadamards when
+                    // it follows decomposition in an optimization pipeline.
+                    output.apply(Gate::h(*target));
+                    emit_ccx_decomposition(&mut output, *control1, *control2, *target);
+                    output.apply(Gate::h(*target));
                 }
                 other => output.apply(other.clone()),
             }
@@ -188,6 +200,113 @@ mod tests {
         assert_eq!(dec.gates.len(), 15);
         assert!(!dec.gates.iter().any(|g| matches!(g, Gate::ccx { .. })));
         assert!(circuits_equiv(&c, &dec, 1e-10));
+    }
+
+    #[test]
+    fn ccz_single() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::ccz {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+
+        let dec = DecomposeToffoli.run(&c);
+
+        assert_eq!(dec.gates.len(), 17);
+        assert!(
+            !dec.gates
+                .iter()
+                .any(|g| matches!(g, Gate::ccx { .. } | Gate::ccz { .. }))
+        );
+        assert!(!dec.has_toffoli);
+        assert!(!dec.has_ccz);
+        assert!(circuits_equiv(&c, &dec, 1e-10));
+    }
+
+    #[test]
+    fn decomposes_mixed_ccx_and_ccz() {
+        let mut c = Circuit::new(4);
+        c.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        c.apply(Gate::ccz {
+            control1: 3,
+            control2: 1,
+            target: 0,
+        });
+
+        let dec = DecomposeToffoli.run(&c);
+
+        assert_eq!(dec.gates.len(), 32);
+        assert!(
+            !dec.gates
+                .iter()
+                .any(|g| matches!(g, Gate::ccx { .. } | Gate::ccz { .. }))
+        );
+        assert!(circuits_equiv(&c, &dec, 1e-10));
+    }
+
+    #[test]
+    fn ccz_decomposition_handles_every_operand_order() {
+        for [control1, control2, target] in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut c = Circuit::new(3);
+            c.apply(Gate::ccz {
+                control1,
+                control2,
+                target,
+            });
+
+            let dec = DecomposeToffoli.run(&c);
+
+            assert!(circuits_equiv(&c, &dec, 1e-10));
+        }
+    }
+
+    #[test]
+    fn ccz_decomposition_is_idempotent() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::ccz {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+
+        let once = DecomposeToffoli.run(&c);
+        let twice = DecomposeToffoli.run(&once);
+
+        assert_eq!(once.to_qasm(), twice.to_qasm());
+    }
+
+    #[test]
+    fn ccz_decomposition_preserves_measurement_metadata() {
+        let mut c = Circuit::with_cbits(3, 1);
+        c.apply(Gate::reset(0));
+        c.apply(Gate::ccz {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        c.apply(Gate::measure { qubit: 2, cbit: 0 });
+
+        let dec = DecomposeToffoli.run(&c);
+
+        assert_eq!(dec.num_cbits, 1);
+        assert!(dec.has_measurement);
+        assert!(matches!(dec.gates.first(), Some(Gate::reset(0))));
+        assert!(matches!(
+            dec.gates.last(),
+            Some(Gate::measure { qubit: 2, cbit: 0 })
+        ));
     }
 
     #[test]

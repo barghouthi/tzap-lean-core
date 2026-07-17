@@ -575,6 +575,44 @@ fn ccx_matrix_swaps_the_last_two_basis_states() {
 }
 
 #[test]
+fn ccz_matrix_negates_only_the_all_ones_state() {
+    let mut matrix = UnitaryMatrix::identity(3).unwrap();
+    matrix.apply_gate_left(
+        &Gate::ccz {
+            control1: 2,
+            control2: 0,
+            target: 1,
+        },
+        &[0, 1, 2],
+    );
+
+    for basis in 0..7 {
+        assert_eq!(matrix.get(basis, basis), Complex64::ONE);
+    }
+    assert_eq!(matrix.get(7, 7), Complex64::new(-1.0, 0.0));
+}
+
+#[test]
+fn compact_keys_distinguish_ccx_from_ccz() {
+    let mut circuit = Circuit::new(3);
+    circuit.apply(Gate::ccx {
+        control1: 0,
+        control2: 1,
+        target: 2,
+    });
+    circuit.apply(Gate::ccz {
+        control1: 0,
+        control2: 1,
+        target: 2,
+    });
+
+    let ccx_key = compact_normalized_key(&circuit, &[0], &[0, 1, 2]).unwrap();
+    let ccz_key = compact_normalized_key(&circuit, &[1], &[0, 1, 2]).unwrap();
+
+    assert_ne!(ccx_key, ccz_key);
+}
+
+#[test]
 fn oversized_matrix_request_errors_instead_of_allocating() {
     for num_qubits in [40, 64, 200] {
         assert_eq!(

@@ -66,6 +66,7 @@ fn is_self_inverse(gate: &Gate) -> bool {
             | Gate::cnot { .. }
             | Gate::cz { .. }
             | Gate::ccx { .. }
+            | Gate::ccz { .. }
     )
 }
 
@@ -104,6 +105,24 @@ fn gates_equal(a: &Gate, b: &Gate) -> bool {
                 target: bt,
             },
         ) => a1 == b1 && a2 == b2 && at == bt,
+        (
+            Gate::ccz {
+                control1: a1,
+                control2: a2,
+                target: a3,
+            },
+            Gate::ccz {
+                control1: b1,
+                control2: b2,
+                target: b3,
+            },
+        ) => {
+            let mut a = [*a1, *a2, *a3];
+            let mut b = [*b1, *b2, *b3];
+            a.sort_unstable();
+            b.sort_unstable();
+            a == b
+        }
         _ => false,
     }
 }
@@ -123,6 +142,11 @@ fn qubits_of(gate: &Gate) -> (usize, [Qubit; 3]) {
             (2, [*control, *target, 0])
         }
         Gate::ccx {
+            control1,
+            control2,
+            target,
+        }
+        | Gate::ccz {
             control1,
             control2,
             target,
@@ -465,6 +489,11 @@ fn commutes_past_cnot(g: &Gate, c: Qubit, t: Qubit) -> bool {
         } => ![*control1, *control2, *target]
             .iter()
             .any(|&q| q == c || q == t),
+        Gate::ccz {
+            control1,
+            control2,
+            target,
+        } => *target != t && *control1 != t && *control2 != t,
         Gate::measure { qubit, .. } => *qubit != c && *qubit != t,
         Gate::reset(q) => *q != c && *q != t,
     }
@@ -485,7 +514,8 @@ fn commutes_past_cz(g: &Gate, a: Qubit, b: Qubit) -> bool {
         | Gate::t(_)
         | Gate::tdg(_)
         | Gate::rz(..)
-        | Gate::cz { .. } => true,
+        | Gate::cz { .. }
+        | Gate::ccz { .. } => true,
         Gate::cnot { target, .. } | Gate::ccx { target, .. } => *target != a && *target != b,
         Gate::measure { qubit, .. } => *qubit != a && *qubit != b,
         Gate::reset(q) => *q != a && *q != b,
@@ -518,6 +548,7 @@ impl Pass for CancelGates {
             }
         }
         let has_toffoli = gates.iter().any(|g| matches!(g, Gate::ccx { .. }));
+        let has_ccz = gates.iter().any(|g| matches!(g, Gate::ccz { .. }));
         let has_measurement = gates
             .iter()
             .any(|g| matches!(g, Gate::measure { .. } | Gate::reset(_)));
@@ -526,6 +557,7 @@ impl Pass for CancelGates {
             num_cbits: circuit.num_cbits,
             gates,
             has_toffoli,
+            has_ccz,
             has_measurement,
         }
     }
@@ -1161,6 +1193,86 @@ mod tests {
         );
         let r = CancelGates.run(&c);
         assert_eq!(r.gates.len(), 0);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn ccz_cancel_is_symmetric_in_all_operands() {
+        let c = make_circuit(
+            3,
+            vec![
+                Gate::ccz {
+                    control1: 0,
+                    control2: 1,
+                    target: 2,
+                },
+                Gate::ccz {
+                    control1: 2,
+                    control2: 0,
+                    target: 1,
+                },
+            ],
+        );
+
+        let r = CancelGates.run(&c);
+
+        assert!(r.gates.is_empty());
+        assert!(!r.has_toffoli);
+        assert!(!r.has_ccz);
+        assert!(circuits_equiv(&c, &r, 1e-10));
+    }
+
+    #[test]
+    fn ccz_cancellation_is_blocked_on_each_operand() {
+        for blocker in 0..3 {
+            let c = make_circuit(
+                3,
+                vec![
+                    Gate::ccz {
+                        control1: 0,
+                        control2: 1,
+                        target: 2,
+                    },
+                    Gate::h(blocker),
+                    Gate::ccz {
+                        control1: 2,
+                        control2: 0,
+                        target: 1,
+                    },
+                ],
+            );
+
+            let r = CancelGates.run(&c);
+
+            assert_eq!(r.gates.len(), 3, "blocker q{blocker}");
+            assert!(r.has_ccz, "blocker q{blocker}");
+            assert!(circuits_equiv(&c, &r, 1e-10), "blocker q{blocker}");
+        }
+    }
+
+    #[test]
+    fn ccz_cancels_across_disjoint_gate() {
+        let c = make_circuit(
+            4,
+            vec![
+                Gate::ccz {
+                    control1: 0,
+                    control2: 1,
+                    target: 2,
+                },
+                Gate::t(3),
+                Gate::ccz {
+                    control1: 2,
+                    control2: 1,
+                    target: 0,
+                },
+            ],
+        );
+
+        let r = CancelGates.run(&c);
+
+        assert!(matches!(r.gates.as_slice(), [Gate::t(3)]));
+        assert!(!r.has_ccz);
         assert!(circuits_equiv(&c, &r, 1e-10));
     }
 

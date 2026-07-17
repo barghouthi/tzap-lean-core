@@ -165,6 +165,21 @@ impl Mat {
             }
         }
     }
+
+    /// Apply a doubly controlled-Z: negate amplitudes where all three bits are set.
+    fn apply_ccz(&mut self, q1: usize, q2: usize, q3: usize, num_qubits: usize) {
+        let q1b = 1 << (num_qubits - 1 - q1);
+        let q2b = 1 << (num_qubits - 1 - q2);
+        let q3b = 1 << (num_qubits - 1 - q3);
+        let minus_one = C::new(-1.0, 0.0);
+        for col in 0..self.dim {
+            for row in 0..self.dim {
+                if row & q1b != 0 && row & q2b != 0 && row & q3b != 0 {
+                    self.set(row, col, minus_one * self.get(row, col));
+                }
+            }
+        }
+    }
 }
 
 fn gate_matrix_x() -> [[C; 2]; 2] {
@@ -225,6 +240,11 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
                 control2,
                 target,
             } => mat.apply_ccx(*control1, *control2, *target, n),
+            Gate::ccz {
+                control1,
+                control2,
+                target,
+            } => mat.apply_ccz(*control1, *control2, *target, n),
             Gate::measure { .. } | Gate::reset(_) => {
                 panic!("circuit_unitary: measurement/reset is not a unitary operation")
             }
@@ -846,6 +866,65 @@ mod tests {
             target: 0,
         });
         assert!(circuits_equiv(&a, &Circuit::new(2), 1e-10));
+    }
+
+    #[test]
+    fn ccz_equals_h_ccx_h() {
+        let mut native = Circuit::new(3);
+        native.apply(Gate::ccz {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+
+        let mut conjugated = Circuit::new(3);
+        conjugated.apply(Gate::h(2));
+        conjugated.apply(Gate::ccx {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        conjugated.apply(Gate::h(2));
+
+        assert!(circuits_equiv(&native, &conjugated, 1e-10));
+    }
+
+    #[test]
+    fn ccz_is_symmetric_in_all_operands() {
+        let mut reference = Circuit::new(3);
+        reference.apply(Gate::ccz {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+
+        for [control1, control2, target] in [[0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+        {
+            let mut permuted = Circuit::new(3);
+            permuted.apply(Gate::ccz {
+                control1,
+                control2,
+                target,
+            });
+            assert!(circuits_equiv(&reference, &permuted, 1e-10));
+        }
+    }
+
+    #[test]
+    fn ccz_squared_is_identity() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::ccz {
+            control1: 0,
+            control2: 1,
+            target: 2,
+        });
+        c.apply(Gate::ccz {
+            control1: 2,
+            control2: 0,
+            target: 1,
+        });
+
+        assert!(circuits_equiv(&c, &Circuit::new(3), 1e-10));
     }
 
     #[test]

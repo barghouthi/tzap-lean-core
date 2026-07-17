@@ -190,6 +190,20 @@ impl UnitaryMatrix {
         }
     }
 
+    fn apply_ccz_left(&mut self, q1: usize, q2: usize, q3: usize) {
+        let q1_bit = qubit_bit(self.num_qubits, q1);
+        let q2_bit = qubit_bit(self.num_qubits, q2);
+        let q3_bit = qubit_bit(self.num_qubits, q3);
+        let minus_one = Complex64::new(-1.0, 0.0);
+        for row in 0..self.dim {
+            if row & q1_bit != 0 && row & q2_bit != 0 && row & q3_bit != 0 {
+                for value in &mut self.data[row * self.dim..(row + 1) * self.dim] {
+                    *value = minus_one * *value;
+                }
+            }
+        }
+    }
+
     pub(super) fn apply_gate_left(&mut self, gate: &Gate, support: &[Qubit]) {
         let local = |q| support.binary_search(&q).expect("gate qubit is in support");
         match gate {
@@ -212,6 +226,11 @@ impl UnitaryMatrix {
                 control2,
                 target,
             } => self.apply_ccx_left(local(*control1), local(*control2), local(*target)),
+            Gate::ccz {
+                control1,
+                control2,
+                target,
+            } => self.apply_ccz_left(local(*control1), local(*control2), local(*target)),
             Gate::measure { .. } | Gate::reset(_) => {
                 unreachable!("measurement and reset are window barriers")
             }

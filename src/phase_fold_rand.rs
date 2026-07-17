@@ -137,10 +137,10 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
             Gate::cnot { control, target } => {
                 qubits[*target] ^= qubits[*control];
             }
-            Gate::cz { .. } => {
-                // CZ is diagonal: it changes phase but leaves both computational-basis
-                // bits, and therefore both tracked parities, unchanged. The gate itself
-                // remains in the reconstructed circuit.
+            Gate::cz { .. } | Gate::ccz { .. } => {
+                // CZ and CCZ are diagonal: they change phase but leave the tracked
+                // computational-basis parities unchanged. The gates themselves remain
+                // in the reconstructed circuit.
             }
             Gate::ccx {
                 control1: _,
@@ -2990,6 +2990,26 @@ mod tests {
                 ),
                 "operand {q}"
             );
+            assert!(matches!(opt.gates[1], Gate::s(p) if p == q), "operand {q}");
+            assert!(circuits_equiv(&c, &opt, 1e-10), "operand {q}");
+        }
+    }
+
+    #[test]
+    fn t_pair_folds_through_every_ccz_operand() {
+        for q in 0..3 {
+            let mut c = Circuit::new(3);
+            c.apply(Gate::t(q));
+            c.apply(Gate::ccz {
+                control1: 0,
+                control2: 1,
+                target: 2,
+            });
+            c.apply(Gate::t(q));
+
+            let opt = phase_fold_rand(&c);
+
+            assert!(matches!(opt.gates[0], Gate::ccz { .. }), "operand {q}");
             assert!(matches!(opt.gates[1], Gate::s(p) if p == q), "operand {q}");
             assert!(circuits_equiv(&c, &opt, 1e-10), "operand {q}");
         }

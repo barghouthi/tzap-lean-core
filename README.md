@@ -73,12 +73,12 @@ tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
 
 tzap supports a subset of OpenQASM 2.0:
 
-- **Supported gates:** `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `rz`, `cx`, `ccx`, `cz`, `measure`, `reset`
+- **Supported gates:** `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `rz`, `cx`, `ccx`, `ccz`, `cz`, `measure`, `reset`
 - **Supported declarations:** `qreg`, `creg`
 - **Not supported:** classical conditionals (`if`), custom gate definitions (`gate`), barriers, and `include` files (besides `qelib1.inc`, which is ignored)
 - Unrecognized lines will produce an error
 
-**Gate handling**: Toffoli (`ccx`) gates are automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is unless you pass `--decompose-rz`.
+**Gate handling**: Toffoli (`ccx`) and doubly controlled-Z (`ccz`) gates are represented natively and automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is unless you pass `--decompose-rz`.
 
 ## Building
 Install [Rust](https://github.com/qqq-wisc/tzap.git) then

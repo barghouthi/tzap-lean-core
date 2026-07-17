@@ -35,7 +35,7 @@ impl PassName {
         (
             "DecomposeToffoli",
             PassName::DecomposeToffoli,
-            "Decompose ccx (Toffoli) gates into Clifford+T",
+            "Decompose ccx (Toffoli) and ccz gates into Clifford+T",
         ),
         (
             "DecomposeCz",
@@ -485,7 +485,7 @@ fn initialize_superopt() -> SuperOpt {
     pass.without_subcircuits()
 }
 
-/// Default pipeline: decompose ccx (and optionally Rz), then cancel + phase-fold.
+/// Default pipeline: decompose ccx/ccz (and optionally Rz), then cancel + phase-fold.
 /// `--passes` overrides this with an explicit, user-ordered pipeline.
 fn run_optimize(circuit: Circuit, opts: &Opts) {
     let parallel = opts.parallel;
@@ -552,8 +552,8 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         init_global_pool(num_chunks);
     }
 
-    // Decompose Toffoli eagerly so post-decomp counts form the baseline.
-    let circuit = if circuit.has_toffoli {
+    // Decompose CCX/CCZ eagerly so post-decomp counts form the baseline.
+    let circuit = if circuit.has_toffoli || circuit.has_ccz {
         run_logged(&decompose_toffoli, &circuit, "").0
     } else {
         circuit

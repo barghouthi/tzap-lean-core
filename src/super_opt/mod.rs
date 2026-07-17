@@ -536,6 +536,15 @@ fn map_gate_to_physical(gate: &Gate, qubits: &[Qubit]) -> Gate {
             control2: physical(*control2),
             target: physical(*target),
         },
+        Gate::ccz {
+            control1,
+            control2,
+            target,
+        } => Gate::ccz {
+            control1: physical(*control1),
+            control2: physical(*control2),
+            target: physical(*target),
+        },
         Gate::measure { .. } | Gate::reset(_) => unreachable!("library is unitary"),
     }
 }
@@ -555,6 +564,11 @@ fn unique_qubits(gate: &Gate) -> QubitVec {
             smallvec![*control, *target]
         }
         Gate::ccx {
+            control1,
+            control2,
+            target,
+        }
+        | Gate::ccz {
             control1,
             control2,
             target,

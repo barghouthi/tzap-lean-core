@@ -31,6 +31,7 @@ To use `measure` gates, allocate classical bits with
 | CNOT | `Gate::cnot { control, target }` |
 | CZ | `Gate::cz { control, target }` |
 | Toffoli | `Gate::ccx { control1, control2, target }` |
+| CCZ | `Gate::ccz { control1, control2, target }` |
 | Measure | `Gate::measure { qubit, cbit }` |
 | Reset | `Gate::reset(qubit)` |
 
@@ -51,6 +52,9 @@ let circuit = Circuit::from_qasm("
 let qasm_string = circuit.to_qasm();
 ```
 
+The QASM parser accepts `ccz` as a native circuit gate. `DecomposeToffoli`
+lowers both `ccx` and `ccz` to Clifford+T.
+
 ## Passes
 
 Every pass implements the `Pass` trait:
@@ -70,7 +74,7 @@ A custom pass only needs to supply `name` and `run`.
 
 | Pass | Import | Description |
 |------|--------|-------------|
-| `DecomposeToffoli` | `tzap::decompose` | Breaks Toffoli gates into CNOT+T/Tdg |
+| `DecomposeToffoli` | `tzap::decompose` | Breaks CCX and CCZ gates into Clifford+T |
 | `DecomposeCz` | `tzap::decompose` | Explicitly lowers CZ gates to H+CX+H |
 | `DecomposeRz` | `tzap::decompose_rz` | Decomposes Rz gates into Clifford+T via gridsynth |
 | `CancelGates` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |

@@ -117,9 +117,9 @@ pub fn phase_fold_global_expr(circuit: &Circuit) -> Circuit {
                 let ctrl = qubits[*control].clone();
                 qubits[*target] = qubits[*target].xor(&ctrl);
             }
-            // CZ is diagonal and does not change either tracked parity. Keep the gate
-            // in the output, but do not introduce an artificial analysis boundary.
-            Gate::cz { .. } => {}
+            // CZ and CCZ are diagonal and do not change tracked parities. Keep the
+            // gate in the output without introducing an artificial analysis boundary.
+            Gate::cz { .. } | Gate::ccz { .. } => {}
             Gate::ccx {
                 control1: _,
                 control2: _,
@@ -342,6 +342,26 @@ mod tests {
         assert_eq!(count_phase_gates(&out), 1);
         assert_eq!(count_t_gates(&out), 0);
         assert!(circuits_equiv(&c, &out, TOL));
+    }
+
+    #[test]
+    fn phases_fold_through_ccz_on_every_operand() {
+        for q in 0..3 {
+            let mut c = Circuit::new(3);
+            c.apply(Gate::t(q));
+            c.apply(Gate::ccz {
+                control1: 0,
+                control2: 1,
+                target: 2,
+            });
+            c.apply(Gate::t(q));
+
+            let out = run(&c);
+
+            assert!(matches!(out.gates[0], Gate::ccz { .. }), "operand {q}");
+            assert!(matches!(out.gates[1], Gate::s(p) if p == q), "operand {q}");
+            assert!(circuits_equiv(&c, &out, TOL), "operand {q}");
+        }
     }
 
     #[test]

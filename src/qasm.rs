@@ -74,6 +74,15 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                     control: qubits[0],
                     target: qubits[1],
                 });
+            } else if let Some(rest) = line.strip_prefix("ccz ") {
+                seen_gate = true;
+                let qubits = resolve_qubits(rest, &registers, line_num)?;
+                require_arity("ccz", &qubits, 3, line_num)?;
+                gates.push(Gate::ccz {
+                    control1: qubits[0],
+                    control2: qubits[1],
+                    target: qubits[2],
+                });
             } else if let Some(rest) = line.strip_prefix("ccx ") {
                 seen_gate = true;
                 let qubits = resolve_qubits(rest, &registers, line_num)?;
@@ -164,6 +173,13 @@ fn write_gate(s: &mut String, gate: &Gate) {
             target,
         } => {
             writeln!(s, "ccx q[{control1}],q[{control2}],q[{target}];")
+        }
+        Gate::ccz {
+            control1,
+            control2,
+            target,
+        } => {
+            writeln!(s, "ccz q[{control1}],q[{control2}],q[{target}];")
         }
         Gate::measure { qubit, cbit } => writeln!(s, "measure q[{qubit}] -> c[{cbit}];"),
         Gate::reset(q) => writeln!(s, "reset q[{q}];"),
@@ -1572,6 +1588,102 @@ measure q[1] -> c[1];
                 target: 2
             }
         ));
+    }
+
+    #[test]
+    fn ccz_stays_native() {
+        let qasm = "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[3];\nccz q[2],q[0],q[1];\n";
+        let c = parse(qasm).unwrap();
+
+        assert_eq!(c.gates.len(), 1);
+        assert!(matches!(
+            c.gates[0],
+            Gate::ccz {
+                control1: 2,
+                control2: 0,
+                target: 1
+            }
+        ));
+        assert!(!c.has_toffoli);
+        assert!(c.has_ccz);
+
+        let serialized = serialize(&c);
+        assert!(serialized.contains("ccz q[2],q[0],q[1];"));
+        let reparsed = parse(&serialized).unwrap();
+        assert!(matches!(
+            reparsed.gates.as_slice(),
+            [Gate::ccz {
+                control1: 2,
+                control2: 0,
+                target: 1
+            }]
+        ));
+    }
+
+    #[test]
+    fn multi_register_ccz() {
+        let qasm = "OPENQASM 2.0;\nqreg a[1];\nqreg b[1];\nqreg c[1];\nccz a[0],b[0],c[0];\n";
+        let c = parse(qasm).unwrap();
+
+        assert_eq!(c.num_qubits, 3);
+        assert!(matches!(
+            c.gates[0],
+            Gate::ccz {
+                control1: 0,
+                control2: 1,
+                target: 2
+            }
+        ));
+    }
+
+    #[test]
+    fn ccz_rejects_wrong_operand_count() {
+        for (operands, count) in [("q[0],q[1]", 2), ("q[0],q[1],q[2],q[3]", 4)] {
+            let qasm = format!("OPENQASM 2.0;\nqreg q[4];\nccz {operands};\n");
+            let err = parse(&qasm).unwrap_err();
+            assert!(
+                err.contains(&format!("ccz expects 3 qubit operands, got {count}")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn serialize_programmatic_ccz() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::ccz {
+            control1: 1,
+            control2: 2,
+            target: 0,
+        });
+
+        assert!(serialize(&c).ends_with("ccz q[1],q[2],q[0];\n"));
+    }
+
+    #[test]
+    fn multiple_ccz_with_comments_round_trip() {
+        let qasm = "OPENQASM 2.0;\nqreg q[4];\nccz q[0],q[1],q[2]; // first\n/* second */ ccz q[3],q[2],q[1];\n";
+        let parsed = parse(qasm).unwrap();
+
+        assert_eq!(parsed.gates.len(), 2);
+        assert!(parsed.has_ccz);
+        assert!(matches!(
+            parsed.gates[1],
+            Gate::ccz {
+                control1: 3,
+                control2: 2,
+                target: 1
+            }
+        ));
+
+        let reparsed = parse(&serialize(&parsed)).unwrap();
+        assert_eq!(reparsed.gates.len(), 2);
+        assert!(
+            reparsed
+                .gates
+                .iter()
+                .all(|gate| matches!(gate, Gate::ccz { .. }))
+        );
     }
 
     #[test]

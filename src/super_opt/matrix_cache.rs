@@ -86,6 +86,7 @@ enum NormalizedGate {
     Cnot(usize, usize),
     Cz(usize, usize),
     Ccx(usize, usize, usize),
+    Ccz(usize, usize, usize),
 }
 
 const COMPACT_KEY_LENGTH_BITS: usize = 4;
@@ -148,6 +149,11 @@ fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
             control2,
             target,
         } => encode(9, local(*control1), local(*control2), local(*target)),
+        Gate::ccz {
+            control1,
+            control2,
+            target,
+        } => encode(10, local(*control1), local(*control2), local(*target)),
         Gate::rz(..) => return None,
         Gate::measure { .. } | Gate::reset(_) => {
             unreachable!("measurement and reset are window barriers")
@@ -210,6 +216,11 @@ fn normalized_gate_key(
                     control2,
                     target,
                 } => NormalizedGate::Ccx(local(*control1), local(*control2), local(*target)),
+                Gate::ccz {
+                    control1,
+                    control2,
+                    target,
+                } => NormalizedGate::Ccz(local(*control1), local(*control2), local(*target)),
                 Gate::measure { .. } | Gate::reset(_) => {
                     unreachable!("measurement and reset are window barriers")
                 }

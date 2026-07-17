@@ -29,6 +29,11 @@ pub enum Gate {
         control2: Qubit,
         target: Qubit,
     },
+    ccz {
+        control1: Qubit,
+        control2: Qubit,
+        target: Qubit,
+    },
     measure {
         qubit: Qubit,
         cbit: CBit,
@@ -42,6 +47,7 @@ pub struct Circuit {
     pub num_cbits: usize,
     pub gates: Vec<Gate>,
     pub has_toffoli: bool,
+    pub has_ccz: bool,
     pub has_measurement: bool,
 }
 
@@ -52,6 +58,7 @@ impl Circuit {
             num_cbits: 0,
             gates: Vec::new(),
             has_toffoli: false,
+            has_ccz: false,
             has_measurement: false,
         }
     }
@@ -62,6 +69,7 @@ impl Circuit {
             num_cbits,
             gates: Vec::new(),
             has_toffoli: false,
+            has_ccz: false,
             has_measurement: false,
         }
     }
@@ -69,6 +77,7 @@ impl Circuit {
     pub fn apply(&mut self, gate: Gate) {
         match &gate {
             Gate::ccx { .. } => self.has_toffoli = true,
+            Gate::ccz { .. } => self.has_ccz = true,
             Gate::measure { .. } | Gate::reset(_) => self.has_measurement = true,
             _ => {}
         }
@@ -103,6 +112,13 @@ impl fmt::Display for Gate {
                 target,
             } => {
                 write!(f, "ccx q{control1}, q{control2}, q{target}")
+            }
+            Gate::ccz {
+                control1,
+                control2,
+                target,
+            } => {
+                write!(f, "ccz q{control1}, q{control2}, q{target}")
             }
             Gate::measure { qubit, cbit } => write!(f, "measure q{qubit} -> c{cbit}"),
             Gate::reset(q) => write!(f, "reset q{q}"),
@@ -144,6 +160,11 @@ pub fn qubits_of(gate: &Gate) -> Vec<Qubit> {
             control1,
             control2,
             target,
+        }
+        | Gate::ccz {
+            control1,
+            control2,
+            target,
         } => vec![*control1, *control2, *target],
         Gate::measure { qubit, .. } => vec![*qubit],
     }
@@ -175,6 +196,15 @@ pub fn remap_gate(gate: &Gate, qubits: &[Qubit]) -> Gate {
             control2,
             target,
         } => Gate::ccx {
+            control1: m(control1),
+            control2: m(control2),
+            target: m(target),
+        },
+        Gate::ccz {
+            control1,
+            control2,
+            target,
+        } => Gate::ccz {
             control1: m(control1),
             control2: m(control2),
             target: m(target),
@@ -259,6 +289,39 @@ mod tests {
         let s = format!("{c}");
         assert!(s.contains("ccx q0, q1, q2"));
         println!("{c}");
+    }
+
+    #[test]
+    fn ccz_gate_display_and_metadata() {
+        let mut c = Circuit::new(3);
+        c.apply(Gate::ccz {
+            control1: 2,
+            control2: 0,
+            target: 1,
+        });
+
+        assert!(format!("{c}").contains("ccz q2, q0, q1"));
+        assert!(!c.has_toffoli);
+        assert!(c.has_ccz);
+        assert_eq!(qubits_of(&c.gates[0]), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn ccz_remap() {
+        let gate = Gate::ccz {
+            control1: 8,
+            control2: 2,
+            target: 5,
+        };
+
+        assert!(matches!(
+            remap_gate(&gate, &[2, 5, 8]),
+            Gate::ccz {
+                control1: 2,
+                control2: 0,
+                target: 1
+            }
+        ));
     }
 
     #[test]
@@ -415,6 +478,7 @@ mod tests {
         assert_eq!(c.num_cbits, 3);
         assert!(!c.has_measurement);
         assert!(!c.has_toffoli);
+        assert!(!c.has_ccz);
         assert_eq!(c.gates.len(), 0);
     }
 
