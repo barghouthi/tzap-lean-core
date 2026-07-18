@@ -1,4 +1,4 @@
-# ⚡️ tzap: a fast & scalable quantum circuit optimizer
+# ⚡️ tzap: the fast quantum circuit optimizer
 
 [![CI](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml/badge.svg)](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
