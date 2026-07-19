@@ -61,7 +61,7 @@ tzap output:
 	└─ Time   0.000s
 ```
 
-### Optimization levels
+**Optimization levels**
 
 | Level | Description |
 |---|---|
