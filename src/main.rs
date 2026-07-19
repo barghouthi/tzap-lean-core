@@ -472,7 +472,10 @@ fn run_o3_to_fixpoint(
     (c, total, round)
 }
 
-fn initialize_superopt() -> SuperOpt {
+/// `incremental` is sound only for sequential drivers, where one instance
+/// sees successive versions of the same circuit; pass `false` under
+/// parallel chunking.
+fn initialize_superopt(incremental: bool) -> SuperOpt {
     let start = Instant::now();
     let pass = SuperOpt::new(3, 10, SuperOptTableConfig::default()).unwrap_or_else(|error| {
         eprintln!("Failed to initialize SuperOpt: {error}");
@@ -482,7 +485,8 @@ fn initialize_superopt() -> SuperOpt {
         "  Initialized SuperOpt table in {:.3}s",
         start.elapsed().as_secs_f64()
     );
-    pass.without_subcircuits()
+    let pass = pass.without_subcircuits();
+    if incremental { pass.incremental() } else { pass }
 }
 
 /// Default pipeline: decompose ccx/ccz (and optionally Rz), then cancel + phase-fold.
@@ -508,7 +512,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
             init_global_pool(num_chunks);
         }
         let superopt_pass = if uses_superopt {
-            Some(initialize_superopt())
+            Some(initialize_superopt(!parallel))
         } else {
             None
         };
@@ -564,14 +568,15 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
 
     let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
     let (result, total_pass_time) = if optimization_level == OptimizationLevel::O3 {
-        let superopt_pass = initialize_superopt();
+        let superopt_pass = initialize_superopt(!parallel);
         let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
         let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
         let (r, t, rounds) = run_o3_to_fixpoint(&circuit, &passes, decompose, parallel, num_chunks);
         eprintln!("  Fixpoint reached after {rounds} iteration(s)");
         (r, t)
     } else {
-        let superopt_pass = (optimization_level == OptimizationLevel::O2).then(initialize_superopt);
+        let superopt_pass =
+            (optimization_level == OptimizationLevel::O2).then(|| initialize_superopt(!parallel));
         let mut optimization_passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
         if let Some(pass) = &superopt_pass {
             optimization_passes.insert(1, pass);

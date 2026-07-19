@@ -2217,3 +2217,104 @@ fn warm_store_reproduces_cold_run() {
     );
     assert_eq!(cold.subcircuits.len(), warm.subcircuits.len());
 }
+
+#[test]
+fn incremental_skips_unchanged_circuit_entirely() {
+    let mut circuit = Circuit::new(1);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::rz(0.3, 0));
+    circuit.apply(Gate::h(0));
+
+    let pass = SuperOpt::analyzer(1, 3)
+        .with_synthesis_table(synthesis_table(1, 3))
+        .without_subcircuits()
+        .incremental();
+    let first = pass.run(&circuit).unwrap();
+    assert!(first.rewrites.is_empty());
+
+    // An unchanged input has an empty frontier: no windows, no lookups.
+    let second = pass.run(&circuit).unwrap();
+    assert!(second.rewrites.is_empty());
+    assert_eq!(second.cache_hits + second.cache_misses, 0);
+}
+
+#[test]
+fn incremental_finds_rewrites_exposed_by_deletion() {
+    // A deletion leaves no dirty gate of its own; the flanking survivors it
+    // makes adjacent must be re-anchored or the new HH cancellation is lost.
+    let mut before = Circuit::new(1);
+    before.apply(Gate::h(0));
+    before.apply(Gate::rz(0.3, 0));
+    before.apply(Gate::h(0));
+    let mut after = Circuit::new(1);
+    after.apply(Gate::h(0));
+    after.apply(Gate::h(0));
+
+    let pass = SuperOpt::analyzer(1, 2)
+        .with_synthesis_table(synthesis_table(1, 2))
+        .without_subcircuits()
+        .incremental();
+    assert!(pass.run(&before).unwrap().rewrites.is_empty());
+    let result = pass.run(&after).unwrap();
+    assert!(result.circuit.gates.is_empty());
+}
+
+#[test]
+fn incremental_matches_full_sweeps_on_random_circuits() {
+    use crate::cancel::CancelGates;
+
+    let mut rng = TestRng(0x1acf_1e90_b5e5_5ed1);
+    let table = synthesis_table(2, 4);
+    let incremental = SuperOpt::analyzer(2, 4)
+        .with_synthesis_table(Arc::clone(&table))
+        .without_subcircuits()
+        .incremental();
+    let full = SuperOpt::analyzer(2, 4)
+        .with_synthesis_table(Arc::clone(&table))
+        .without_subcircuits();
+
+    for _ in 0..20 {
+        let mut circuit = Circuit::new(4);
+        for _ in 0..50 {
+            let q = rng.next(4);
+            let q2 = (q + 1 + rng.next(3)) % 4;
+            let gate = match rng.next(10) {
+                0 => Gate::x(q),
+                1 => Gate::h(q),
+                2 => Gate::s(q),
+                3 => Gate::sdg(q),
+                4 => Gate::z(q),
+                5 => Gate::t(q),
+                6 => Gate::tdg(q),
+                7 => Gate::rz(rng.next(100) as f64 / 17.0, q),
+                8 => Gate::cnot {
+                    control: q,
+                    target: q2,
+                },
+                _ => Gate::cz {
+                    control: q,
+                    target: q2,
+                },
+            };
+            circuit.apply(gate);
+        }
+
+        // Emulate the sequential fixpoint driver: the incremental instance
+        // sees each successive circuit version, with CancelGates mutating it
+        // between SuperOpt runs, and must match a full sweep every round.
+        let mut current = circuit;
+        for _ in 0..8 {
+            let expected = full.run(&current).unwrap().circuit;
+            let actual = incremental.run(&current).unwrap().circuit;
+            assert_eq!(
+                format!("{:?}", actual.gates),
+                format!("{:?}", expected.gates)
+            );
+            let next = Pass::run(&CancelGates, &actual);
+            if format!("{:?}", next.gates) == format!("{:?}", current.gates) {
+                break;
+            }
+            current = next;
+        }
+    }
+}

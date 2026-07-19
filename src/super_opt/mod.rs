@@ -22,6 +22,7 @@ type IndexVec = SmallVec<[usize; 8]>;
 
 mod config;
 mod error;
+mod incremental;
 mod matrix;
 mod matrix_cache;
 mod synthesis_arena;
@@ -78,12 +79,16 @@ pub struct SuperOpt {
     /// Maximum number of connected gates in a reported window.
     pub window_gates: usize,
     collect_subcircuits: bool,
+    incremental: bool,
     synthesis_table: Option<Arc<UnitaryCircuitTable>>,
     /// Matrix cache carried across runs of this pass instance (and its
     /// clones), so repeated fixpoint sweeps skip re-deriving recurring window
     /// shapes. Reuse returns exactly what a cold run would recompute; see
     /// [`MatrixStore`].
     store: Arc<Mutex<MatrixStore>>,
+    /// The input the previous run saw, diffed against the next input to
+    /// bound where new windows can anchor when `incremental` is set.
+    prev_input: Arc<Mutex<Option<Circuit>>>,
 }
 
 #[derive(Debug)]
@@ -108,13 +113,27 @@ impl SuperOpt {
             max_qubits,
             window_gates,
             collect_subcircuits: true,
+            incremental: false,
             synthesis_table: None,
             store: Arc::default(),
+            prev_input: Arc::default(),
         }
     }
 
     fn with_synthesis_table(mut self, table: Arc<UnitaryCircuitTable>) -> Self {
         self.synthesis_table = Some(table);
+        self
+    }
+
+    /// Anchor windows only near gates that changed since the previous run's
+    /// input, skipping regions whose windows were already analyzed and
+    /// selected nothing. The output is identical to a full sweep as long as
+    /// successive runs see successive versions of the same circuit (a
+    /// sequential fixpoint driver); do not combine with parallel chunking,
+    /// which feeds one instance interleaved unrelated circuits, or with
+    /// subcircuit collection, which would come back incomplete.
+    pub fn incremental(mut self) -> Self {
+        self.incremental = true;
         self
     }
 
@@ -135,6 +154,21 @@ impl SuperOpt {
             return Err(SuperOptError::ZeroWindowGates);
         }
         validate_circuit(circuit)?;
+
+        // Incremental mode: bitmap of gates allowed to anchor a window
+        // (`None` anchors everywhere), then remember this input for the next
+        // run's diff.
+        let frontier = if self.incremental {
+            let mut prev = self
+                .prev_input
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let frontier = incremental::anchor_frontier(circuit, prev.as_ref(), self.window_gates);
+            *prev = Some(circuit.clone());
+            frontier
+        } else {
+            None
+        };
 
         let mut active: Vec<Option<ActiveWindow>> = Vec::with_capacity(circuit.gates.len());
         let mut windows_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
@@ -236,7 +270,10 @@ impl SuperOpt {
             }
 
             // The current gate anchors a new one-gate closed component.
-            if gate_qubits.len() <= self.max_qubits && !rewrites.is_claimed(gate_index) {
+            if frontier.as_ref().is_none_or(|f| f[gate_index])
+                && gate_qubits.len() <= self.max_qubits
+                && !rewrites.is_claimed(gate_index)
+            {
                 let indices: IndexVec = smallvec![gate_index];
                 let compact_key = compact_normalized_key(circuit, &indices, &gate_qubits);
                 // A single non-identity gate can only be rewritten to the empty

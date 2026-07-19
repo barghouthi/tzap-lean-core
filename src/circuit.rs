@@ -6,7 +6,7 @@ pub type Qubit = usize;
 pub type CBit = usize;
 
 #[allow(non_camel_case_types)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Gate {
     x(Qubit),
     h(Qubit),
