@@ -17,6 +17,20 @@ tzap is **multiple orders of mangitude** faster than other optimizers&mdash;and 
      alt="Runtime comparison of tzap, VOQC, and QuiZX on GF multipliers"
      style="width: 100%; height: auto;">
 
+## Installation
+
+Install [Rust](https://rustup.rs/), then install tzap directly from GitHub:
+
+```bash
+cargo install --git https://github.com/qqq-wisc/tzap
+```
+
+If you want to build from source instead, clone this repository and run:
+
+```bash
+cargo install --path .
+```
+
 ## CLI Usage
 
 tzap is a CLI optimization tool for quantum circuits. You can also use tzap as a Rust library; see the [Rust API documentation](API.md).
@@ -27,12 +41,6 @@ The most common usage of tzap is `tzap input.qasm -o output.qasm`, where the `in
 
 ```bash
 tzap benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
-```
-
-The default `-O1` optimization is fast and lightweight. To run the most powerful optimization pipeline, use `-O3`:
-
-```bash
-tzap -O3 benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
 ```
 
 tzap output:
@@ -51,6 +59,20 @@ tzap output:
 	├─ Gates  218 → 146 (↓33.0%)
 	├─ T/Tdg  84 → 40 (↓52.4%)
 	└─ Time   0.000s
+```
+
+### Optimization levels
+
+| Level | Description |
+|---|---|
+| `-O1` | Runs randomized phase folding and basic gate cancellation. This is the default. |
+| `-O2` | Adds superoptimization to the `-O1` pipeline. |
+| `-O3` | Repeats the `-O2` pipeline until reaching a fixpoint. |
+
+For example, to run the most powerful optimization pipeline:
+
+```bash
+tzap -O3 benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
 ```
 
 **Decompose Rz gates into Clifford+T and choose the precision**
@@ -80,12 +102,12 @@ tzap supports a subset of OpenQASM 2.0:
 
 **Gate handling**: Toffoli (`ccx`) and doubly controlled-Z (`ccz`) gates are represented natively and automatically decomposed into Clifford+T before optimization. Controlled-Z (`cz`) gates remain native so phase folding and cancellation can operate through them; use `--passes DecomposeCz` when a backend requires `H`+`CX` output. `Rz` gates are left as-is unless you pass `--decompose-rz`.
 
-## Building
-Install [Rust](https://github.com/qqq-wisc/tzap.git) then
+## Correctness
 
-```
-cargo install --path .
-```
+We validate the correctness of tzap's optimizations using two complementary methods:
+
+1. **Fuzzing and equivalence verification:** We test small, randomly generated circuits and benchmark circuits, checking that optimization preserves circuit equivalence.
+2. **Lean formalization:** We implement the core optimization algorithms in Lean 4 and prove their soundness. See the [`formalization`](formalization/) directory for the proofs and their correspondence to the paper.
 
 ## Citation
 
