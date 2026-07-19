@@ -11,6 +11,17 @@ use crate::circuit::Circuit;
 
 use super::unique_qubits;
 
+/// Gate indices per qubit; a multi-qubit gate appears in each operand's stream.
+fn qubit_streams(circuit: &Circuit) -> Vec<Vec<usize>> {
+    let mut streams = vec![Vec::new(); circuit.num_qubits];
+    for (index, gate) in circuit.gates.iter().enumerate() {
+        for qubit in unique_qubits(gate) {
+            streams[qubit].push(index);
+        }
+    }
+    streams
+}
+
 /// Compute the anchor frontier for `circuit` given the instance's previous
 /// input: a bitmap marking every gate allowed to anchor a window. `None`
 /// anchors everywhere (no previous input, or qubit-count mismatch).
@@ -24,19 +35,8 @@ pub(super) fn anchor_frontier(
         return None;
     }
 
-    // Per-qubit streams; a multi-qubit gate appears in each operand's stream.
-    let mut streams: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
-    for (index, gate) in circuit.gates.iter().enumerate() {
-        for qubit in unique_qubits(gate) {
-            streams[qubit].push(index);
-        }
-    }
-    let mut prev_streams: Vec<Vec<usize>> = vec![Vec::new(); prev.num_qubits];
-    for (index, gate) in prev.gates.iter().enumerate() {
-        for qubit in unique_qubits(gate) {
-            prev_streams[qubit].push(index);
-        }
-    }
+    let streams = qubit_streams(circuit);
+    let prev_streams = qubit_streams(prev);
 
     // Seed: per qubit, trim the streams' common prefix and suffix and mark
     // the remainder dirty, widened by one surviving gate on each side so a

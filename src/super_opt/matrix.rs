@@ -139,8 +139,7 @@ impl UnitaryMatrix {
         (&mut head[row0 * dim..(row0 + 1) * dim], &mut tail[..dim])
     }
 
-    fn apply_single_left(&mut self, gate: [[Complex64; 2]; 2], q: usize) {
-        let bit = qubit_bit(self.num_qubits, q);
+    fn apply_single_left(&mut self, gate: [[Complex64; 2]; 2], bit: usize) {
         for row0 in 0..self.dim {
             if row0 & bit != 0 {
                 continue;
@@ -154,49 +153,23 @@ impl UnitaryMatrix {
         }
     }
 
-    fn apply_cnot_left(&mut self, control: usize, target: usize) {
-        let control_bit = qubit_bit(self.num_qubits, control);
-        let target_bit = qubit_bit(self.num_qubits, target);
+    /// X on `target_bit`, controlled on every bit of `control_mask` being set:
+    /// swaps each row pair that differs only in the target bit.
+    fn apply_controlled_x_left(&mut self, control_mask: usize, target_bit: usize) {
         for row0 in 0..self.dim {
-            if row0 & control_bit != 0 && row0 & target_bit == 0 {
+            if row0 & control_mask == control_mask && row0 & target_bit == 0 {
                 let (top, bottom) = self.row_pair_mut(row0, row0 | target_bit);
                 top.swap_with_slice(bottom);
             }
         }
     }
 
-    fn apply_cz_left(&mut self, control: usize, target: usize) {
-        let control_bit = qubit_bit(self.num_qubits, control);
-        let target_bit = qubit_bit(self.num_qubits, target);
+    /// Negate every row whose basis state has all bits of `mask` set (CZ for a
+    /// two-bit mask, CCZ for three).
+    fn apply_phase_flip_left(&mut self, mask: usize) {
         let minus_one = Complex64::new(-1.0, 0.0);
         for row in 0..self.dim {
-            if row & control_bit != 0 && row & target_bit != 0 {
-                for value in &mut self.data[row * self.dim..(row + 1) * self.dim] {
-                    *value = minus_one * *value;
-                }
-            }
-        }
-    }
-
-    fn apply_ccx_left(&mut self, control1: usize, control2: usize, target: usize) {
-        let control1_bit = qubit_bit(self.num_qubits, control1);
-        let control2_bit = qubit_bit(self.num_qubits, control2);
-        let target_bit = qubit_bit(self.num_qubits, target);
-        for row0 in 0..self.dim {
-            if row0 & control1_bit != 0 && row0 & control2_bit != 0 && row0 & target_bit == 0 {
-                let (top, bottom) = self.row_pair_mut(row0, row0 | target_bit);
-                top.swap_with_slice(bottom);
-            }
-        }
-    }
-
-    fn apply_ccz_left(&mut self, q1: usize, q2: usize, q3: usize) {
-        let q1_bit = qubit_bit(self.num_qubits, q1);
-        let q2_bit = qubit_bit(self.num_qubits, q2);
-        let q3_bit = qubit_bit(self.num_qubits, q3);
-        let minus_one = Complex64::new(-1.0, 0.0);
-        for row in 0..self.dim {
-            if row & q1_bit != 0 && row & q2_bit != 0 && row & q3_bit != 0 {
+            if row & mask == mask {
                 for value in &mut self.data[row * self.dim..(row + 1) * self.dim] {
                     *value = minus_one * *value;
                 }
@@ -205,32 +178,33 @@ impl UnitaryMatrix {
     }
 
     pub(super) fn apply_gate_left(&mut self, gate: &Gate, support: &[Qubit]) {
-        let local = |q| support.binary_search(&q).expect("gate qubit is in support");
+        let bit = |q: &Qubit| {
+            let local = support.binary_search(q).expect("gate qubit is in support");
+            qubit_bit(self.num_qubits, local)
+        };
         match gate {
-            Gate::x(q) => self.apply_single_left(gate_x(), local(*q)),
-            Gate::h(q) => self.apply_single_left(gate_h(), local(*q)),
-            Gate::s(q) => self.apply_single_left(gate_s(), local(*q)),
-            Gate::sdg(q) => self.apply_single_left(gate_sdg(), local(*q)),
-            Gate::z(q) => self.apply_single_left(gate_z(), local(*q)),
-            Gate::t(q) => self.apply_single_left(gate_t(), local(*q)),
-            Gate::tdg(q) => self.apply_single_left(gate_tdg(), local(*q)),
-            Gate::rz(theta, q) => self.apply_single_left(gate_rz(*theta), local(*q)),
+            Gate::x(q) => self.apply_controlled_x_left(0, bit(q)),
+            Gate::h(q) => self.apply_single_left(gate_h(), bit(q)),
+            Gate::s(q) => self.apply_single_left(gate_s(), bit(q)),
+            Gate::sdg(q) => self.apply_single_left(gate_sdg(), bit(q)),
+            Gate::z(q) => self.apply_phase_flip_left(bit(q)),
+            Gate::t(q) => self.apply_single_left(gate_t(), bit(q)),
+            Gate::tdg(q) => self.apply_single_left(gate_tdg(), bit(q)),
+            Gate::rz(theta, q) => self.apply_single_left(gate_rz(*theta), bit(q)),
             Gate::cnot { control, target } => {
-                self.apply_cnot_left(local(*control), local(*target));
+                self.apply_controlled_x_left(bit(control), bit(target))
             }
-            Gate::cz { control, target } => {
-                self.apply_cz_left(local(*control), local(*target));
-            }
+            Gate::cz { control, target } => self.apply_phase_flip_left(bit(control) | bit(target)),
             Gate::ccx {
                 control1,
                 control2,
                 target,
-            } => self.apply_ccx_left(local(*control1), local(*control2), local(*target)),
+            } => self.apply_controlled_x_left(bit(control1) | bit(control2), bit(target)),
             Gate::ccz {
                 control1,
                 control2,
                 target,
-            } => self.apply_ccz_left(local(*control1), local(*control2), local(*target)),
+            } => self.apply_phase_flip_left(bit(control1) | bit(control2) | bit(target)),
             Gate::measure { .. } | Gate::reset(_) => {
                 unreachable!("measurement and reset are window barriers")
             }
@@ -238,6 +212,9 @@ impl UnitaryMatrix {
     }
 }
 
+/// The unit phase that rotates the matrix's first non-negligible entry onto
+/// the positive real axis. Multiplying by it cancels any global phase, so
+/// phase-equivalent matrices canonicalize to (numerically) the same data.
 fn canonical_phase(matrix: &UnitaryMatrix) -> Option<Complex64> {
     matrix.data.iter().find_map(|&entry| {
         let norm = entry.norm_sqr().sqrt();
@@ -251,6 +228,10 @@ pub(super) struct UnitaryFingerprint {
     second: u64,
 }
 
+/// A 128-bit hash of the phase-canonicalized, coarsely rounded entries:
+/// global-phase invariant and drift tolerant, but lossy — equal fingerprints
+/// must be confirmed by [`UnitaryMatrix::equivalent_up_to_global_phase`]
+/// before acting on them.
 pub(super) fn unitary_fingerprint(matrix: &UnitaryMatrix) -> UnitaryFingerprint {
     const SCALE: f64 = 1e9;
     let phase = canonical_phase(matrix).unwrap_or(Complex64::ONE);
@@ -275,13 +256,6 @@ fn qubit_bit(num_qubits: usize, position: usize) -> usize {
     1usize << (num_qubits - 1 - position)
 }
 
-fn gate_x() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ZERO, Complex64::ONE],
-        [Complex64::ONE, Complex64::ZERO],
-    ]
-}
-
 fn gate_h() -> [[Complex64; 2]; 2] {
     let value = std::f64::consts::FRAC_1_SQRT_2;
     let positive = Complex64::new(value, 0.0);
@@ -300,13 +274,6 @@ fn gate_sdg() -> [[Complex64; 2]; 2] {
     [
         [Complex64::ONE, Complex64::ZERO],
         [Complex64::ZERO, Complex64::new(0.0, -1.0)],
-    ]
-}
-
-fn gate_z() -> [[Complex64; 2]; 2] {
-    [
-        [Complex64::ONE, Complex64::ZERO],
-        [Complex64::ZERO, Complex64::new(-1.0, 0.0)],
     ]
 }
 

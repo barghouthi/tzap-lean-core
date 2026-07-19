@@ -1,3 +1,17 @@
+//! Canonical window keys and the interned matrix store.
+//!
+//! Two windows with the same gate kinds in the same order, acting on the
+//! same *support-local* qubit positions, have the same unitary — regardless
+//! of which physical qubits or circuit positions they sit on. Keying on that
+//! canonical shape lets one matrix construction and one synthesis-table
+//! probe serve every recurrence of a shape, across the whole circuit and
+//! across runs.
+//!
+//! Keys come in two forms: a packed `u128` fast path covering the common
+//! case (Clifford+T gates, at most ten of them, at most four qubits), and a
+//! general [`NormalizedGate`] sequence for everything else — notably windows
+//! containing `rz`, whose angle needs exact representation.
+
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rustc_hash::FxHashMap;
@@ -8,6 +22,9 @@ use super::SuperOptError;
 use super::matrix::UnitaryMatrix;
 use super::table::UnitaryCircuitTable;
 
+/// Everything the pass knows about one canonical window shape: its unitary,
+/// and the smallest support-local replacement the synthesis table offered
+/// (`None` caches the negative outcome, so misses are never retried).
 #[derive(Clone, Debug)]
 pub(super) struct CachedMatrix {
     pub(super) matrix: Arc<UnitaryMatrix>,
@@ -101,6 +118,9 @@ impl MatrixStore {
     }
 }
 
+/// One gate of a general canonical key: the gate kind on support-local qubit
+/// positions, with `rz` angles kept bit-exact. The fallback when the packed
+/// `u128` form below cannot represent the window.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum NormalizedGate {
     X(usize),
@@ -189,6 +209,13 @@ fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
     })
 }
 
+/// Whether the window contains exactly one rotation outside Clifford+T.
+///
+/// Such a window's unitary can never be in the Clifford+T synthesis table —
+/// a single arbitrary rotation leaves the discrete Clifford+T group and
+/// nothing else in the window can bring it back — so its lookup is a
+/// guaranteed miss and optimization-only callers skip it. With two or more
+/// arbitrary rotations the angles may cancel, so those windows are looked up.
 pub(super) fn has_lone_arbitrary_rz(circuit: &Circuit, gate_indices: &[usize]) -> bool {
     let mut arbitrary_rotations = 0;
     for &gate_index in gate_indices {
@@ -204,6 +231,8 @@ pub(super) fn has_lone_arbitrary_rz(circuit: &Circuit, gate_indices: &[usize]) -
     arbitrary_rotations == 1
 }
 
+/// Whether `rz(theta)` is a Clifford+T rotation, i.e. a multiple of π/4 up
+/// to a tolerance absorbing accumulated floating-point drift.
 fn rz_is_clifford_t(theta: f64) -> bool {
     const ANGLE_TOLERANCE: f64 = 4e-10;
     let step = std::f64::consts::FRAC_PI_4;
@@ -211,6 +240,8 @@ fn rz_is_clifford_t(theta: f64) -> bool {
     (theta - nearest).abs() <= ANGLE_TOLERANCE
 }
 
+/// Write the window's general canonical key into `key` (reused scratch, so
+/// the hot path allocates nothing on a hit).
 fn normalized_gate_key(
     circuit: &Circuit,
     gate_indices: &[usize],

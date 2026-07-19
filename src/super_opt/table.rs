@@ -1,6 +1,16 @@
 //! The bounded Clifford+T synthesis table: breadth-first enumeration of
 //! library-gate circuits keyed by unitary fingerprint, plus the process-wide
 //! cache that shares built tables across passes.
+//!
+//! For each width the enumeration grows circuits one gate at a time, layer
+//! by layer, recording each unitary the first time it appears. Because
+//! layers are visited in gate-count order, the first circuit to reach a
+//! unitary is a smallest one — so a table hit *is* the synthesis answer, no
+//! search needed at lookup time. Two prunes keep the frontier tractable
+//! without losing any unitary: a child never follows its parent's inverse
+//! (the product would revisit the grandparent's unitary), and among
+//! qubit-disjoint neighbors only the canonically ordered interleaving is
+//! expanded (the swapped one has the same product).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -13,6 +23,7 @@ use super::matrix::{UnitaryFingerprint, UnitaryMatrix, unitary_fingerprint};
 use super::synthesis_arena::WidthTable;
 use super::{SuperOptError, SuperOptTableConfig};
 
+/// The gate set the table enumerates: Clifford+T over table-local qubits.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum LibraryGate {
     X(u8),
@@ -236,6 +247,8 @@ impl UnitaryCircuitTable {
         self.entries[width].insert_fingerprint_alias(unitary_fingerprint(query), candidate);
     }
 
+    /// A smallest known library circuit implementing `matrix` up to global
+    /// phase, on local qubits `0..matrix.num_qubits()`.
     pub(super) fn synthesize(&self, matrix: &UnitaryMatrix) -> Option<Vec<Gate>> {
         let table = self.entries.get(matrix.num_qubits())?;
         let node = table.node_for(&unitary_fingerprint(matrix))?;

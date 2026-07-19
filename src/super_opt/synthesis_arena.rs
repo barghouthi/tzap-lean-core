@@ -1,8 +1,18 @@
+//! Prefix-sharing storage for the synthesis table's circuits.
+//!
+//! Breadth-first enumeration only ever extends an existing circuit by one
+//! gate, so the hundreds of thousands of stored circuits form a tree: each
+//! node records just its final gate and its parent. A full circuit is
+//! recovered by walking to the root and reversing — done only on a table
+//! hit, never during enumeration.
+
 use rustc_hash::FxHashMap;
 
 use super::matrix::UnitaryFingerprint;
 use super::table::LibraryGate;
 
+/// One stored circuit: its last gate plus the node holding the rest. The
+/// root (the empty circuit, i.e. the identity) has neither.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CircuitNode {
     pub(super) parent: Option<usize>,

@@ -1,11 +1,58 @@
-//! SuperOpt peephole optimization via anchored subcircuit matrices.
+//! Peephole superoptimization over anchored circuit windows.
 //!
-//! Every gate starts one window. A window contains the full connected component
-//! of its anchor among the gates observed since that anchor. Unrelated gates are
-//! skipped, but shared per-qubit history lets a later bridge pull an entire
-//! previously disconnected component into the window retroactively. Completed
-//! windows are looked up in a bounded synthesis table and replaced when the
-//! table has a smaller equivalent circuit.
+//! The pass makes one forward scan over the circuit, carves out small
+//! *windows* — causally connected groups of gates on a few qubits — computes
+//! each window's unitary matrix, and asks a precomputed synthesis table
+//! (`table.rs`) whether the same unitary is reachable with fewer gates. Where
+//! it is, the window is replaced. Because replacement is by matrix
+//! equivalence rather than by syntactic rule, any identity the table can
+//! express is discovered without ever being written down.
+//!
+//! # Windows
+//!
+//! Every gate *anchors* a window: the connected component of that gate among
+//! all gates observed since it, connectivity meaning "shares a qubit". As the
+//! scan advances, each new gate extends every window that touches one of its
+//! qubits. Two invariants make this cheap and exhaustive:
+//!
+//! - A window always holds the *full* connected component of its anchor over
+//!   the scanned region: gates on a window qubit between the anchor and the
+//!   scan head are all members, so per-qubit gate history only needs to be
+//!   consulted when a gate bridges a **new** qubit into the window
+//!   (`expand_component_closure`). Such a bridge can retroactively pull in
+//!   an entire previously unrelated component.
+//! - Unrelated gates in between are simply absent, so a window is a
+//!   *subsequence* of the circuit, not a contiguous slice. Rewriting it in
+//!   place is still sound because every skipped gate commutes past the
+//!   window: it shares no qubit with any member between anchor and head.
+//!
+//! A window dies when it exceeds `max_qubits` or `window_gates`, when
+//! measurement or reset touches one of its qubits (its region is no longer
+//! unitary), or when one of its gates is claimed by a selected rewrite. Each
+//! window is analyzed after every extension, so every intermediate size is
+//! considered, not just the final one.
+//!
+//! # Rewrites
+//!
+//! Windows are looked up as they grow; the first strictly smaller equivalent
+//! claims its gates greedily in scan order (`RewriteSet`), later windows
+//! overlapping a claimed gate are discarded, and all selected rewrites are
+//! applied in one reconstruction pass at the end.
+//!
+//! # Caching
+//!
+//! Three layers keep repeated work off the hot path:
+//!
+//! 1. The synthesis table is built once per configuration and shared
+//!    process-wide (`table::shared_synthesis_table`).
+//! 2. The matrix store (`MatrixStore`) interns each canonical window shape
+//!    with its matrix and synthesis outcome — including the negative one —
+//!    and is carried across runs of a pass instance, so later fixpoint
+//!    sweeps replay recurring shapes as hash hits.
+//! 3. Incremental mode ([`SuperOpt::incremental`]) diffs each input against
+//!    the instance's previous input and only anchors windows near the
+//!    changes; everything else was analyzed before and selected nothing
+//!    (`incremental.rs`).
 
 use std::sync::{Arc, Mutex};
 
@@ -84,7 +131,7 @@ pub struct SuperOpt {
     /// Matrix cache carried across runs of this pass instance (and its
     /// clones), so repeated fixpoint sweeps skip re-deriving recurring window
     /// shapes. Reuse returns exactly what a cold run would recompute; see
-    /// [`MatrixStore`].
+    /// `MatrixStore`.
     store: Arc<Mutex<MatrixStore>>,
     /// The input the previous run saw, diffed against the next input to
     /// bound where new windows can anchor when `incremental` is set.
@@ -99,6 +146,9 @@ struct ActiveWindow {
 }
 
 impl SuperOpt {
+    /// An optimizing pass: windows are checked against a synthesis table
+    /// (built on first use per `table_config`, then shared process-wide) and
+    /// rewritten when a smaller equivalent exists.
     pub fn new(
         max_qubits: usize,
         window_gates: usize,
@@ -108,6 +158,8 @@ impl SuperOpt {
             .with_synthesis_table(shared_synthesis_table(table_config)?))
     }
 
+    /// An analysis-only instance: windows and their matrices are reported in
+    /// `result.subcircuits`, but with no synthesis table nothing is rewritten.
     pub fn analyzer(max_qubits: usize, window_gates: usize) -> Self {
         Self {
             max_qubits,
@@ -147,29 +199,24 @@ impl SuperOpt {
         self
     }
 
-    /// Run one forward scan while maintaining one closed unitary component per
-    /// anchor. Measurement and reset terminate windows on their qubits.
+    /// Run one forward scan while maintaining one closed unitary component
+    /// per anchor (see the module documentation for the algorithm).
+    ///
+    /// For every gate, in order: (1) windows touching a measurement or reset
+    /// die; (2) every live window touching the gate is extended, re-closed,
+    /// and analyzed; (3) the gate anchors a fresh window of its own.
     pub fn run(&self, circuit: &Circuit) -> Result<SuperOptResult, SuperOptError> {
         if self.window_gates == 0 {
             return Err(SuperOptError::ZeroWindowGates);
         }
         validate_circuit(circuit)?;
 
-        // Incremental mode: bitmap of gates allowed to anchor a window
-        // (`None` anchors everywhere), then remember this input for the next
-        // run's diff.
-        let frontier = if self.incremental {
-            let mut prev = self
-                .prev_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let frontier = incremental::anchor_frontier(circuit, prev.as_ref(), self.window_gates);
-            *prev = Some(circuit.clone());
-            frontier
-        } else {
-            None
-        };
+        let frontier = self.take_anchor_frontier(circuit);
 
+        // Scan state: `active` owns the live windows (slot index = window id,
+        // `None` once dead); `windows_by_qubit` inverts it so a gate finds
+        // the windows it touches without scanning them all; `gates_by_qubit`
+        // is the full per-qubit gate history that window closure consults.
         let mut active: Vec<Option<ActiveWindow>> = Vec::with_capacity(circuit.gates.len());
         let mut windows_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
         let mut gates_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
@@ -234,6 +281,9 @@ impl SuperOpt {
                     continue;
                 }
 
+                // Keep the window's cache key current: appending one gate is
+                // O(1), but a bridged-in qubit renumbers the support-local
+                // encoding of every member, so the key must be rebuilt.
                 if added_qubits.is_empty() {
                     window.compact_key = window
                         .compact_key
@@ -246,9 +296,7 @@ impl SuperOpt {
                 let at_gate_limit = window.gate_indices.len() == self.window_gates;
                 let selected = self.analyze_window(
                     circuit,
-                    &window.gate_indices,
-                    &window.qubits,
-                    window.compact_key,
+                    &window,
                     &mut store,
                     &mut rewrites,
                     &mut subcircuits,
@@ -274,8 +322,11 @@ impl SuperOpt {
                 && gate_qubits.len() <= self.max_qubits
                 && !rewrites.is_claimed(gate_index)
             {
-                let indices: IndexVec = smallvec![gate_index];
-                let compact_key = compact_normalized_key(circuit, &indices, &gate_qubits);
+                let window = ActiveWindow {
+                    gate_indices: smallvec![gate_index],
+                    compact_key: compact_normalized_key(circuit, &[gate_index], &gate_qubits),
+                    qubits: gate_qubits,
+                };
                 // A single non-identity gate can only be rewritten to the empty
                 // circuit, which requires its matrix to be identity up to phase.
                 // Only `rz` can be that (rz(0)); every other library gate never
@@ -284,9 +335,7 @@ impl SuperOpt {
                 if self.collect_subcircuits || matches!(gate, Gate::rz(..)) {
                     self.analyze_window(
                         circuit,
-                        &indices,
-                        &gate_qubits,
-                        compact_key,
+                        &window,
                         &mut store,
                         &mut rewrites,
                         &mut subcircuits,
@@ -295,14 +344,10 @@ impl SuperOpt {
 
                 if self.window_gates > 1 && !rewrites.is_claimed(gate_index) {
                     let window_id = active.len();
-                    for &qubit in &gate_qubits {
+                    for &qubit in &window.qubits {
                         windows_by_qubit[qubit].push(window_id);
                     }
-                    active.push(Some(ActiveWindow {
-                        gate_indices: indices,
-                        qubits: gate_qubits,
-                        compact_key,
-                    }));
+                    active.push(Some(window));
                 }
             }
         }
@@ -320,17 +365,37 @@ impl SuperOpt {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// In incremental mode, the bitmap of gates allowed to anchor a window
+    /// (`None` anchors everywhere); also remembers this input for the next
+    /// run's diff. See [`incremental::anchor_frontier`].
+    fn take_anchor_frontier(&self, circuit: &Circuit) -> Option<Vec<bool>> {
+        if !self.incremental {
+            return None;
+        }
+        let mut prev = self
+            .prev_input
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let frontier = incremental::anchor_frontier(circuit, prev.as_ref(), self.window_gates);
+        *prev = Some(circuit.clone());
+        frontier
+    }
+
+    /// Resolve one window emission: intern its matrix and synthesis outcome
+    /// in the store, offer the outcome to the rewrite selection, and record
+    /// the window when diagnostics are collected. Returns whether a rewrite
+    /// was selected.
     fn analyze_window(
         &self,
         circuit: &Circuit,
-        gate_indices: &[usize],
-        qubits: &[Qubit],
-        compact_key: Option<u128>,
+        window: &ActiveWindow,
         store: &mut MatrixStore,
         rewrites: &mut RewriteSet,
         subcircuits: &mut Vec<SuperOptWindow>,
     ) -> Result<bool, SuperOptError> {
+        // Unspill the SmallVecs once; this runs per emitted window.
+        let gate_indices: &[usize] = &window.gate_indices;
+        let qubits: &[Qubit] = &window.qubits;
         if !self.collect_subcircuits
             && self.synthesis_table.is_some()
             && has_lone_arbitrary_rz(circuit, gate_indices)
@@ -341,7 +406,7 @@ impl SuperOpt {
             circuit,
             gate_indices,
             qubits,
-            compact_key,
+            window.compact_key,
             self.synthesis_table.as_deref(),
         )?;
         let selected = rewrites.consider(cached, gate_indices, qubits);
@@ -369,6 +434,8 @@ impl Pass for SuperOpt {
     }
 }
 
+/// Reject gates whose qubit operands fall outside the circuit, so the scan
+/// can index per-qubit state unchecked.
 fn validate_circuit(circuit: &Circuit) -> Result<(), SuperOptError> {
     for (gate_index, gate) in circuit.gates.iter().enumerate() {
         for qubit in unique_qubits(gate) {
@@ -427,6 +494,25 @@ fn expand_component_closure(
     max_qubits: usize,
     max_gates: usize,
 ) -> (bool, QubitVec) {
+    /// Admit `qubit` into the sorted support if absent, recording it in
+    /// `added` and queueing it for a history scan. False when the support
+    /// grows past `max_qubits`.
+    fn admit(
+        window: &mut ActiveWindow,
+        added: &mut QubitVec,
+        pending: &mut QubitVec,
+        qubit: Qubit,
+        max_qubits: usize,
+    ) -> bool {
+        if let Err(position) = window.qubits.binary_search(&qubit) {
+            window.qubits.insert(position, qubit);
+            added.push(qubit);
+            pending.push(qubit);
+            return window.qubits.len() <= max_qubits;
+        }
+        true
+    }
+
     let mut added = QubitVec::new();
     let mut pending = QubitVec::new();
 
@@ -437,13 +523,8 @@ fn expand_component_closure(
     }
 
     for &qubit in current_qubits {
-        if let Err(position) = window.qubits.binary_search(&qubit) {
-            window.qubits.insert(position, qubit);
-            added.push(qubit);
-            pending.push(qubit);
-            if window.qubits.len() > max_qubits {
-                return (false, added);
-            }
+        if !admit(window, &mut added, &mut pending, qubit, max_qubits) {
+            return (false, added);
         }
     }
 
@@ -469,13 +550,8 @@ fn expand_component_closure(
             }
 
             for gate_qubit in unique_qubits(&circuit.gates[gate_index]) {
-                if let Err(position) = window.qubits.binary_search(&gate_qubit) {
-                    window.qubits.insert(position, gate_qubit);
-                    added.push(gate_qubit);
-                    pending.push(gate_qubit);
-                    if window.qubits.len() > max_qubits {
-                        return (false, added);
-                    }
+                if !admit(window, &mut added, &mut pending, gate_qubit, max_qubits) {
+                    return (false, added);
                 }
             }
         }
@@ -484,6 +560,12 @@ fn expand_component_closure(
     (true, added)
 }
 
+/// Greedy, non-overlapping rewrite selection over the input's gate positions.
+///
+/// The first window offered with a strictly smaller replacement claims all
+/// its gates; anything overlapping a claimed gate is refused afterwards, so
+/// selected rewrites never conflict and [`RewriteSet::apply`] can splice them
+/// all in a single reconstruction pass.
 struct RewriteSet {
     claimed: Vec<bool>,
     /// Index into `selected` for the rewrite anchored at each gate position.
@@ -508,6 +590,12 @@ impl RewriteSet {
         gate_indices.iter().any(|&index| self.claimed[index])
     }
 
+    /// Claim this window's rewrite if it has a strictly smaller replacement
+    /// and overlaps nothing already claimed. Returns whether it was selected.
+    ///
+    /// The replacement is stored on the window's *physical* qubits: the
+    /// synthesized circuit uses support-local qubits `0..n`, and `qubits[q]`
+    /// is exactly where local qubit `q` lives in the input circuit.
     fn consider(
         &mut self,
         cached: &CachedMatrix,
@@ -526,7 +614,7 @@ impl RewriteSet {
 
         let replacement: Vec<_> = local
             .iter()
-            .map(|gate| map_gate_to_physical(gate, qubits))
+            .map(|gate| gate.map_qubits(|q| qubits[q]))
             .collect();
         for &index in gate_indices {
             self.claimed[index] = true;
@@ -539,6 +627,11 @@ impl RewriteSet {
         true
     }
 
+    /// Rebuild the circuit with every selected rewrite spliced in: each
+    /// replacement is emitted at its window's anchor position, claimed gates
+    /// are dropped, and everything else is copied through unchanged. Sound
+    /// because a window's members all commute past the unclaimed gates
+    /// between them (see the module documentation).
     fn apply(self, circuit: &Circuit) -> (Circuit, Vec<SuperOptRewrite>) {
         let mut optimized = Circuit::with_cbits(circuit.num_qubits, circuit.num_cbits);
         for (index, gate) in circuit.gates.iter().enumerate() {
@@ -555,47 +648,8 @@ impl RewriteSet {
     }
 }
 
-fn map_gate_to_physical(gate: &Gate, qubits: &[Qubit]) -> Gate {
-    let physical = |q: Qubit| qubits[q];
-    match gate {
-        Gate::x(q) => Gate::x(physical(*q)),
-        Gate::h(q) => Gate::h(physical(*q)),
-        Gate::s(q) => Gate::s(physical(*q)),
-        Gate::sdg(q) => Gate::sdg(physical(*q)),
-        Gate::z(q) => Gate::z(physical(*q)),
-        Gate::t(q) => Gate::t(physical(*q)),
-        Gate::tdg(q) => Gate::tdg(physical(*q)),
-        Gate::rz(theta, q) => Gate::rz(*theta, physical(*q)),
-        Gate::cnot { control, target } => Gate::cnot {
-            control: physical(*control),
-            target: physical(*target),
-        },
-        Gate::cz { control, target } => Gate::cz {
-            control: physical(*control),
-            target: physical(*target),
-        },
-        Gate::ccx {
-            control1,
-            control2,
-            target,
-        } => Gate::ccx {
-            control1: physical(*control1),
-            control2: physical(*control2),
-            target: physical(*target),
-        },
-        Gate::ccz {
-            control1,
-            control2,
-            target,
-        } => Gate::ccz {
-            control1: physical(*control1),
-            control2: physical(*control2),
-            target: physical(*target),
-        },
-        Gate::measure { .. } | Gate::reset(_) => unreachable!("library is unitary"),
-    }
-}
-
+/// A gate's qubit operands, sorted and deduplicated — the window code relies
+/// on supports being sorted sets.
 fn unique_qubits(gate: &Gate) -> QubitVec {
     let mut qubits: QubitVec = match gate {
         Gate::x(q)

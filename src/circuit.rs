@@ -93,6 +93,54 @@ impl Circuit {
     }
 }
 
+impl Gate {
+    /// The same gate with every qubit operand sent through `f`. Classical
+    /// bits are untouched.
+    pub fn map_qubits(&self, mut f: impl FnMut(Qubit) -> Qubit) -> Gate {
+        match self {
+            Gate::x(q) => Gate::x(f(*q)),
+            Gate::h(q) => Gate::h(f(*q)),
+            Gate::s(q) => Gate::s(f(*q)),
+            Gate::sdg(q) => Gate::sdg(f(*q)),
+            Gate::z(q) => Gate::z(f(*q)),
+            Gate::t(q) => Gate::t(f(*q)),
+            Gate::tdg(q) => Gate::tdg(f(*q)),
+            Gate::rz(theta, q) => Gate::rz(*theta, f(*q)),
+            Gate::cnot { control, target } => Gate::cnot {
+                control: f(*control),
+                target: f(*target),
+            },
+            Gate::cz { control, target } => Gate::cz {
+                control: f(*control),
+                target: f(*target),
+            },
+            Gate::ccx {
+                control1,
+                control2,
+                target,
+            } => Gate::ccx {
+                control1: f(*control1),
+                control2: f(*control2),
+                target: f(*target),
+            },
+            Gate::ccz {
+                control1,
+                control2,
+                target,
+            } => Gate::ccz {
+                control1: f(*control1),
+                control2: f(*control2),
+                target: f(*target),
+            },
+            Gate::measure { qubit, cbit } => Gate::measure {
+                qubit: f(*qubit),
+                cbit: *cbit,
+            },
+            Gate::reset(q) => Gate::reset(f(*q)),
+        }
+    }
+}
+
 impl fmt::Display for Gate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -173,48 +221,7 @@ pub fn qubits_of(gate: &Gate) -> Vec<Qubit> {
 /// Remap a gate's qubits through a lookup table: qubit i becomes its index in `qubits`.
 /// Classical bits are not remapped.
 pub fn remap_gate(gate: &Gate, qubits: &[Qubit]) -> Gate {
-    let m = |q: &Qubit| qubits.iter().position(|&x| x == *q).unwrap();
-    match gate {
-        Gate::x(q) => Gate::x(m(q)),
-        Gate::h(q) => Gate::h(m(q)),
-        Gate::s(q) => Gate::s(m(q)),
-        Gate::sdg(q) => Gate::sdg(m(q)),
-        Gate::z(q) => Gate::z(m(q)),
-        Gate::t(q) => Gate::t(m(q)),
-        Gate::tdg(q) => Gate::tdg(m(q)),
-        Gate::rz(theta, q) => Gate::rz(*theta, m(q)),
-        Gate::cnot { control, target } => Gate::cnot {
-            control: m(control),
-            target: m(target),
-        },
-        Gate::cz { control, target } => Gate::cz {
-            control: m(control),
-            target: m(target),
-        },
-        Gate::ccx {
-            control1,
-            control2,
-            target,
-        } => Gate::ccx {
-            control1: m(control1),
-            control2: m(control2),
-            target: m(target),
-        },
-        Gate::ccz {
-            control1,
-            control2,
-            target,
-        } => Gate::ccz {
-            control1: m(control1),
-            control2: m(control2),
-            target: m(target),
-        },
-        Gate::measure { qubit, cbit } => Gate::measure {
-            qubit: m(qubit),
-            cbit: *cbit,
-        },
-        Gate::reset(q) => Gate::reset(m(q)),
-    }
+    gate.map_qubits(|q| qubits.iter().position(|&x| x == q).unwrap())
 }
 
 /// Build a compact circuit with qubits remapped to 0..n.

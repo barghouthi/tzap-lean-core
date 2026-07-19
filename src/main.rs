@@ -486,7 +486,11 @@ fn initialize_superopt(incremental: bool) -> SuperOpt {
         start.elapsed().as_secs_f64()
     );
     let pass = pass.without_subcircuits();
-    if incremental { pass.incremental() } else { pass }
+    if incremental {
+        pass.incremental()
+    } else {
+        pass
+    }
 }
 
 /// Default pipeline: decompose ccx/ccz (and optionally Rz), then cancel + phase-fold.
