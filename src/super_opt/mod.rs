@@ -7,7 +7,7 @@
 //! windows are looked up in a bounded synthesis table and replaced when the
 //! table has a smaller equivalent circuit.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use smallvec::{SmallVec, smallvec};
 
@@ -79,6 +79,11 @@ pub struct SuperOpt {
     pub window_gates: usize,
     collect_subcircuits: bool,
     synthesis_table: Option<Arc<UnitaryCircuitTable>>,
+    /// Matrix cache carried across runs of this pass instance (and its
+    /// clones), so repeated fixpoint sweeps skip re-deriving recurring window
+    /// shapes. Reuse returns exactly what a cold run would recompute; see
+    /// [`MatrixStore`].
+    store: Arc<Mutex<MatrixStore>>,
 }
 
 #[derive(Debug)]
@@ -98,12 +103,13 @@ impl SuperOpt {
             .with_synthesis_table(shared_synthesis_table(table_config)?))
     }
 
-    pub const fn analyzer(max_qubits: usize, window_gates: usize) -> Self {
+    pub fn analyzer(max_qubits: usize, window_gates: usize) -> Self {
         Self {
             max_qubits,
             window_gates,
             collect_subcircuits: true,
             synthesis_table: None,
+            store: Arc::default(),
         }
     }
 
@@ -133,7 +139,9 @@ impl SuperOpt {
         let mut active: Vec<Option<ActiveWindow>> = Vec::with_capacity(circuit.gates.len());
         let mut windows_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
         let mut gates_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
-        let mut store = MatrixStore::default();
+        // Take the persistent store for the duration of this run; an early
+        // error drops it, which only costs the next run a cold start.
+        let mut store = MatrixStore::take_from(&self.store);
         let mut subcircuits = Vec::new();
         let mut rewrites = RewriteSet::new(circuit.gates.len());
         let mut touched_windows = Vec::new();
@@ -264,12 +272,14 @@ impl SuperOpt {
 
         subcircuits.sort_by(|left, right| left.gate_indices.cmp(&right.gate_indices));
         let (optimized, rewrites) = rewrites.apply(circuit);
+        let (cache_hits, cache_misses) = (store.hits, store.misses);
+        store.store_back(&self.store);
         Ok(SuperOptResult {
             circuit: optimized,
             subcircuits,
             rewrites,
-            cache_hits: store.hits,
-            cache_misses: store.misses,
+            cache_hits,
+            cache_misses,
         })
     }
 

@@ -2190,3 +2190,30 @@ fn audit_all_benchmark_rewrites() {
     }
     println!("TOTAL: {total_rewrites} rewrites audited");
 }
+
+#[test]
+fn warm_store_reproduces_cold_run() {
+    let mut circuit = Circuit::new(2);
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::h(0));
+    circuit.apply(Gate::cnot {
+        control: 0,
+        target: 1,
+    });
+    circuit.apply(Gate::t(1));
+
+    let pass = SuperOpt::analyzer(2, 3).with_synthesis_table(synthesis_table(2, 3));
+    let cold = pass.run(&circuit).unwrap();
+    let warm = pass.run(&circuit).unwrap();
+
+    assert!(cold.cache_misses > 0);
+    // The warm run performs the same lookups, now all hits.
+    assert_eq!(warm.cache_misses, 0);
+    assert_eq!(warm.cache_hits, cold.cache_hits + cold.cache_misses);
+    assert_eq!(removed_indices(&cold), removed_indices(&warm));
+    assert_eq!(
+        format!("{:?}", cold.circuit.gates),
+        format!("{:?}", warm.circuit.gates)
+    );
+    assert_eq!(cold.subcircuits.len(), warm.subcircuits.len());
+}

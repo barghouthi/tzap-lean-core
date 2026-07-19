@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rustc_hash::FxHashMap;
 
@@ -17,7 +17,13 @@ pub(super) struct CachedMatrix {
 /// Interned canonical-window matrices. Lookups reuse one scratch key and
 /// return a borrowed entry, so the per-emission hot path never allocates on a
 /// cache hit.
-#[derive(Default)]
+///
+/// Both key forms use support-local qubit indices and each entry is resolved
+/// against the pass instance's fixed synthesis table, so entries are valid for
+/// any window with the same shape — including windows in a different circuit.
+/// That is what makes carrying the store across runs of one pass instance
+/// sound (see [`MatrixStore::take_from`]).
+#[derive(Debug, Default)]
 pub(super) struct MatrixStore {
     // FxHash: this is probed once per emitted window (millions of times on
     // large circuits), and the keys are short gate sequences where SipHash's
@@ -31,6 +37,28 @@ pub(super) struct MatrixStore {
 }
 
 impl MatrixStore {
+    /// Take the persistent store out of `slot` for one run, leaving the slot
+    /// empty. The hit/miss counters describe a single run and are reset here.
+    pub(super) fn take_from(slot: &Mutex<MatrixStore>) -> MatrixStore {
+        let mut store = {
+            let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut *guard)
+        };
+        store.hits = 0;
+        store.misses = 0;
+        store
+    }
+
+    /// Return the store to `slot` so the pass's next run starts warm. Parallel
+    /// chunked runs race for the slot; the store with the most interned
+    /// entries wins, and the losers are simply dropped.
+    pub(super) fn store_back(self, slot: &Mutex<MatrixStore>) {
+        let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if guard.entries.len() < self.entries.len() {
+            *guard = self;
+        }
+    }
+
     pub(super) fn lookup(
         &mut self,
         circuit: &Circuit,
