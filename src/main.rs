@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::process;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rayon::prelude::*;
 
@@ -184,39 +184,30 @@ fn init_global_pool(num_threads: usize) {
         .ok();
 }
 
-/// The optimization passes: gate cancellation followed by phase folding
-/// (expr-based when `expr` is set). Borrows the (stateless) pass values, which
-/// must outlive the returned slice.
-fn build_passes<'a>(
-    cancel_pass: &'a CancelGates,
-    global: &'a PhaseFoldRand,
-    global_expr: &'a PhaseFoldGlobalExpr,
-    expr: bool,
-) -> Vec<&'a dyn Pass> {
-    let phase_fold: &dyn Pass = if expr { global_expr } else { global };
-    vec![cancel_pass, phase_fold]
-}
-
-/// Run one pass with timing and a result line. Returns the transformed circuit
-/// and how long the pass took. `indent` is prepended to every log line so the
-/// caller can nest output under a header.
-fn run_logged(pass: &dyn Pass, circuit: &Circuit, indent: &str) -> (Circuit, Duration) {
+/// Run one pass with timing and a result line.
+fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> Circuit {
     let start = Instant::now();
     let c = pass.run(circuit);
-    let elapsed = start.elapsed();
     eprintln!(
-        "{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
+        "  {}\n\t└─ {} gates · {} T · {:.3}s",
         pass.name(),
         fmt_num(c.gates.len()),
         fmt_num(count_t(&c)),
-        elapsed.as_secs_f64()
+        start.elapsed().as_secs_f64()
     );
-    (c, elapsed)
+    c
 }
 
-/// Split a circuit into `num_chunks` ordered slices, each its own `Circuit`.
+/// The working state of every optimization driver: the circuit split into
+/// one chunk per parallel slot, or a single whole-circuit chunk when
+/// sequential. The split is computed once per optimization run and never
+/// recomputed — chunk boundaries stay fixed until the final [`stitch`], so
+/// passes always see stable chunks and never observe rewritten boundaries.
 /// `max(1)` guards the empty case where `slice::chunks(0)` would panic.
-fn split_chunks(circuit: &Circuit, num_chunks: usize) -> Vec<Circuit> {
+fn chunk_circuit(circuit: &Circuit, parallel: bool, num_chunks: usize) -> Vec<Circuit> {
+    if !parallel {
+        return vec![circuit.clone()];
+    }
     let chunk_size = circuit.gates.len().div_ceil(num_chunks).max(1);
     circuit
         .gates
@@ -242,36 +233,12 @@ fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
     out
 }
 
-/// Run each pass across all chunks in parallel, with per-pass logging.
-/// Returns the result and the total pass time.
-fn run_passes_parallel_logged(
-    circuit: &Circuit,
-    passes: &[&dyn Pass],
-    num_chunks: usize,
-    indent: &str,
-) -> (Circuit, Duration) {
-    let mut chunks = split_chunks(circuit, num_chunks);
-    let mut total = Duration::ZERO;
-    for p in passes {
-        let start = Instant::now();
-        chunks = chunks.par_iter().map(|chunk| p.run(chunk)).collect();
-        let elapsed = start.elapsed();
-        total += elapsed;
+fn total_gates(chunks: &[Circuit]) -> usize {
+    chunks.iter().map(|chunk| chunk.gates.len()).sum()
+}
 
-        let gates: usize = chunks.iter().map(|c| c.gates.len()).sum();
-        let t: usize = chunks.iter().map(count_t).sum();
-        eprintln!(
-            "{indent}  {}\n{indent}\t└─ {} gates · {} T · {:.3}s",
-            p.name(),
-            fmt_num(gates),
-            fmt_num(t),
-            elapsed.as_secs_f64()
-        );
-    }
-    (
-        stitch(circuit.num_qubits, circuit.num_cbits, &chunks),
-        total,
-    )
+fn total_t(chunks: &[Circuit]) -> usize {
+    chunks.iter().map(count_t).sum()
 }
 
 /// Print the closing result banner.
@@ -326,31 +293,32 @@ fn read_circuit(path: &str) -> Circuit {
 }
 
 /// Run a pass pipeline (parallel chunked or sequential), with per-pass logging.
-/// Returns the result and the total pass time.
 fn run_pipeline(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     parallel: bool,
     num_chunks: usize,
-    indent: &str,
-) -> (Circuit, Duration) {
+) -> Circuit {
     if parallel {
         eprintln!(
-            "{indent}  Parallel mode: {} chunks / {} threads\n",
+            "  Parallel mode: {} chunks / {} threads\n",
             fmt_num(num_chunks),
             fmt_num(rayon::current_num_threads())
         );
-        run_passes_parallel_logged(circuit, passes, num_chunks, indent)
-    } else {
-        let mut c = circuit.clone();
-        let mut total = Duration::ZERO;
-        for p in passes {
-            let (next, elapsed) = run_logged(*p, &c, indent);
-            c = next;
-            total += elapsed;
-        }
-        (c, total)
     }
+    let mut chunks = chunk_circuit(circuit, parallel, num_chunks);
+    for p in passes {
+        let start = Instant::now();
+        chunks = chunks.par_iter().map(|chunk| p.run(chunk)).collect();
+        eprintln!(
+            "  {}\n\t└─ {} gates · {} T · {:.3}s",
+            p.name(),
+            fmt_num(total_gates(&chunks)),
+            fmt_num(total_t(&chunks)),
+            start.elapsed().as_secs_f64()
+        );
+    }
+    stitch(circuit.num_qubits, circuit.num_cbits, &chunks)
 }
 
 /// Replace the current progress line with the latest fixpoint state.
@@ -364,101 +332,49 @@ fn update_fixpoint_progress(iteration: usize, gates: usize, t_count: usize) {
     let _ = io::stderr().flush();
 }
 
-/// Run one fixpoint sweep without per-pass logs, updating a single progress
-/// line with the most recent counts as each pass completes.
+/// Run one fixpoint sweep over the persistent chunks without per-pass logs,
+/// updating a single progress line with the most recent counts as each pass
+/// completes.
 fn run_fixpoint_sweep(
-    circuit: &Circuit,
+    mut chunks: Vec<Circuit>,
     passes: &[&dyn Pass],
-    parallel: bool,
-    num_chunks: usize,
     iteration: usize,
-) -> (Circuit, Duration) {
-    update_fixpoint_progress(iteration, circuit.gates.len(), count_t(circuit));
-
-    if parallel {
-        let mut chunks = split_chunks(circuit, num_chunks);
-        let mut total = Duration::ZERO;
-        for pass in passes {
-            let start = Instant::now();
-            chunks = chunks.par_iter().map(|chunk| pass.run(chunk)).collect();
-            total += start.elapsed();
-            update_fixpoint_progress(
-                iteration,
-                chunks.iter().map(|chunk| chunk.gates.len()).sum(),
-                chunks.iter().map(count_t).sum(),
-            );
-        }
-        (
-            stitch(circuit.num_qubits, circuit.num_cbits, &chunks),
-            total,
-        )
-    } else {
-        let mut c = circuit.clone();
-        let mut total = Duration::ZERO;
-        for pass in passes {
-            let start = Instant::now();
-            c = pass.run(&c);
-            total += start.elapsed();
-            update_fixpoint_progress(iteration, c.gates.len(), count_t(&c));
-        }
-        (c, total)
+) -> Vec<Circuit> {
+    update_fixpoint_progress(iteration, total_gates(&chunks), total_t(&chunks));
+    for pass in passes {
+        chunks = chunks.par_iter().map(|chunk| pass.run(chunk)).collect();
+        update_fixpoint_progress(iteration, total_gates(&chunks), total_t(&chunks));
     }
+    chunks
 }
 
 /// Repeatedly run `passes` until a sweep fails to reduce the gate count.
-/// Returns the result, total pass time, and how many sweeps ran.
+/// When `rz_decompose` is given, run it exactly once after the first sweep
+/// and force another sweep if there were Rz gates to decompose. Returns the
+/// result and how many sweeps ran.
 fn run_to_fixpoint(
-    circuit: &Circuit,
-    passes: &[&dyn Pass],
-    parallel: bool,
-    num_chunks: usize,
-) -> (Circuit, Duration, usize) {
-    let mut c = circuit.clone();
-    let mut total = Duration::ZERO;
-    let mut round = 0;
-    loop {
-        round += 1;
-        let before = c.gates.len();
-        let (next, elapsed) = run_fixpoint_sweep(&c, passes, parallel, num_chunks, round);
-        c = next;
-        total += elapsed;
-        if c.gates.len() >= before {
-            break;
-        }
-    }
-    eprintln!();
-    (c, total, round)
-}
-
-/// Run the O3 optimization pipeline to a fixpoint. When Rz decomposition
-/// is requested, insert it exactly once after the first optimization sweep and
-/// force another sweep when there were Rz gates to decompose.
-fn run_o3_to_fixpoint(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     rz_decompose: Option<&dyn Pass>,
     parallel: bool,
     num_chunks: usize,
-) -> (Circuit, Duration, usize) {
-    let mut c = circuit.clone();
-    let mut total = Duration::ZERO;
+) -> (Circuit, usize) {
+    let mut chunks = chunk_circuit(circuit, parallel, num_chunks);
     let mut round = 0;
     loop {
         round += 1;
-        let before = c.gates.len();
-        let (next, elapsed) = run_fixpoint_sweep(&c, passes, parallel, num_chunks, round);
-        let reduced = next.gates.len() < before;
-        c = next;
-        total += elapsed;
+        let before = total_gates(&chunks);
+        chunks = run_fixpoint_sweep(chunks, passes, round);
+        let reduced = total_gates(&chunks) < before;
 
         if round == 1
             && let Some(pass) = rz_decompose
         {
-            let had_rz = c.gates.iter().any(|g| matches!(g, Gate::rz(..)));
-            let start = Instant::now();
-            c = pass.run(&c);
-            total += start.elapsed();
-            update_fixpoint_progress(round, c.gates.len(), count_t(&c));
+            let had_rz = chunks
+                .iter()
+                .any(|chunk| chunk.gates.iter().any(|g| matches!(g, Gate::rz(..))));
+            chunks = chunks.par_iter().map(|chunk| pass.run(chunk)).collect();
+            update_fixpoint_progress(round, total_gates(&chunks), total_t(&chunks));
             if had_rz {
                 continue;
             }
@@ -469,7 +385,10 @@ fn run_o3_to_fixpoint(
         }
     }
     eprintln!();
-    (c, total, round)
+    (
+        stitch(circuit.num_qubits, circuit.num_cbits, &chunks),
+        round,
+    )
 }
 
 /// `incremental` is sound only for sequential drivers, where one instance
@@ -493,9 +412,45 @@ fn initialize_superopt(incremental: bool) -> SuperOpt {
     }
 }
 
+/// Print the result banner against `input`'s counts, check Rz invariants,
+/// and write the output file (if requested).
+fn finish(input: &Circuit, result: &Circuit, opts: &Opts, start: Instant) {
+    print_result(
+        input.gates.len(),
+        result.gates.len(),
+        count_t(input),
+        count_t(result),
+        start.elapsed().as_secs_f64(),
+    );
+
+    let input_has_rz = input.gates.iter().any(|g| matches!(g, Gate::rz(..)));
+    let output_has_rz = result.gates.iter().any(|g| matches!(g, Gate::rz(..)));
+    if output_has_rz && !input_has_rz {
+        panic!("BUG: output contains Rz gates but input did not");
+    }
+    if output_has_rz && opts.decompose_rz {
+        panic!("BUG: output contains Rz gates after --decompose-rz");
+    }
+
+    write_output(&opts.output_path, result);
+}
+
+/// Run the fixpoint driver and log the round count.
+fn run_to_fixpoint_logged(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    rz_decompose: Option<&dyn Pass>,
+    parallel: bool,
+    num_chunks: usize,
+) -> Circuit {
+    let (result, rounds) = run_to_fixpoint(circuit, passes, rz_decompose, parallel, num_chunks);
+    eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+    result
+}
+
 /// Default pipeline: decompose ccx/ccz (and optionally Rz), then cancel + phase-fold.
 /// `--passes` overrides this with an explicit, user-ordered pipeline.
-fn run_optimize(circuit: Circuit, opts: &Opts) {
+fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
     let parallel = opts.parallel;
     let num_chunks = num_par_chunks();
 
@@ -536,23 +491,12 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
                 }
             })
             .collect();
-        let baseline_gates = circuit.gates.len();
-        let baseline_t = count_t(&circuit);
-        let (result, total) = if opts.fixpoint {
-            let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
-            eprintln!("  Fixpoint reached after {rounds} iteration(s)");
-            (r, t)
+        let result = if opts.fixpoint {
+            run_to_fixpoint_logged(&circuit, &passes, None, parallel, num_chunks)
         } else {
-            run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+            run_pipeline(&circuit, &passes, parallel, num_chunks)
         };
-        print_result(
-            baseline_gates,
-            result.gates.len(),
-            baseline_t,
-            count_t(&result),
-            total.as_secs_f64(),
-        );
-        write_output(&opts.output_path, &result);
+        finish(&circuit, &result, opts, start);
         return;
     }
 
@@ -562,26 +506,22 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
 
     // Decompose CCX/CCZ eagerly so post-decomp counts form the baseline.
     let circuit = if circuit.has_toffoli || circuit.has_ccz {
-        run_logged(&decompose_toffoli, &circuit, "").0
+        run_logged(&decompose_toffoli, &circuit)
     } else {
         circuit
     };
 
-    let baseline_gates = circuit.gates.len();
-    let baseline_t = count_t(&circuit);
-
     let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
-    let (result, total_pass_time) = if optimization_level == OptimizationLevel::O3 {
+    let result = if optimization_level == OptimizationLevel::O3 {
         let superopt_pass = initialize_superopt(!parallel);
         let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
         let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
-        let (r, t, rounds) = run_o3_to_fixpoint(&circuit, &passes, decompose, parallel, num_chunks);
-        eprintln!("  Fixpoint reached after {rounds} iteration(s)");
-        (r, t)
+        run_to_fixpoint_logged(&circuit, &passes, decompose, parallel, num_chunks)
     } else {
         let superopt_pass =
             (optimization_level == OptimizationLevel::O2).then(|| initialize_superopt(!parallel));
-        let mut optimization_passes = build_passes(&cancel_pass, &global, &global_expr, opts.expr);
+        let phase_fold: &dyn Pass = if opts.expr { &global_expr } else { &global };
+        let mut optimization_passes: Vec<&dyn Pass> = vec![&cancel_pass, phase_fold];
         if let Some(pass) = &superopt_pass {
             optimization_passes.insert(1, pass);
         }
@@ -595,32 +535,13 @@ fn run_optimize(circuit: Circuit, opts: &Opts) {
         }
 
         if opts.fixpoint {
-            let (r, t, rounds) = run_to_fixpoint(&circuit, &passes, parallel, num_chunks);
-            eprintln!("  Fixpoint reached after {rounds} iteration(s)");
-            (r, t)
+            run_to_fixpoint_logged(&circuit, &passes, None, parallel, num_chunks)
         } else {
-            run_pipeline(&circuit, &passes, parallel, num_chunks, "")
+            run_pipeline(&circuit, &passes, parallel, num_chunks)
         }
     };
 
-    print_result(
-        baseline_gates,
-        result.gates.len(),
-        baseline_t,
-        count_t(&result),
-        total_pass_time.as_secs_f64(),
-    );
-
-    let input_has_rz = circuit.gates.iter().any(|g| matches!(g, Gate::rz(..)));
-    let output_has_rz = result.gates.iter().any(|g| matches!(g, Gate::rz(..)));
-    if output_has_rz && !input_has_rz {
-        panic!("BUG: output contains Rz gates but input did not");
-    }
-    if output_has_rz && opts.decompose_rz {
-        panic!("BUG: output contains Rz gates after --decompose-rz");
-    }
-
-    write_output(&opts.output_path, &result);
+    finish(&circuit, &result, opts, start);
 }
 
 fn print_help() {
@@ -772,6 +693,7 @@ fn parse_args(args: &[String]) -> Opts {
 }
 
 fn main() {
+    let start = Instant::now();
     let args: Vec<String> = env::args().collect();
     let opts = parse_args(&args);
 
@@ -784,7 +706,7 @@ fn main() {
     );
 
     let circuit = read_circuit(&opts.input_path);
-    run_optimize(circuit, &opts);
+    run_optimize(circuit, &opts, start);
 }
 
 #[cfg(test)]
@@ -804,7 +726,7 @@ mod tests {
 
         let cancel = CancelGates;
         let passes: Vec<&dyn Pass> = vec![&cancel];
-        let par = run_passes_parallel_logged(&c, &passes, 4, "").0;
+        let par = run_pipeline(&c, &passes, true, 4);
 
         assert_eq!(
             par.num_cbits, 1,
@@ -828,7 +750,7 @@ mod tests {
     fn parallel_mode_handles_empty_circuit() {
         let empty = Circuit::new(1);
         let passes: Vec<&dyn Pass> = vec![];
-        let out = run_passes_parallel_logged(&empty, &passes, 4, "").0;
+        let out = run_pipeline(&empty, &passes, true, 4);
         assert!(out.gates.is_empty());
     }
 }
