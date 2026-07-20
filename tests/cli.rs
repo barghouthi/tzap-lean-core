@@ -826,6 +826,266 @@ fn optimization_levels_are_mutually_exclusive() {
     );
 }
 
+// --- pass and mode combinations ---
+
+/// Every pass selectable via `--passes`, in default pipeline order.
+const ALL_PASS_NAMES: [&str; 7] = [
+    "DecomposeToffoli",
+    "DecomposeCz",
+    "DecomposeRz",
+    "CancelGates",
+    "SuperOpt",
+    "PhaseFoldRand",
+    "PhaseFoldGlobalExpr",
+];
+
+/// Exercises every decomposition pass: a Toffoli, a CZ, and an Rz rotation,
+/// plus cancellable H·H and foldable T·T pairs.
+const MIXED_QASM: &str = "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[3];
+ccx q[0],q[1],q[2];
+cz q[0],q[1];
+rz(pi/5) q[2];
+h q[0];
+h q[0];
+t q[1];
+t q[1];
+";
+
+/// Read an output file, assert it parses as QASM, and return its gate lines.
+fn read_valid_qasm(path: &std::path::Path) -> Vec<String> {
+    let content = fs::read_to_string(path).unwrap();
+    assert!(
+        tzap::qasm::parse(&content).is_ok(),
+        "output must be valid QASM:\n{content}"
+    );
+    gate_lines_from(&content)
+}
+
+fn assert_success(out: &std::process::Output, context: &str) {
+    assert!(
+        out.status.success(),
+        "{context} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn every_pass_runs_standalone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mixed = dir.path().join("mixed.qasm");
+    fs::write(&mixed, MIXED_QASM).unwrap();
+
+    for pass in ALL_PASS_NAMES {
+        // Decomposition passes get gates to decompose; the optimization
+        // passes run on the Clifford+T fixture.
+        let input = if pass.starts_with("Decompose") {
+            mixed.to_str().unwrap().to_string()
+        } else {
+            TEST_QASM.to_string()
+        };
+        let output = dir.path().join(format!("{pass}.qasm"));
+        let mut args = vec![
+            input.as_str(),
+            "-o",
+            output.to_str().unwrap(),
+            "--passes",
+            pass,
+        ];
+        if pass == "DecomposeRz" {
+            args.extend_from_slice(&["--epsilon", "1e-3"]);
+        }
+
+        let out = tzap_run(&args);
+        assert_success(&out, &format!("--passes {pass}"));
+
+        let gates = read_valid_qasm(&output);
+        let survives = |prefix: &str| gates.iter().any(|g| g.starts_with(prefix));
+        match pass {
+            "DecomposeToffoli" => assert!(!survives("ccx "), "{pass} left ccx: {gates:?}"),
+            "DecomposeCz" => assert!(!survives("cz "), "{pass} left cz: {gates:?}"),
+            "DecomposeRz" => assert!(!survives("rz("), "{pass} left rz: {gates:?}"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn all_passes_combined_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("mixed.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, MIXED_QASM).unwrap();
+
+    let list = ALL_PASS_NAMES.join(",");
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        &list,
+        "--epsilon",
+        "1e-3",
+    ]);
+    assert_success(&out, "--passes with all passes");
+
+    // No pass may reintroduce cz after DecomposeCz: SuperOpt's library
+    // excludes it (along with Toffoli), so the output stays cz-free.
+    let gates = read_valid_qasm(&output);
+    for prefix in ["ccx ", "ccz ", "cz ", "rz("] {
+        assert!(
+            !gates.iter().any(|g| g.starts_with(prefix)),
+            "combined pipeline left {prefix}: {gates:?}"
+        );
+    }
+}
+
+#[test]
+fn passes_with_fixpoint_reaches_fixpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "CancelGates,PhaseFoldRand",
+        "--fixpoint",
+    ]);
+    assert_success(&out, "--passes with --fixpoint");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    assert_eq!(read_valid_qasm(&output), vec!["s q[0];"]);
+}
+
+#[test]
+fn passes_with_parallel_produces_valid_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out.qasm");
+
+    let out = tzap_run(&[
+        MOD5_4_QASM,
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "CancelGates,PhaseFoldRand",
+        "--parallel",
+    ]);
+    assert_success(&out, "--passes with --parallel");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Parallel mode"), "got: {stderr}");
+    assert!(!read_valid_qasm(&output).is_empty());
+}
+
+#[test]
+fn passes_with_parallel_and_fixpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out.qasm");
+
+    let out = tzap_run(&[
+        MOD5_4_QASM,
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "CancelGates,PhaseFoldRand",
+        "--fixpoint",
+        "--parallel",
+    ]);
+    assert_success(&out, "--passes with --fixpoint --parallel");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    assert!(!read_valid_qasm(&output).is_empty());
+}
+
+#[test]
+fn optimization_levels_run_with_parallel() {
+    let dir = tempfile::tempdir().unwrap();
+    for level in ["-O1", "-O2", "-O3"] {
+        let output = dir.path().join(format!("{level}.qasm"));
+        let out = tzap_run(&[MOD5_4_QASM, "-o", output.to_str().unwrap(), level, "--parallel"]);
+        assert_success(&out, &format!("{level} --parallel"));
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        match level {
+            "-O3" => assert!(stderr.contains("Fixpoint reached"), "got: {stderr}"),
+            _ => assert!(stderr.contains("Parallel mode"), "got: {stderr}"),
+        }
+        if level != "-O1" {
+            assert!(stderr.contains("Initialized SuperOpt"), "got: {stderr}");
+        }
+        assert!(!read_valid_qasm(&output).is_empty());
+    }
+}
+
+#[test]
+fn default_pipeline_with_parallel() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out.qasm");
+
+    let out = tzap_run(&[TEST_QASM, "-o", output.to_str().unwrap(), "--parallel"]);
+    assert_success(&out, "default --parallel");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Parallel mode"), "got: {stderr}");
+    read_valid_qasm(&output);
+}
+
+#[test]
+fn default_pipeline_with_fixpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out.qasm");
+
+    let out = tzap_run(&[TEST_QASM, "-o", output.to_str().unwrap(), "--fixpoint"]);
+    assert_success(&out, "default --fixpoint");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    read_valid_qasm(&output);
+}
+
+#[test]
+fn expr_phase_folding_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out.qasm");
+
+    let out = tzap_run(&[TEST_QASM, "-o", output.to_str().unwrap(), "--expr"]);
+    assert_success(&out, "--expr");
+    read_valid_qasm(&output);
+}
+
+#[test]
+fn decompose_rz_with_parallel() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("rz.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(&input, rz_qasm("pi/5")).unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--decompose-rz",
+        "--epsilon",
+        "1e-3",
+        "--parallel",
+    ]);
+    assert_success(&out, "--decompose-rz --parallel");
+
+    let gates = read_valid_qasm(&output);
+    assert!(
+        !gates.iter().any(|g| g.starts_with("rz(")),
+        "no rz gates should remain, got: {gates:?}"
+    );
+}
+
 fn gate_lines_from(stdout: &str) -> Vec<String> {
     stdout
         .lines()
