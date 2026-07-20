@@ -149,11 +149,43 @@ Parameters:
 - `window_gates` — maximum gates in a scanned window.
 - `SuperOptTableConfig::new(max_qubits, max_gates, max_entries_per_qubit)` — bounds
   for the synthesis table, independent of the window size; `default()` is
-  `(3, 8, 200_000)`. Tables are built on first use and shared for the life of the
-  process.
+  `(3, 8, 200_000)`. A table entry can only ever be used when it's strictly
+  smaller than the window it would replace, so `max_gates` never needs to exceed
+  `window_gates - 1`.
+
+For a materially more thorough (but slower to build) configuration — the CLI's
+`-Osuper` uses exactly this — try:
+
+```rust
+use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
+
+let pass = SuperOpt::new(5, 30, SuperOptTableConfig::new(5, 29, 5_000_000))?;
+# Ok::<(), tzap::super_opt::SuperOptError>(())
+```
+
+**Table construction and caching.** Building the synthesis table is the
+expensive part — breadth-first enumeration over the gate library, bounded by
+`max_gates` and `max_entries_per_qubit`. Tables are cached two ways:
+
+1. **Per-process, in-memory.** Every `SuperOpt::new` call with the same
+   `SuperOptTableConfig` shares one already-built table for the life of the
+   process (`Arc`-backed, keyed by config).
+2. **On disk, across processes.** The built table is also persisted to
+   `~/.tzap/superopt-tables/` (one file per distinct config), so a later
+   process with the same config loads it in well under a second instead of
+   rebuilding it. A missing, stale, or corrupt cache file is never a hard
+   error — it just triggers a fresh build, which then gets cached for next
+   time. Call `tzap::super_opt::table_is_cached(config)` to check up front
+   whether a given config's table is already cached (useful for deciding
+   whether to warn a caller that the next `SuperOpt::new` will be slow).
 
 `SuperOpt` also implements `tzap::pass::Pass`. Chain `.without_subcircuits()` when
 only the optimized circuit is needed, to skip retaining per-window diagnostics.
+Chain `.incremental()` when repeatedly re-running the same pass instance on
+successive versions of one evolving circuit (e.g. inside a fixpoint loop) — it
+anchors new windows only near what changed since the previous `run` call,
+which is unsound if the instance ever sees unrelated circuits or concurrent
+chunks, so don't share an incremental instance across parallel workers.
 
 ### DecomposeRz epsilon
 

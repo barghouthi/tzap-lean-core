@@ -68,11 +68,18 @@ tzap output:
 | `-O1` | Runs randomized phase folding and basic gate cancellation. This is the default. |
 | `-O2` | Adds superoptimization to the `-O1` pipeline. |
 | `-O3` | Repeats the `-O2` pipeline until reaching a fixpoint. |
+| `-Osuper` | Like `-O3`, but with a larger superoptimization window/table. Finds more reductions at the cost of a slower first run — the synthesis table is cached to disk afterward, so later runs are fast again. |
 
 For example, to run the most powerful optimization pipeline:
 
 ```bash
 tzap -O3 benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
+```
+
+For an even more thorough (but slower on first use) pass, try `-Osuper`:
+
+```bash
+tzap -Osuper benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
 ```
 
 **Decompose Rz gates into Clifford+T and choose the precision**
