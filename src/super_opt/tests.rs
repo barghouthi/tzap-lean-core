@@ -668,25 +668,25 @@ fn library_gate_inverse_pairs() {
 #[test]
 fn library_gate_disjointness() {
     assert!(LibraryGate::X(0).is_disjoint(LibraryGate::H(1)));
-    assert!(!LibraryGate::Cnot(0, 1).is_disjoint(LibraryGate::Cz(1, 2)));
+    assert!(!LibraryGate::Cnot(0, 1).is_disjoint(LibraryGate::Cnot(1, 2)));
 }
 
 #[test]
 fn library_gate_counts_per_width() {
-    // 7n singles + n(n-1) cnot + C(n,2) cz. Toffoli is intentionally excluded.
+    // 7n singles + n(n-1) cnot. Toffoli and CZ are intentionally excluded.
     assert_eq!(library_gates(1).len(), 7);
-    assert_eq!(library_gates(2).len(), 17);
-    assert_eq!(library_gates(3).len(), 30);
-    assert_eq!(library_gates(4).len(), 46);
+    assert_eq!(library_gates(2).len(), 16);
+    assert_eq!(library_gates(3).len(), 27);
+    assert_eq!(library_gates(4).len(), 40);
 }
 
 #[test]
-fn library_never_enumerates_toffoli() {
+fn library_never_enumerates_toffoli_or_cz() {
     for num_qubits in 1..=4 {
         for gate in library_gates(num_qubits) {
             assert!(
-                !matches!(gate.to_gate(), Gate::ccx { .. }),
-                "library must not contain Toffoli: {gate:?}"
+                !matches!(gate.to_gate(), Gate::ccx { .. } | Gate::cz { .. }),
+                "library must not contain Toffoli or CZ: {gate:?}"
             );
         }
     }
@@ -758,22 +758,24 @@ fn hzh_synthesizes_to_x() {
 }
 
 #[test]
-fn h_cnot_h_synthesizes_to_cz() {
-    let table = synthesis_table(2, 1);
+fn cz_unitary_synthesizes_without_emitting_cz() {
+    // The CZ unitary must resolve to an H/CX-basis representative (H·CX·H),
+    // never to a literal cz gate — cz is excluded from the library.
+    let table = synthesis_table(2, 3);
     let mut matrix = UnitaryMatrix::identity(2).unwrap();
-    for gate in [
-        Gate::h(1),
-        Gate::cnot {
+    matrix.apply_gate_left(
+        &Gate::cz {
             control: 0,
             target: 1,
         },
-        Gate::h(1),
-    ] {
-        matrix.apply_gate_left(&gate, &[0, 1]);
-    }
+        &[0, 1],
+    );
     let replacement = table.synthesize(&matrix).unwrap();
-    assert_eq!(replacement.len(), 1);
-    assert!(matches!(replacement[0], Gate::cz { .. }));
+    assert!(
+        !replacement.iter().any(|g| matches!(g, Gate::cz { .. })),
+        "synthesis must not emit cz: {replacement:?}"
+    );
+    assert_eq!(replacement.len(), 3, "expected H·CX·H: {replacement:?}");
 }
 
 #[test]
@@ -1445,7 +1447,9 @@ fn replaces_subcircuit_with_shorter_synthesized_circuit() {
 }
 
 #[test]
-fn synthesized_two_qubit_replacement_uses_physical_qubits() {
+fn h_cnot_h_window_is_not_rewritten_to_cz() {
+    // H·CX·H is the CZ unitary, but cz is excluded from the library, so the
+    // shortest representative is the window itself — no rewrite may fire.
     let mut circuit = Circuit::new(4);
     circuit.apply(Gate::h(3));
     circuit.apply(Gate::cnot {
@@ -1454,22 +1458,15 @@ fn synthesized_two_qubit_replacement_uses_physical_qubits() {
     });
     circuit.apply(Gate::h(3));
 
-    let pass = SuperOpt::analyzer(2, 3).with_synthesis_table(synthesis_table(2, 1));
+    let pass = SuperOpt::analyzer(2, 3).with_synthesis_table(synthesis_table(2, 3));
     let result = pass.run(&circuit).unwrap();
 
-    assert_eq!(result.circuit.gates.len(), 1);
-    assert!(matches!(
-        result.circuit.gates[0],
-        Gate::cz {
-            control: 1,
-            target: 3
-        }
-    ));
-    assert!(crate::unitary::circuits_equiv(
-        &circuit,
-        &result.circuit,
-        IDENTITY_TOLERANCE,
-    ));
+    assert!(
+        result.rewrites.is_empty(),
+        "no rewrite may introduce cz: {:?}",
+        result.rewrites
+    );
+    assert_eq!(result.circuit.gates.len(), 3);
 }
 
 #[test]

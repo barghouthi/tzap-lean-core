@@ -34,9 +34,10 @@ pub(super) enum LibraryGate {
     T(u8),
     Tdg(u8),
     Cnot(u8, u8),
-    Cz(u8, u8),
-    // Deliberately no Ccx: SuperOpt must not introduce Toffolis (see
-    // `library_gates`), so the library cannot even represent one.
+    // Deliberately no Ccx or Cz: SuperOpt must not introduce gates outside
+    // the H/X/Z/S/T/CX emission basis (see `library_gates`), so the library
+    // cannot even represent them. Windows *containing* such gates are still
+    // matched and simplified — their unitaries come from the input gates.
 }
 
 impl LibraryGate {
@@ -53,10 +54,6 @@ impl LibraryGate {
                 control: control.into(),
                 target: target.into(),
             },
-            Self::Cz(control, target) => Gate::cz {
-                control: control.into(),
-                target: target.into(),
-            },
         }
     }
 
@@ -69,7 +66,7 @@ impl LibraryGate {
             | Self::Z(q)
             | Self::T(q)
             | Self::Tdg(q) => [Some(q), None],
-            Self::Cnot(left, right) | Self::Cz(left, right) => [Some(left), Some(right)],
+            Self::Cnot(left, right) => [Some(left), Some(right)],
         }
     }
 
@@ -89,10 +86,7 @@ impl LibraryGate {
             | (Self::Tdg(q), Self::T(r)) => q == r,
             _ => {
                 self == other
-                    && matches!(
-                        self,
-                        Self::X(_) | Self::H(_) | Self::Z(_) | Self::Cnot(..) | Self::Cz(..)
-                    )
+                    && matches!(self, Self::X(_) | Self::H(_) | Self::Z(_) | Self::Cnot(..))
             }
         }
     }
@@ -314,15 +308,11 @@ pub(super) fn library_gates(num_qubits: usize) -> Vec<LibraryGate> {
             }
         }
     }
-    for left in 0..num_qubits as u8 {
-        for right in left + 1..num_qubits as u8 {
-            gates.push(LibraryGate::Cz(left, right));
-        }
-    }
-    // Toffoli is deliberately excluded: SuperOpt must never rewrite a window into
-    // a circuit containing a Toffoli, since the pipeline decomposes Toffolis (a
-    // single CCX costs ~7 T once lowered). Input Toffolis are still simplified —
-    // their windows resolve to Clifford+T table representatives — but never
-    // introduced.
+    // Toffoli and CZ are deliberately excluded, so SuperOpt never rewrites a
+    // window into a circuit containing them: a Toffoli costs ~7 T once the
+    // pipeline lowers it, and CZ would take the output outside the
+    // H/X/Z/S/T/CX emission basis. Input Toffolis and CZs are still
+    // simplified — their windows resolve to table representatives — but such
+    // gates are never introduced.
     gates
 }
