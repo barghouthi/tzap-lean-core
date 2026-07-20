@@ -12,7 +12,7 @@ use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use tzap::pass::{Pass, count_t};
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
-use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
+use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_is_cached};
 
 /// Chunks (and rayon threads) per logical core.
 const CHUNK_MULTIPLIER: usize = 4;
@@ -117,6 +117,21 @@ fn looks_like_pass_list_fragment(token: &str) -> bool {
         .all(|name| PassName::parse(name).is_some())
 }
 
+/// Default SuperOpt window/table bounds, overridable by the hidden
+/// `--superopt-*` flags (see `parse_args`). Not exposed in `--help`: these
+/// exist for experimentation, not everyday use.
+///
+/// The window and table share both a qubit bound (`--superopt-qubits`) and a
+/// gate-count bound (`--superopt-window-gates`): the `SuperOpt` library
+/// itself allows window and table bounds to differ on either axis (e.g. a
+/// window wider or deeper than the table backing it, to exercise window
+/// mechanics beyond what the table can synthesize replacements for — see
+/// `super_opt::tests`), but the CLI has no everyday use case for that, so it
+/// only exposes one knob per axis.
+const DEFAULT_SUPEROPT_QUBITS: usize = 3;
+const DEFAULT_SUPEROPT_WINDOW_GATES: usize = 10;
+const DEFAULT_SUPEROPT_TABLE_ENTRIES: usize = 200_000;
+
 /// Parsed command-line options.
 struct Opts {
     input_path: String,
@@ -132,6 +147,11 @@ struct Opts {
     /// Explicit optimization level. Absence also uses O1, but keeps custom
     /// `--passes` and `--fixpoint` available.
     optimization_level: Option<OptimizationLevel>,
+    /// SuperOpt window/table bounds. Hidden (undocumented in `--help`);
+    /// default to the `DEFAULT_SUPEROPT_*` constants above.
+    superopt_qubits: usize,
+    superopt_window_gates: usize,
+    superopt_table_entries: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -394,9 +414,29 @@ fn run_to_fixpoint(
 /// `incremental` is sound only for sequential drivers, where one instance
 /// sees successive versions of the same circuit; pass `false` under
 /// parallel chunking.
-fn initialize_superopt(incremental: bool) -> SuperOpt {
+fn initialize_superopt(incremental: bool, opts: &Opts) -> SuperOpt {
+    // A table entry needs strictly fewer gates than the window it replaces
+    // (see `ActiveWindow::consider`'s `local.len() >= gate_indices.len()`
+    // rejection), and no window ever exceeds `window_gates`. So a stored
+    // circuit at exactly `window_gates` depth could never be strictly
+    // smaller than the largest possible window — `window_gates - 1` is the
+    // deepest depth any table entry can ever be used at.
+    let table_gates = opts.superopt_window_gates.saturating_sub(1);
+    let table_config = SuperOptTableConfig::new(
+        opts.superopt_qubits,
+        table_gates,
+        opts.superopt_table_entries,
+    );
+    if !table_is_cached(table_config) {
+        eprintln!("  🧠 Generating semantic lookup table (one-time — cached for future use)...");
+    }
     let start = Instant::now();
-    let pass = SuperOpt::new(3, 10, SuperOptTableConfig::default()).unwrap_or_else(|error| {
+    let pass = SuperOpt::new(
+        opts.superopt_qubits,
+        opts.superopt_window_gates,
+        table_config,
+    )
+    .unwrap_or_else(|error| {
         eprintln!("Failed to initialize SuperOpt: {error}");
         process::exit(1);
     });
@@ -471,7 +511,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
             init_global_pool(num_chunks);
         }
         let superopt_pass = if uses_superopt {
-            Some(initialize_superopt(!parallel))
+            Some(initialize_superopt(!parallel, opts))
         } else {
             None
         };
@@ -513,13 +553,13 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
 
     let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
     let result = if optimization_level == OptimizationLevel::O3 {
-        let superopt_pass = initialize_superopt(!parallel);
+        let superopt_pass = initialize_superopt(!parallel, opts);
         let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
         let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
         run_to_fixpoint_logged(&circuit, &passes, decompose, parallel, num_chunks)
     } else {
-        let superopt_pass =
-            (optimization_level == OptimizationLevel::O2).then(|| initialize_superopt(!parallel));
+        let superopt_pass = (optimization_level == OptimizationLevel::O2)
+            .then(|| initialize_superopt(!parallel, opts));
         let phase_fold: &dyn Pass = if opts.expr { &global_expr } else { &global };
         let mut optimization_passes: Vec<&dyn Pass> = vec![&cancel_pass, phase_fold];
         if let Some(pass) = &superopt_pass {
@@ -588,6 +628,15 @@ fn print_help() {
     println!();
 }
 
+/// Parse the next argument as a `usize`, exiting with `flag_name` in the
+/// error message on failure or if there is no next argument.
+fn parse_usize_arg(args: &[String], i: usize, flag_name: &str) -> usize {
+    args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+        eprintln!("{flag_name} requires a positive integer");
+        process::exit(1);
+    })
+}
+
 fn parse_args(args: &[String]) -> Opts {
     let mut input_path: Option<String> = None;
     let mut output_path: Option<String> = None;
@@ -598,6 +647,9 @@ fn parse_args(args: &[String]) -> Opts {
     let mut passes: Option<Vec<PassName>> = None;
     let mut fixpoint = false;
     let mut optimization_level = None;
+    let mut superopt_qubits = DEFAULT_SUPEROPT_QUBITS;
+    let mut superopt_window_gates = DEFAULT_SUPEROPT_WINDOW_GATES;
+    let mut superopt_table_entries = DEFAULT_SUPEROPT_TABLE_ENTRIES;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -649,6 +701,20 @@ fn parse_args(args: &[String]) -> Opts {
                 i += 1;
                 output_path = args.get(i).cloned();
             }
+            // Hidden: not listed in --help, for experimentation with SuperOpt's
+            // window/table bounds without a rebuild.
+            "--superopt-qubits" => {
+                i += 1;
+                superopt_qubits = parse_usize_arg(args, i, "--superopt-qubits");
+            }
+            "--superopt-window-gates" => {
+                i += 1;
+                superopt_window_gates = parse_usize_arg(args, i, "--superopt-window-gates");
+            }
+            "--superopt-table-entries" => {
+                i += 1;
+                superopt_table_entries = parse_usize_arg(args, i, "--superopt-table-entries");
+            }
             _ if args[i].starts_with('-') => {
                 eprintln!("Unknown flag: {}", args[i]);
                 process::exit(1);
@@ -689,6 +755,9 @@ fn parse_args(args: &[String]) -> Opts {
         passes,
         fixpoint,
         optimization_level,
+        superopt_qubits,
+        superopt_window_gates,
+        superopt_table_entries,
     }
 }
 

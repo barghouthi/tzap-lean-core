@@ -228,6 +228,17 @@ pub(super) struct UnitaryFingerprint {
     second: u64,
 }
 
+impl UnitaryFingerprint {
+    /// Raw form for on-disk table persistence; round-trips exactly.
+    pub(super) fn to_bits(self) -> (u64, u64) {
+        (self.first, self.second)
+    }
+
+    pub(super) fn from_bits(first: u64, second: u64) -> Self {
+        Self { first, second }
+    }
+}
+
 /// A 128-bit hash of the phase-canonicalized, coarsely rounded entries:
 /// global-phase invariant and drift tolerant, but lossy — equal fingerprints
 /// must be confirmed by [`UnitaryMatrix::equivalent_up_to_global_phase`]

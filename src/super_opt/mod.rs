@@ -44,7 +44,9 @@
 //! Three layers keep repeated work off the hot path:
 //!
 //! 1. The synthesis table is built once per configuration and shared
-//!    process-wide (`table::shared_synthesis_table`).
+//!    process-wide (`table::shared_synthesis_table`), and persisted to disk
+//!    (under `~/.tzap/superopt-tables/`, one file per distinct config) so
+//!    later processes load it instead of rebuilding it.
 //! 2. The matrix store (`MatrixStore`) interns each canonical window shape
 //!    with its matrix and synthesis outcome — including the negative one —
 //!    and is carried across runs of a pass instance, so later fixpoint
@@ -84,6 +86,15 @@ use matrix_cache::{
     has_lone_arbitrary_rz,
 };
 use table::{UnitaryCircuitTable, shared_synthesis_table};
+
+/// Whether a synthesis table matching `config` is already cached on disk —
+/// a hint for callers wanting to report whether the next `SuperOpt::new`
+/// call will be a fast cache load or a fresh, slow build. Purely
+/// informational: `SuperOpt::new` re-validates independently, so this is
+/// never load-bearing for correctness.
+pub fn table_is_cached(config: SuperOptTableConfig) -> bool {
+    table::disk_cache_exists(config)
+}
 
 /// Matrix and location information for one completed anchored window.
 #[derive(Clone, Debug)]

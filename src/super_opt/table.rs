@@ -13,6 +13,7 @@
 //! expanded (the swapped one has the same product).
 
 use std::collections::HashMap;
+use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
@@ -22,6 +23,54 @@ use crate::circuit::Gate;
 use super::matrix::{UnitaryFingerprint, UnitaryMatrix, unitary_fingerprint};
 use super::synthesis_arena::WidthTable;
 use super::{SuperOptError, SuperOptTableConfig};
+
+/// On-disk table cache format identifier and version. Bump
+/// `CACHE_FORMAT_VERSION` whenever the byte layout below changes; a mismatch
+/// (or a missing/corrupt file) simply falls back to rebuilding, never to a
+/// misread table.
+const CACHE_MAGIC: &[u8; 4] = b"TZS1";
+const CACHE_FORMAT_VERSION: u32 = 1;
+
+/// Reads and validates a cache file's header — magic, format version, and
+/// config fields — against `config`. Shared by `read_from_disk` (which
+/// continues on to read the table body) and `disk_cache_exists` (which only
+/// needs to know the header matches).
+fn read_cache_header(input: &mut impl Read, config: SuperOptTableConfig) -> io::Result<()> {
+    let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidData, msg.to_owned());
+
+    let mut magic = [0u8; 4];
+    input.read_exact(&mut magic)?;
+    if magic != *CACHE_MAGIC {
+        return Err(invalid("not a SuperOpt table cache file"));
+    }
+    let mut version_buf = [0u8; 4];
+    input.read_exact(&mut version_buf)?;
+    if u32::from_le_bytes(version_buf) != CACHE_FORMAT_VERSION {
+        return Err(invalid("cache format version mismatch"));
+    }
+
+    let mut qubits_buf = [0u8; 4];
+    input.read_exact(&mut qubits_buf)?;
+    let mut gates_buf = [0u8; 4];
+    input.read_exact(&mut gates_buf)?;
+    let mut entries_buf = [0u8; 8];
+    input.read_exact(&mut entries_buf)?;
+    let stored_config = (
+        u32::from_le_bytes(qubits_buf) as usize,
+        u32::from_le_bytes(gates_buf) as usize,
+        u64::from_le_bytes(entries_buf) as usize,
+    );
+    if stored_config
+        != (
+            config.max_qubits,
+            config.max_gates,
+            config.max_entries_per_qubit,
+        )
+    {
+        return Err(invalid("cache config mismatch"));
+    }
+    Ok(())
+}
 
 /// The gate set the table enumerates: Clifford+T over table-local qubits.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -90,6 +139,36 @@ impl LibraryGate {
             }
         }
     }
+
+    /// Fixed 3-byte encoding for on-disk table persistence: a tag byte plus
+    /// up to two qubit-index operands (unused operands are zero).
+    pub(super) fn to_bytes(self) -> [u8; 3] {
+        match self {
+            Self::X(q) => [0, q, 0],
+            Self::H(q) => [1, q, 0],
+            Self::S(q) => [2, q, 0],
+            Self::Sdg(q) => [3, q, 0],
+            Self::Z(q) => [4, q, 0],
+            Self::T(q) => [5, q, 0],
+            Self::Tdg(q) => [6, q, 0],
+            Self::Cnot(control, target) => [7, control, target],
+        }
+    }
+
+    pub(super) fn from_bytes(bytes: [u8; 3]) -> Option<Self> {
+        let [tag, a, b] = bytes;
+        Some(match tag {
+            0 => Self::X(a),
+            1 => Self::H(a),
+            2 => Self::S(a),
+            3 => Self::Sdg(a),
+            4 => Self::Z(a),
+            5 => Self::T(a),
+            6 => Self::Tdg(a),
+            7 => Self::Cnot(a, b),
+            _ => return None,
+        })
+    }
 }
 
 /// Breadth-first map from a unitary fingerprint to the smallest circuit found.
@@ -105,9 +184,9 @@ pub(super) struct UnitaryCircuitTable {
 
 impl UnitaryCircuitTable {
     pub(super) fn build(config: SuperOptTableConfig) -> Result<Self, SuperOptError> {
-        if !(1..=4).contains(&config.max_qubits) {
+        if !(1..=5).contains(&config.max_qubits) {
             return Err(SuperOptError::InvalidTableConfig {
-                reason: format!("max_qubits must be in 1..=4, got {}", config.max_qubits),
+                reason: format!("max_qubits must be in 1..=5, got {}", config.max_qubits),
             });
         }
         if config.max_entries_per_qubit == 0 {
@@ -210,6 +289,85 @@ impl UnitaryCircuitTable {
         })
     }
 
+    /// Write this table to `path` for reuse by a later process, tagged with
+    /// `config` so a mismatched config on read is rejected rather than
+    /// silently misinterpreted. Written to a sibling temp file and renamed
+    /// into place, so a reader never observes a partially written cache file
+    /// (concurrent writers each rename their own complete file; last one
+    /// wins, which is fine since every writer for the same `config` builds
+    /// byte-identical content).
+    pub(super) fn write_to_disk(
+        &self,
+        path: &std::path::Path,
+        config: SuperOptTableConfig,
+    ) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp_path = path.with_extension("tmp");
+        {
+            let file = std::fs::File::create(&tmp_path)?;
+            let mut out = io::BufWriter::new(file);
+            out.write_all(CACHE_MAGIC)?;
+            out.write_all(&CACHE_FORMAT_VERSION.to_le_bytes())?;
+            out.write_all(&(config.max_qubits as u32).to_le_bytes())?;
+            out.write_all(&(config.max_gates as u32).to_le_bytes())?;
+            out.write_all(&(config.max_entries_per_qubit as u64).to_le_bytes())?;
+            out.write_all(&(self.entries.len() as u32).to_le_bytes())?;
+            for width_table in &self.entries {
+                width_table.write_to(&mut out)?;
+            }
+            for &saturated in &self.saturated {
+                out.write_all(&[u8::from(saturated)])?;
+            }
+            for &depth in &self.completed_depth {
+                out.write_all(&(depth as u32).to_le_bytes())?;
+            }
+        }
+        std::fs::rename(&tmp_path, path)
+    }
+
+    /// Read a table previously written by `write_to_disk`, rejecting it
+    /// (with an `io::Error`) unless its header matches `config` exactly and
+    /// the format version is one this build understands. Any error here —
+    /// missing file, truncated write, config mismatch, version bump — should
+    /// be treated by the caller as "no usable cache", not as a hard failure.
+    pub(super) fn read_from_disk(
+        path: &std::path::Path,
+        config: SuperOptTableConfig,
+    ) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let mut input = io::BufReader::new(file);
+        read_cache_header(&mut input, config)?;
+
+        let mut width_count_buf = [0u8; 4];
+        input.read_exact(&mut width_count_buf)?;
+        let width_count = u32::from_le_bytes(width_count_buf) as usize;
+
+        let mut entries = Vec::with_capacity(width_count);
+        for _ in 0..width_count {
+            entries.push(WidthTable::read_from(&mut input)?);
+        }
+        let mut saturated = Vec::with_capacity(width_count);
+        for _ in 0..width_count {
+            let mut byte = [0u8; 1];
+            input.read_exact(&mut byte)?;
+            saturated.push(byte[0] != 0);
+        }
+        let mut completed_depth = Vec::with_capacity(width_count);
+        for _ in 0..width_count {
+            let mut depth_buf = [0u8; 4];
+            input.read_exact(&mut depth_buf)?;
+            completed_depth.push(u32::from_le_bytes(depth_buf) as usize);
+        }
+
+        Ok(Self {
+            entries,
+            saturated,
+            completed_depth,
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn entry_count(&self, num_qubits: usize) -> usize {
         self.entries.get(num_qubits).map_or(0, WidthTable::len)
@@ -271,9 +429,73 @@ pub(super) fn shared_synthesis_table(config: SuperOptTableConfig) -> SharedTable
         return table.clone();
     }
 
-    let table = UnitaryCircuitTable::build(config).map(Arc::new);
+    let table = build_or_load_from_disk(config).map(Arc::new);
     tables.insert(config, table.clone());
     table
+}
+
+/// Directory holding on-disk synthesis-table caches. `None` when `$HOME`
+/// isn't set, in which case callers just skip disk caching entirely — it is
+/// always a pure speed optimization, never required for correctness.
+fn cache_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let mut dir = std::path::PathBuf::from(home);
+    dir.push(".tzap");
+    dir.push("superopt-tables");
+    Some(dir)
+}
+
+/// One file per distinct `config`, since different bounds produce different
+/// tables; the format version is in the name too so a version bump can't
+/// collide with (and doesn't need to explicitly invalidate) old files —
+/// they're simply never looked up again and can be cleaned up manually.
+fn cache_file_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
+    let mut path = cache_dir()?;
+    path.push(format!(
+        "q{}_g{}_e{}.v{CACHE_FORMAT_VERSION}.bin",
+        config.max_qubits, config.max_gates, config.max_entries_per_qubit
+    ));
+    Some(path)
+}
+
+/// Whether a valid on-disk cache for `config` already exists, checked by
+/// reading just the header (magic, format version, config fields) rather
+/// than the full table body. Purely informational — for callers wanting to
+/// report whether a `SuperOpt::new` call is about to do a fast cache load or
+/// a slow fresh build. `build_or_load_from_disk` is the sole source of truth
+/// and re-validates independently, so a wrong answer here (e.g. a race with
+/// another process writing the same file) can never cause a bad load, only
+/// a misleading message.
+pub(super) fn disk_cache_exists(config: SuperOptTableConfig) -> bool {
+    let Some(path) = cache_file_path(config) else {
+        return false;
+    };
+    let Ok(file) = std::fs::File::open(&path) else {
+        return false;
+    };
+    read_cache_header(&mut io::BufReader::new(file), config).is_ok()
+}
+
+/// Load a matching table from disk if one exists, else build it and (on a
+/// best-effort basis) write it back for the next process to reuse. A disk
+/// read/write failure of any kind — missing file, corrupt content, a
+/// read-only cache directory — is swallowed here: it can only make this run
+/// as slow as a cold run would have been anyway, never wrong.
+fn build_or_load_from_disk(
+    config: SuperOptTableConfig,
+) -> Result<UnitaryCircuitTable, SuperOptError> {
+    let path = cache_file_path(config);
+    if let Some(path) = &path
+        && let Ok(table) = UnitaryCircuitTable::read_from_disk(path, config)
+    {
+        return Ok(table);
+    }
+
+    let table = UnitaryCircuitTable::build(config)?;
+    if let Some(path) = &path {
+        let _ = table.write_to_disk(path, config);
+    }
+    Ok(table)
 }
 
 pub(super) fn library_circuit_matrix(

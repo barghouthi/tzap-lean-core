@@ -1285,7 +1285,7 @@ fn constructor_rejects_invalid_table_config() {
     let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(0, 8, 1_000)).unwrap_err();
     assert!(matches!(error, SuperOptError::InvalidTableConfig { .. }));
 
-    let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(5, 8, 1_000)).unwrap_err();
+    let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(6, 8, 1_000)).unwrap_err();
     assert!(matches!(error, SuperOptError::InvalidTableConfig { .. }));
 
     let error = SuperOpt::new(4, 8, SuperOptTableConfig::new(4, 8, 0)).unwrap_err();
@@ -1545,6 +1545,65 @@ fn synthesis_table_handles_identity_only_and_layer_boundary_caps() {
     assert_eq!(complete_first_layer.entry_count(1), 8);
     assert!(complete_first_layer.is_saturated(1));
     assert_eq!(complete_first_layer.completed_depth(1), 1);
+}
+
+#[test]
+fn disk_round_trip_reproduces_the_built_table() {
+    let config = SuperOptTableConfig::new(3, 6, 5_000);
+    let built = UnitaryCircuitTable::build(config).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("table.bin");
+    built.write_to_disk(&path, config).unwrap();
+    let loaded = UnitaryCircuitTable::read_from_disk(&path, config).unwrap();
+
+    for width in 1..=3 {
+        assert_eq!(built.entry_count(width), loaded.entry_count(width));
+        assert_eq!(built.is_saturated(width), loaded.is_saturated(width));
+        assert_eq!(built.completed_depth(width), loaded.completed_depth(width));
+    }
+
+    // Every matrix the built table can synthesize, the loaded table
+    // synthesizes identically (same replacement circuit, not just "a" match).
+    let mut checked = 0;
+    for num_qubits in 1..=3 {
+        let support: Vec<_> = (0..num_qubits).collect();
+        for gate in library_gates(num_qubits) {
+            let mut matrix = UnitaryMatrix::identity(num_qubits).unwrap();
+            matrix.apply_gate_left(&gate.to_gate(), &support);
+            assert_eq!(built.synthesize(&matrix), loaded.synthesize(&matrix));
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+}
+
+#[test]
+fn disk_read_rejects_a_mismatched_config() {
+    let config = SuperOptTableConfig::new(2, 4, 1_000);
+    let built = UnitaryCircuitTable::build(config).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("table.bin");
+    built.write_to_disk(&path, config).unwrap();
+
+    let different_entries = SuperOptTableConfig::new(2, 4, 2_000);
+    assert!(UnitaryCircuitTable::read_from_disk(&path, different_entries).is_err());
+
+    let different_qubits = SuperOptTableConfig::new(1, 4, 1_000);
+    assert!(UnitaryCircuitTable::read_from_disk(&path, different_qubits).is_err());
+}
+
+#[test]
+fn disk_read_rejects_a_missing_or_corrupt_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("does-not-exist.bin");
+    let config = SuperOptTableConfig::new(1, 2, 100);
+    assert!(UnitaryCircuitTable::read_from_disk(&missing, config).is_err());
+
+    let corrupt = dir.path().join("corrupt.bin");
+    std::fs::write(&corrupt, b"not a table cache").unwrap();
+    assert!(UnitaryCircuitTable::read_from_disk(&corrupt, config).is_err());
 }
 
 #[test]
