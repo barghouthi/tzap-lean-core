@@ -821,7 +821,7 @@ fn optimization_levels_are_mutually_exclusive() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("-O1, -O2, and -O3 cannot be combined"),
+        stderr.contains("-O1, -O2, -O3, and -Osuper cannot be combined"),
         "got: {stderr}"
     );
 }
