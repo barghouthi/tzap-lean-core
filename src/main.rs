@@ -1069,6 +1069,7 @@ fn print_help() {
     );
     println!("                     first run; the table is cached to disk afterward)");
     println!("    \x1b[1m-h, --help\x1b[0m       Print this help message");
+    println!("    \x1b[1m-v, --version\x1b[0m    Print the version");
     println!();
     println!("  \x1b[1;33mPASSES\x1b[0m (names for --passes)");
     for (name, pass, desc) in PassName::ALL {
@@ -1123,6 +1124,10 @@ fn parse_args(args: &[String]) -> Opts {
         match args[i].as_str() {
             "--help" | "-h" => {
                 print_help();
+                process::exit(0);
+            }
+            "--version" | "-v" => {
+                println!("tzap {}", env!("CARGO_PKG_VERSION"));
                 process::exit(0);
             }
             "--expr" => expr = true,
