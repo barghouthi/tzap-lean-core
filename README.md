@@ -40,25 +40,25 @@ tzap is a CLI optimization tool for quantum circuits. You can also use tzap as a
 The most common usage of tzap is `tzap input.qasm -o output.qasm`, where the `input.qasm` circuit is optimized into `output.qasm`. For example, using the benchmarks in this repo:
 
 ```bash
-tzap benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
+tzap benchmarks/feynman/gf2^256_mult.qasm -o optimized.qasm
 ```
 
 tzap output:
 
 ```text
 ⚡️ tzap
-  Parsing benchmarks/feynman/barenco_tof_5.qasm (0.0 MB)
-	└─ 9 qubits · 218 gates · 84 T/Tdg · 0.000s
+  Parsing benchmarks/feynman/gf2^256_mult.qasm (13.9 MB)
+	└─ 768 qubits · 1,115,899 gates · 458,752 T/Tdg · 0.210s
 
-  ┌─ % reduction so far ─────────────────────────────────┐
-  │ Gates  ━━━━━━━━━━╸─────────────────────  33.0% · 146 │
-  │ T/Tdg  ━━━━━━━━━━━━━━━━╸───────────────  52.4% · 40  │
-  └──────────────────────────────────────────────────────┘
+  ┌─ % reduction so far ───────────────────────────────────────┐
+  │ Gates  ━━━━━━━━━━━━━╸──────────────────  41.1% · 657,723   │
+  │ T/Tdg  ━━━━━━━━━━━━━╸──────────────────  42.8% · 262,400   │
+  └────────────────────────────────────────────────────────────┘
 
   Final result
-	├─ Gates  218 → 146 (↓33.0%)
-	├─ T/Tdg  84 → 40 (↓52.4%)
-	└─ Time   0.000s
+	├─ Gates  1,115,899 → 657,723 (↓41.1%)
+	├─ T/Tdg  458,752 → 262,400 (↓42.8%)
+	└─ Time   0.321s
 ```
 
 **Optimization levels**
@@ -73,13 +73,13 @@ tzap output:
 For example, to run the most powerful optimization pipeline:
 
 ```bash
-tzap -O3 benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
+tzap -O3 benchmarks/feynman/gf2^256_mult.qasm -o optimized.qasm
 ```
 
 For an even more thorough (but slower on first use) pass, try `-Osuper`:
 
 ```bash
-tzap -Osuper benchmarks/feynman/barenco_tof_5.qasm -o optimized.qasm
+tzap -Osuper benchmarks/feynman/gf2^256_mult.qasm -o optimized.qasm
 ```
 
 **Decompose Rz gates into Clifford+T and choose the precision**
