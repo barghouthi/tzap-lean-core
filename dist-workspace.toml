@@ -19,7 +19,7 @@ hosting = "github"
 install-updater = false
 # Homebrew tap repo to publish formula updates to
 tap = "qqq-wisc/homebrew-tap"
-# Publish the Homebrew formula as part of each release
-publish-jobs = ["homebrew"]
+# Publish the Homebrew formula and crates.io package as part of each release
+publish-jobs = ["homebrew", "./publish-crates-io"]
 # Name the formula after the "tzap" binary, not the "tzap-opt" crates.io package
 formula = "tzap"
