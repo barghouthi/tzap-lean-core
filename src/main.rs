@@ -1034,7 +1034,10 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
 
 fn print_help() {
     println!();
-    println!("  \x1b[1m⚡\u{FE0F} tzap\x1b[0m  —  fast quantum circuit optimizer");
+    println!(
+        "  \x1b[1m⚡\u{FE0F} tzap\x1b[0m  —  fast quantum circuit optimizer  \x1b[2mv{}\x1b[0m",
+        env!("CARGO_PKG_VERSION")
+    );
     println!();
     println!("  Decomposes Toffoli (ccx) gates into Clifford+T by default.");
     println!("  Pass --decompose-rz to also decompose Rz gates via gridsynth.");
