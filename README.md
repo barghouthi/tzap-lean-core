@@ -28,7 +28,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/qqq-wisc/tzap/releases/
 **Homebrew** (macOS/Linux):
 
 ```bash
-brew install qqq-wisc/tap/tzap-opt
+brew install qqq-wisc/tap/tzap
 ```
 
 **From crates.io** (requires [Rust](https://rustup.rs/)):

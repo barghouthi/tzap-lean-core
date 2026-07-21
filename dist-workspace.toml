@@ -21,3 +21,5 @@ install-updater = false
 tap = "qqq-wisc/homebrew-tap"
 # Publish the Homebrew formula as part of each release
 publish-jobs = ["homebrew"]
+# Name the formula after the "tzap" binary, not the "tzap-opt" crates.io package
+formula = "tzap"
