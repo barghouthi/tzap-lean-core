@@ -41,6 +41,8 @@ Parse from and convert to OpenQASM 2.0. `from_qasm` returns
 `Result<Circuit, String>`:
 
 ```rust
+use tzap::circuit::Circuit;
+
 let circuit = Circuit::from_qasm("
     OPENQASM 2.0;
     include \"qelib1.inc\";
@@ -59,7 +61,7 @@ lowers both `ccx` and `ccz` to Clifford+T.
 
 Every pass implements the `Pass` trait:
 
-```rust
+```rust,ignore
 use tzap::pass::Pass;
 
 pub trait Pass: Sync {
@@ -86,7 +88,7 @@ A custom pass only needs to supply `name` and `run`.
 
 Run a single pass:
 
-```rust
+```rust,ignore
 use tzap::decompose::DecomposeToffoli;
 
 let optimized = DecomposeToffoli.run(&circuit);
@@ -94,7 +96,7 @@ let optimized = DecomposeToffoli.run(&circuit);
 
 Run a pipeline:
 
-```rust
+```rust,ignore
 use tzap::decompose::DecomposeToffoli;
 use tzap::cancel::CancelGates;
 use tzap::phase_fold_rand::PhaseFoldRand;
@@ -112,7 +114,7 @@ println!("{} gates, {} T", result.circuit.gates.len(), count_t(&result.circuit))
 
 `run_passes` returns a `PassResult`:
 
-```rust
+```rust,ignore
 pub struct PassResult {
     pub circuit: Circuit,
     pub t_after_first: usize,       // T-count after only the first pass
@@ -134,7 +136,7 @@ gate count. Every replacement is verified by matrix equality up to global phase
 before use, so rewrites are always semantics-preserving. The pass accepts unitary
 circuits only.
 
-```rust
+```rust,ignore
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
 
 let pass = SuperOpt::new(3, 10, SuperOptTableConfig::default())?;
@@ -156,7 +158,7 @@ Parameters:
 For a materially more thorough (but slower to build) configuration — the CLI's
 `-Osuper` uses exactly this — try:
 
-```rust
+```rust,ignore
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
 
 let pass = SuperOpt::new(5, 30, SuperOptTableConfig::new(5, 29, 5_000_000))?;
@@ -191,7 +193,7 @@ chunks, so don't share an incremental instance across parallel workers.
 
 Control the approximation precision with the `epsilon` field (default `1e-10`):
 
-```rust
+```rust,ignore
 use tzap::decompose_rz::DecomposeRz;
 
 let pass = DecomposeRz { epsilon: 1e-6 };

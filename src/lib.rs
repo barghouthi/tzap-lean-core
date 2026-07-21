@@ -1,3 +1,5 @@
+#![doc = include_str!("../API.md")]
+
 pub mod cancel;
 pub mod circuit;
 pub mod decompose;
