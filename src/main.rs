@@ -19,7 +19,7 @@ use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_is_cached};
 /// core (see [`num_threads`]): chunks cost varies (some hit more SuperOpt
 /// rewrites than others), so more chunks than threads lets rayon's
 /// work-stealing load-balance that unevenness across a right-sized pool.
-const CHUNK_MULTIPLIER: usize = 4;
+const CHUNK_MULTIPLIER: usize = 2;
 
 /// A pass selectable by name via `--passes`.
 #[derive(Clone, Copy)]
