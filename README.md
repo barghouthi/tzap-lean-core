@@ -20,25 +20,25 @@ tzap is **multiple orders of mangitude** faster than other optimizers&mdash;and 
 
 ## Installation
 
-**Homebrew** (macOS/Linux):
+**Homebrew** (macOS/Linux, easiest option):
 
 ```bash
 brew install qqq-wisc/tap/tzap
 ```
 
-**crates.io** (requires [Rust](https://rustup.rs/)):
+**crates.io** (requires [Rust](https://rustup.rs/); builds from source):
 
 ```bash
 cargo install tzap-opt
 ```
 
-**From source**:
+**From source** (this repo, requires [Rust](https://rustup.rs/)):
 
 ```bash
 cargo install --path .
 ```
 
-**Prebuilt binary** (no Rust required) — macOS/Linux:
+**Prebuilt binary** (no Rust required, downloads and runs a shell installer) — macOS/Linux:
 
 ```bash
 curl -LsSf https://github.com/qqq-wisc/tzap/releases/latest/download/tzap-opt-installer.sh | sh
