@@ -334,17 +334,41 @@ fn read_circuit(path: &str) -> Circuit {
     circuit
 }
 
-/// Run a pass pipeline once over `circuit`, in order. `verbose` prints a
-/// per-pass result line (suppressed for map-reduce chunk workers, where
-/// concurrent chunks would otherwise interleave garbled output).
+/// Run a pass pipeline once over `circuit`, in order. When `verbose`, shows
+/// a live "% reduction so far" progress box (see [`update_reduction_progress`]),
+/// redrawn after each pass — no iteration number, since (unlike the fixpoint
+/// driver) this only ever makes one pass over `passes`. Suppressed for
+/// map-reduce chunk workers, where concurrent chunks would otherwise
+/// interleave garbled output.
 fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circuit {
+    let baseline_gates = circuit.gates.len();
+    let baseline_t = count_t(circuit);
     let mut c = circuit.clone();
+    if verbose {
+        eprintln!();
+        start_progress_block(box_lines(2));
+        update_reduction_progress(
+            "% reduction so far",
+            c.gates.len(),
+            count_t(&c),
+            baseline_gates,
+            baseline_t,
+        );
+    }
     for p in passes {
-        c = if verbose {
-            run_logged(*p, &c)
-        } else {
-            p.run(&c)
-        };
+        c = p.run(&c);
+        if verbose {
+            update_reduction_progress(
+                "% reduction so far",
+                c.gates.len(),
+                count_t(&c),
+                baseline_gates,
+                baseline_t,
+            );
+        }
+    }
+    if verbose {
+        end_progress_block(box_lines(2));
     }
     c
 }
@@ -463,13 +487,15 @@ fn redraw_progress_block(lines: &[String]) {
     let _ = io::stderr().flush();
 }
 
-/// Redraw the live fixpoint progress box: a gate-count-reduction bar and a
-/// T-count-reduction bar (reduction relative to `baseline_gates`/`baseline_t`,
-/// the counts at the start of this fixpoint run), each in its own color, with
-/// the current iteration number in the box title. Must be bracketed by
-/// `start_progress_block(box_lines(2))` / `end_progress_block(box_lines(2))`.
-fn update_fixpoint_progress(
-    iteration: usize,
+/// Redraw a live "% reduction so far" progress box under `title`: a
+/// gate-count-reduction bar and a T-count-reduction bar (reduction relative
+/// to `baseline_gates`/`baseline_t`, the counts at the start of this run),
+/// each in its own color. Shared by the fixpoint driver (title carries the
+/// iteration number) and the plain pipeline driver (no iteration — it
+/// doesn't loop). Must be bracketed by `start_progress_block(box_lines(2))`
+/// / `end_progress_block(box_lines(2))`.
+fn update_reduction_progress(
+    title: &str,
     gates: usize,
     t_count: usize,
     baseline_gates: usize,
@@ -482,7 +508,7 @@ fn update_fixpoint_progress(
     let t_str = fmt_num(t_count);
     let t_width = fmt_num(baseline_t).chars().count();
     redraw_progress_block(&progress_box(
-        &format!("Iteration {iteration} — % reduction so far"),
+        title,
         &[
             (
                 "Gates",
@@ -496,6 +522,24 @@ fn update_fixpoint_progress(
             ),
         ],
     ));
+}
+
+/// Redraw the live fixpoint progress box — [`update_reduction_progress`]
+/// with the current iteration number in the title.
+fn update_fixpoint_progress(
+    iteration: usize,
+    gates: usize,
+    t_count: usize,
+    baseline_gates: usize,
+    baseline_t: usize,
+) {
+    update_reduction_progress(
+        &format!("Iteration {iteration} — % reduction so far"),
+        gates,
+        t_count,
+        baseline_gates,
+        baseline_t,
+    );
 }
 
 /// Redraw the live parallel map-reduce progress box: how many chunks have

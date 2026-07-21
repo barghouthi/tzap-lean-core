@@ -722,13 +722,20 @@ fn o1_is_the_default_pipeline() {
     );
 
     let stderr = String::from_utf8_lossy(&o1.stderr);
-    assert!(stderr.contains("Gate cancellation"), "got: {stderr}");
-    assert!(stderr.contains("Phase folding"), "got: {stderr}");
+    assert!(stderr.contains("% reduction so far"), "got: {stderr}");
+    assert!(
+        stderr.contains("Gates") && stderr.contains("T/Tdg"),
+        "expected a live reduction progress box:\n{stderr}"
+    );
     assert!(!stderr.contains("Initialized SuperOpt"), "got: {stderr}");
+    assert!(
+        !stderr.contains("Iteration"),
+        "O1 doesn't run to fixpoint, so its progress box shouldn't show an iteration number:\n{stderr}"
+    );
 }
 
 #[test]
-fn o2_inserts_superopt_after_cancel_gates() {
+fn o2_uses_superopt_pass() {
     let out = tzap_run(&[TEST_QASM, "-O2"]);
     assert!(
         out.status.success(),
@@ -737,12 +744,11 @@ fn o2_inserts_superopt_after_cancel_gates() {
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let cancel = stderr.find("Gate cancellation").unwrap();
-    let superopt = stderr.find("\n  SuperOpt\n").unwrap();
-    let phase_fold = stderr.find("Phase folding").unwrap();
+    assert!(stderr.contains("Initialized SuperOpt"), "got: {stderr}");
+    assert!(stderr.contains("% reduction so far"), "got: {stderr}");
     assert!(
-        cancel < superopt && superopt < phase_fold,
-        "unexpected O2 pass order:\n{stderr}"
+        !stderr.contains("Iteration"),
+        "O2 doesn't run to fixpoint, so its progress box shouldn't show an iteration number:\n{stderr}"
     );
 }
 
