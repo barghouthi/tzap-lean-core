@@ -289,7 +289,7 @@ fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
 
 /// Print the closing result banner.
 fn print_result(in_gates: usize, out_gates: usize, in_t: usize, out_t: usize, secs: f64) {
-    eprintln!("\n\x1b[1m  ⚡\u{FE0F} result\x1b[0m");
+    eprintln!("\n\x1b[1m  Final result\x1b[0m");
     eprintln!(
         "\t├─ Gates  {} → {} (↓{:.1}%)",
         fmt_num(in_gates),
