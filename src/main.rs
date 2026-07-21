@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::process;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -14,7 +15,10 @@ use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_is_cached};
 
-/// Chunks (and rayon threads) per logical core.
+/// Map-reduce chunks per logical core. Deliberately more than one thread per
+/// core (see [`num_threads`]): chunks cost varies (some hit more SuperOpt
+/// rewrites than others), so more chunks than threads lets rayon's
+/// work-stealing load-balance that unevenness across a right-sized pool.
 const CHUNK_MULTIPLIER: usize = 4;
 
 /// A pass selectable by name via `--passes`.
@@ -210,17 +214,26 @@ fn pct(before: usize, after: usize) -> f64 {
     }
 }
 
-/// Number of parallel chunks / rayon threads to use.
-fn num_par_chunks() -> usize {
+/// Number of logical cores, for sizing the rayon thread pool. CPU-bound work
+/// like ours gets no benefit from oversubscribing OS threads beyond the core
+/// count — it only adds context-switch and cache-thrashing overhead.
+fn num_threads() -> usize {
     std::thread::available_parallelism()
-        .map(|n| n.get() * CHUNK_MULTIPLIER)
+        .map(|n| n.get())
         .unwrap_or(8)
 }
 
-/// Build the global rayon pool. A no-op if already built (it is process-global).
-fn init_global_pool(num_threads: usize) {
+/// Number of map-reduce chunks to split the circuit into. See
+/// [`CHUNK_MULTIPLIER`] for why this is more than [`num_threads`].
+fn num_par_chunks() -> usize {
+    num_threads() * CHUNK_MULTIPLIER
+}
+
+/// Build the global rayon pool, sized to the number of logical cores. A
+/// no-op if already built (it is process-global).
+fn init_global_pool() {
     rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
+        .num_threads(num_threads())
         .build_global()
         .ok();
 }
@@ -239,16 +252,12 @@ fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> Circuit {
     c
 }
 
-/// The working state of every optimization driver: the circuit split into
-/// one chunk per parallel slot, or a single whole-circuit chunk when
-/// sequential. The split is computed once per optimization run and never
-/// recomputed — chunk boundaries stay fixed until the final [`stitch`], so
-/// passes always see stable chunks and never observe rewritten boundaries.
+/// Split a circuit into `num_chunks` gate-contiguous pieces for map-reduce
+/// parallelism. Each chunk is later optimized completely independently (see
+/// [`run_map_reduce`]) and the results concatenated back in order by
+/// [`stitch`] — chunk boundaries are fixed up front and never revisited.
 /// `max(1)` guards the empty case where `slice::chunks(0)` would panic.
-fn chunk_circuit(circuit: &Circuit, parallel: bool, num_chunks: usize) -> Vec<Circuit> {
-    if !parallel {
-        return vec![circuit.clone()];
-    }
+fn chunk_circuit(circuit: &Circuit, num_chunks: usize) -> Vec<Circuit> {
     let chunk_size = circuit.gates.len().div_ceil(num_chunks).max(1);
     circuit
         .gates
@@ -272,14 +281,6 @@ fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
         }
     }
     out
-}
-
-fn total_gates(chunks: &[Circuit]) -> usize {
-    chunks.iter().map(|chunk| chunk.gates.len()).sum()
-}
-
-fn total_t(chunks: &[Circuit]) -> usize {
-    chunks.iter().map(count_t).sum()
 }
 
 /// Print the closing result banner.
@@ -333,60 +334,255 @@ fn read_circuit(path: &str) -> Circuit {
     circuit
 }
 
-/// Run a pass pipeline (parallel chunked or sequential), with per-pass logging.
-fn run_pipeline(
-    circuit: &Circuit,
-    passes: &[&dyn Pass],
-    parallel: bool,
-    num_chunks: usize,
-) -> Circuit {
-    if parallel {
-        eprintln!(
-            "  Parallel mode: {} chunks / {} threads\n",
-            fmt_num(num_chunks),
-            fmt_num(rayon::current_num_threads())
-        );
-    }
-    let mut chunks = chunk_circuit(circuit, parallel, num_chunks);
+/// Run a pass pipeline once over `circuit`, in order. `verbose` prints a
+/// per-pass result line (suppressed for map-reduce chunk workers, where
+/// concurrent chunks would otherwise interleave garbled output).
+fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circuit {
+    let mut c = circuit.clone();
     for p in passes {
-        let start = Instant::now();
-        chunks = chunks.par_iter().map(|chunk| p.run(chunk)).collect();
-        eprintln!(
-            "  {}\n\t└─ {} gates · {} T · {:.3}s",
-            p.name(),
-            fmt_num(total_gates(&chunks)),
-            fmt_num(total_t(&chunks)),
-            start.elapsed().as_secs_f64()
-        );
+        c = if verbose {
+            run_logged(*p, &c)
+        } else {
+            p.run(&c)
+        };
     }
-    stitch(circuit.num_qubits, circuit.num_cbits, &chunks)
+    c
 }
 
-/// Replace the current progress line with the latest fixpoint state.
-fn update_fixpoint_progress(iteration: usize, gates: usize, t_count: usize) {
-    eprint!(
-        "\r\x1b[2K  Iteration {} · {} gates · {} T",
-        fmt_num(iteration),
-        fmt_num(gates),
-        fmt_num(t_count)
-    );
+/// Width, in characters, of a progress bar's fill/track region.
+const BAR_WIDTH: usize = 40;
+/// Width of a progress box row's label field (fits "Gates  ", "T/Tdg  ",
+/// and "Chunks " with trailing padding to align every bar).
+const LABEL_WIDTH: usize = 7;
+
+/// Green fill, used for the map-reduce chunk-completion bar.
+const CHUNK_BAR_COLOR: &str = "\x1b[32m";
+/// Cyan fill, used for the gate-count reduction bar.
+const GATES_BAR_COLOR: &str = "\x1b[36m";
+/// Magenta fill, used for the T-count reduction bar.
+const T_BAR_COLOR: &str = "\x1b[35m";
+
+/// Render a thin bar — heavy `color` fill, a partial tip glyph at the exact
+/// boundary, dim light-line track for the remainder — in the style of
+/// indicatif's `{bar:.color/dim}` with `━╸─` progress chars. `fraction` is
+/// clamped to `[0, 1]`.
+fn render_bar(fraction: f64, width: usize, color: &str) -> String {
+    let fraction = fraction.clamp(0.0, 1.0);
+    let exact = fraction * width as f64;
+    let full = (exact.floor() as usize).min(width);
+    let has_tip = full < width && exact > full as f64;
+    let empty = width - full - usize::from(has_tip);
+
+    let mut bar = String::with_capacity(width + 16);
+    bar.push_str(color);
+    for _ in 0..full {
+        bar.push('━');
+    }
+    if has_tip {
+        bar.push('╸');
+    }
+    bar.push_str("\x1b[0m\x1b[2m");
+    for _ in 0..empty {
+        bar.push('─');
+    }
+    bar.push_str("\x1b[0m");
+    bar
+}
+
+/// Number of lines a progress box with `num_rows` bar rows occupies (a top
+/// and bottom border, plus one line per row).
+fn box_lines(num_rows: usize) -> usize {
+    num_rows + 2
+}
+
+/// Build the lines of a live progress box: a top border with `title`
+/// embedded, one line per `(label, colored_bar, trailing)` row, and a bottom
+/// border. Every line is padded to equal *visible* width — the ANSI escapes
+/// inside `bar` don't count — so the box stays rectangular regardless of how
+/// long each row's trailing text is. Callers that redraw a box across
+/// several frames should keep each row's trailing text a fixed width for the
+/// run (e.g. via a `{:>width$}` on a count derived from a fixed baseline),
+/// or the box will visibly resize frame to frame.
+fn progress_box(title: &str, rows: &[(&str, String, String)]) -> Vec<String> {
+    let row_width = |trailing: &str| LABEL_WIDTH + BAR_WIDTH + 1 + trailing.chars().count();
+    let inner_width = rows
+        .iter()
+        .map(|(_, _, trailing)| row_width(trailing))
+        .max()
+        .unwrap_or(0)
+        + 2;
+
+    let title_segment = format!("─ {title} ");
+    let dashes = inner_width.saturating_sub(title_segment.chars().count());
+    let mut lines = vec![format!("┌{title_segment}{}┐", "─".repeat(dashes))];
+    for (label, bar, trailing) in rows {
+        let pad = inner_width - (row_width(trailing) + 2);
+        lines.push(format!(
+            "│ {label:<LABEL_WIDTH$}{bar} {trailing}{} │",
+            " ".repeat(pad)
+        ));
+    }
+    lines.push(format!("└{}┘", "─".repeat(inner_width)));
+    lines
+}
+
+/// Reserve `n` blank lines for a live-redrawn progress block and leave the
+/// cursor at its top-left. Pair with a later [`end_progress_block`] once the
+/// block's final frame has been drawn.
+fn start_progress_block(n: usize) {
+    eprint!("{}\x1b[{n}A", "\n".repeat(n));
     let _ = io::stderr().flush();
 }
 
-/// Run one fixpoint sweep over the persistent chunks without per-pass logs,
-/// updating a single progress line with the most recent counts as each pass
-/// completes.
+/// Move past a live progress block of `n` lines, leaving its last frame on
+/// screen and the cursor at the start of the row right below it.
+fn end_progress_block(n: usize) {
+    eprintln!("\x1b[{}B", n.saturating_sub(1));
+    let _ = io::stderr().flush();
+}
+
+/// Redraw a live progress block in place: clear and reprint each of
+/// `lines`, then return the cursor to the block's top-left for the next
+/// redraw. Must be bracketed by [`start_progress_block`] / [`end_progress_block`]
+/// with a matching line count.
+fn redraw_progress_block(lines: &[String]) {
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        out.push_str("\r\x1b[2K");
+        out.push_str(line);
+        if i + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+    if lines.len() > 1 {
+        out.push_str(&format!("\x1b[{}A\r", lines.len() - 1));
+    } else {
+        out.push('\r');
+    }
+    eprint!("{out}");
+    let _ = io::stderr().flush();
+}
+
+/// Redraw the live fixpoint progress box: a gate-count-reduction bar and a
+/// T-count-reduction bar (reduction relative to `baseline_gates`/`baseline_t`,
+/// the counts at the start of this fixpoint run), each in its own color, with
+/// the current iteration number in the box title. Must be bracketed by
+/// `start_progress_block(box_lines(2))` / `end_progress_block(box_lines(2))`.
+fn update_fixpoint_progress(
+    iteration: usize,
+    gates: usize,
+    t_count: usize,
+    baseline_gates: usize,
+    baseline_t: usize,
+) {
+    let gates_pct = pct(baseline_gates, gates);
+    let t_pct = pct(baseline_t, t_count);
+    let gates_str = fmt_num(gates);
+    let gates_width = fmt_num(baseline_gates).chars().count();
+    let t_str = fmt_num(t_count);
+    let t_width = fmt_num(baseline_t).chars().count();
+    redraw_progress_block(&progress_box(
+        &format!("Iteration {iteration} — % reduction so far"),
+        &[
+            (
+                "Gates",
+                render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
+                format!("{gates_pct:>5.1}% ({gates_str:>gates_width$})"),
+            ),
+            (
+                "T/Tdg",
+                render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
+                format!("{t_pct:>5.1}% ({t_str:>t_width$})"),
+            ),
+        ],
+    ));
+}
+
+/// Redraw the live parallel map-reduce progress box: how many chunks have
+/// finished, and the whole circuit's gate/T reduction achieved so far.
+/// Finished chunks contribute their optimized size to `current_gates`/
+/// `current_t`; chunks still pending contribute their original size — so
+/// this converges to the exact numbers in the closing Result banner once
+/// every chunk is done. Must be bracketed by `start_progress_block(box_lines(3))`
+/// / `end_progress_block(box_lines(3))`.
+fn update_chunk_progress(
+    done: usize,
+    total: usize,
+    baseline_gates: usize,
+    current_gates: usize,
+    baseline_t: usize,
+    current_t: usize,
+) {
+    let chunk_fraction = if total > 0 {
+        done as f64 / total as f64
+    } else {
+        1.0
+    };
+    let chunk_pct = chunk_fraction * 100.0;
+    let gates_pct = pct(baseline_gates, current_gates);
+    let t_pct = pct(baseline_t, current_t);
+    let done_str = fmt_num(done);
+    let done_width = fmt_num(total).chars().count();
+    let total_str = fmt_num(total);
+    let gates_str = fmt_num(current_gates);
+    let gates_width = fmt_num(baseline_gates).chars().count();
+    let t_str = fmt_num(current_t);
+    let t_width = fmt_num(baseline_t).chars().count();
+    redraw_progress_block(&progress_box(
+        "Parallel optimization — % reduction so far",
+        &[
+            (
+                "Chunks",
+                render_bar(chunk_fraction, BAR_WIDTH, CHUNK_BAR_COLOR),
+                format!("{chunk_pct:>5.1}% ({done_str:>done_width$}/{total_str})"),
+            ),
+            (
+                "Gates",
+                render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
+                format!("{gates_pct:>5.1}% ({gates_str:>gates_width$})"),
+            ),
+            (
+                "T/Tdg",
+                render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
+                format!("{t_pct:>5.1}% ({t_str:>t_width$})"),
+            ),
+        ],
+    ));
+}
+
+/// Run one fixpoint sweep over `circuit`. When `verbose`, redraws the live
+/// progress box with the most recent counts as each pass completes.
 fn run_fixpoint_sweep(
-    mut chunks: Vec<Circuit>,
+    circuit: &Circuit,
     passes: &[&dyn Pass],
     iteration: usize,
-) -> Vec<Circuit> {
-    update_fixpoint_progress(iteration, total_gates(&chunks), total_t(&chunks));
-    for pass in passes {
-        chunks = chunks.par_iter().map(|chunk| pass.run(chunk)).collect();
-        update_fixpoint_progress(iteration, total_gates(&chunks), total_t(&chunks));
+    verbose: bool,
+    baseline_gates: usize,
+    baseline_t: usize,
+) -> Circuit {
+    let mut c = circuit.clone();
+    if verbose {
+        update_fixpoint_progress(
+            iteration,
+            c.gates.len(),
+            count_t(&c),
+            baseline_gates,
+            baseline_t,
+        );
     }
-    chunks
+    for pass in passes {
+        c = pass.run(&c);
+        if verbose {
+            update_fixpoint_progress(
+                iteration,
+                c.gates.len(),
+                count_t(&c),
+                baseline_gates,
+                baseline_t,
+            );
+        }
+    }
+    c
 }
 
 /// Repeatedly run `passes` until a sweep fails to reduce the gate count.
@@ -397,25 +593,36 @@ fn run_to_fixpoint(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     rz_decompose: Option<&dyn Pass>,
-    parallel: bool,
-    num_chunks: usize,
+    verbose: bool,
 ) -> (Circuit, usize) {
-    let mut chunks = chunk_circuit(circuit, parallel, num_chunks);
+    let baseline_gates = circuit.gates.len();
+    let baseline_t = count_t(circuit);
+    let mut c = circuit.clone();
     let mut round = 0;
+    if verbose {
+        eprintln!();
+        start_progress_block(box_lines(2));
+    }
     loop {
         round += 1;
-        let before = total_gates(&chunks);
-        chunks = run_fixpoint_sweep(chunks, passes, round);
-        let reduced = total_gates(&chunks) < before;
+        let before = c.gates.len();
+        c = run_fixpoint_sweep(&c, passes, round, verbose, baseline_gates, baseline_t);
+        let reduced = c.gates.len() < before;
 
         if round == 1
             && let Some(pass) = rz_decompose
         {
-            let had_rz = chunks
-                .iter()
-                .any(|chunk| chunk.gates.iter().any(|g| matches!(g, Gate::rz(..))));
-            chunks = chunks.par_iter().map(|chunk| pass.run(chunk)).collect();
-            update_fixpoint_progress(round, total_gates(&chunks), total_t(&chunks));
+            let had_rz = c.gates.iter().any(|g| matches!(g, Gate::rz(..)));
+            c = pass.run(&c);
+            if verbose {
+                update_fixpoint_progress(
+                    round,
+                    c.gates.len(),
+                    count_t(&c),
+                    baseline_gates,
+                    baseline_t,
+                );
+            }
             if had_rz {
                 continue;
             }
@@ -425,19 +632,22 @@ fn run_to_fixpoint(
             break;
         }
     }
-    eprintln!();
-    (
-        stitch(circuit.num_qubits, circuit.num_cbits, &chunks),
-        round,
-    )
+    if verbose {
+        end_progress_block(box_lines(2));
+    }
+    (c, round)
 }
 
-/// `incremental` is sound only for sequential drivers, where one instance
-/// sees successive versions of the same circuit; pass `false` under
-/// parallel chunking. `level` selects which bounds preset an unset
+/// Build a fresh `SuperOpt` instance. Callers must construct one of these
+/// per map-reduce chunk (never share or reuse one instance across chunks):
+/// each instance owns its own matrix cache and incremental-diff state, so a
+/// fresh instance per chunk means `.incremental()` is always sound here —
+/// every instance only ever sees successive versions of the one circuit it
+/// was built for. `level` selects which bounds preset an unset
 /// `--superopt-*` flag falls back to — `SUPER_SUPEROPT_*` under `-Osuper`,
-/// `DEFAULT_SUPEROPT_*` otherwise.
-fn initialize_superopt(incremental: bool, opts: &Opts, level: OptimizationLevel) -> SuperOpt {
+/// `DEFAULT_SUPEROPT_*` otherwise. `verbose` controls whether the one-time
+/// table-build diagnostics are printed (see the note above `table_config`).
+fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> SuperOpt {
     let (default_qubits, default_window_gates, default_table_entries) =
         if level == OptimizationLevel::Osuper {
             (
@@ -464,7 +674,11 @@ fn initialize_superopt(incremental: bool, opts: &Opts, level: OptimizationLevel)
     // deepest depth any table entry can ever be used at.
     let table_gates = window_gates.saturating_sub(1);
     let table_config = SuperOptTableConfig::new(qubits, table_gates, table_entries);
-    if !table_is_cached(table_config) {
+    // Quiet for map-reduce chunk workers: with one fresh instance per chunk,
+    // this would otherwise print once per chunk. The caller instead does one
+    // verbose warm-up call before fanning out, so the table build (and its
+    // one-time cost message) is reported exactly once.
+    if verbose && !table_is_cached(table_config) {
         eprintln!("  🧠 Generating semantic lookup table (one-time — cached for future use)...");
     }
     let start = Instant::now();
@@ -472,16 +686,13 @@ fn initialize_superopt(incremental: bool, opts: &Opts, level: OptimizationLevel)
         eprintln!("Failed to initialize SuperOpt: {error}");
         process::exit(1);
     });
-    eprintln!(
-        "  Initialized SuperOpt table in {:.3}s",
-        start.elapsed().as_secs_f64()
-    );
-    let pass = pass.without_subcircuits();
-    if incremental {
-        pass.incremental()
-    } else {
-        pass
+    if verbose {
+        eprintln!(
+            "  Initialized SuperOpt table in {:.3}s",
+            start.elapsed().as_secs_f64()
+        );
     }
+    pass.without_subcircuits().incremental()
 }
 
 /// Print the result banner against `input`'s counts, check Rz invariants,
@@ -507,25 +718,105 @@ fn finish(input: &Circuit, result: &Circuit, opts: &Opts, start: Instant) {
     write_output(&opts.output_path, result);
 }
 
-/// Run the fixpoint driver and log the round count.
+/// Run the fixpoint driver and (when `verbose`) log the round count. Not
+/// verbose for map-reduce chunk workers — each chunk reaches its own
+/// fixpoint independently, so a per-chunk round count would just be noise;
+/// the chunk progress bar in [`run_map_reduce`] is the only progress
+/// reporting during parallel runs.
 fn run_to_fixpoint_logged(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     rz_decompose: Option<&dyn Pass>,
-    parallel: bool,
-    num_chunks: usize,
+    verbose: bool,
 ) -> Circuit {
-    let (result, rounds) = run_to_fixpoint(circuit, passes, rz_decompose, parallel, num_chunks);
-    eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+    let (result, rounds) = run_to_fixpoint(circuit, passes, rz_decompose, verbose);
+    if verbose {
+        eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+    }
     result
 }
 
-/// Default pipeline: decompose ccx/ccz (and optionally Rz), then cancel + phase-fold.
-/// `--passes` overrides this with an explicit, user-ordered pipeline.
-fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
-    let parallel = opts.parallel;
-    let num_chunks = num_par_chunks();
+/// Run `optimize` once on the whole circuit when sequential, or independently
+/// on each of `num_chunks` chunks in parallel (map), recombining the results
+/// in order (reduce). Each chunk is optimized completely independently: no
+/// state — not even a synthesis table's matrix cache — is shared between
+/// chunks, so `optimize` must construct every stateful pass (`SuperOpt`)
+/// fresh on every call.
+fn run_map_reduce(
+    circuit: &Circuit,
+    parallel: bool,
+    num_chunks: usize,
+    optimize: impl Fn(&Circuit, bool) -> Circuit + Sync + Send,
+) -> Circuit {
+    if !parallel {
+        return optimize(circuit, true);
+    }
+    let chunks = chunk_circuit(circuit, num_chunks);
+    let total = chunks.len();
+    eprintln!();
 
+    // Whole-circuit baselines: pending chunks (not yet optimized) count as
+    // still contributing their original size, so `current_gates`/`current_t`
+    // read as "the reduction achieved if we stopped right now" and converge
+    // to the exact Result-banner numbers once every chunk is done.
+    let baseline_gates = circuit.gates.len();
+    let baseline_t = count_t(circuit);
+    let done = AtomicUsize::new(0);
+    let sum_before_gates = AtomicUsize::new(0);
+    let sum_after_gates = AtomicUsize::new(0);
+    let sum_before_t = AtomicUsize::new(0);
+    let sum_after_t = AtomicUsize::new(0);
+
+    start_progress_block(box_lines(3));
+    update_chunk_progress(
+        0,
+        total,
+        baseline_gates,
+        baseline_gates,
+        baseline_t,
+        baseline_t,
+    );
+    let optimized: Vec<Circuit> = chunks
+        .par_iter()
+        .map(|chunk| {
+            let before_gates = chunk.gates.len();
+            let before_t = count_t(chunk);
+            let result = optimize(chunk, false);
+            let after_gates = result.gates.len();
+            let after_t = count_t(&result);
+
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            let sum_before_gates =
+                sum_before_gates.fetch_add(before_gates, Ordering::Relaxed) + before_gates;
+            let sum_after_gates =
+                sum_after_gates.fetch_add(after_gates, Ordering::Relaxed) + after_gates;
+            let sum_before_t = sum_before_t.fetch_add(before_t, Ordering::Relaxed) + before_t;
+            let sum_after_t = sum_after_t.fetch_add(after_t, Ordering::Relaxed) + after_t;
+
+            let current_gates = baseline_gates - sum_before_gates + sum_after_gates;
+            let current_t = baseline_t - sum_before_t + sum_after_t;
+            update_chunk_progress(
+                n,
+                total,
+                baseline_gates,
+                current_gates,
+                baseline_t,
+                current_t,
+            );
+            result
+        })
+        .collect();
+    end_progress_block(box_lines(3));
+    stitch(circuit.num_qubits, circuit.num_cbits, &optimized)
+}
+
+/// Run the explicit `--passes` pipeline on `circuit`, constructing a fresh
+/// `SuperOpt` if it's selected. Used as one map-reduce worker per chunk.
+fn optimize_explicit(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
+    let names = opts
+        .passes
+        .as_ref()
+        .expect("only called when --passes is set");
     let decompose_toffoli = DecomposeToffoli;
     let decompose_cz = DecomposeCz;
     let rz_decompose = DecomposeRz {
@@ -535,66 +826,57 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
     let global = PhaseFoldRand;
     let global_expr = PhaseFoldGlobalExpr;
 
-    // Explicit pipeline via --passes: run exactly what the user listed, in order.
-    if let Some(names) = &opts.passes {
-        let uses_rz = names.iter().any(|p| matches!(p, PassName::DecomposeRz));
-        let uses_superopt = names.iter().any(|p| matches!(p, PassName::SuperOpt));
-        if parallel || uses_rz {
-            init_global_pool(num_chunks);
-        }
-        let superopt_pass = if uses_superopt {
-            Some(initialize_superopt(!parallel, opts, OptimizationLevel::O1))
-        } else {
-            None
-        };
-        let passes: Vec<&dyn Pass> = names
-            .iter()
-            .map(|p| -> &dyn Pass {
-                match p {
-                    PassName::DecomposeToffoli => &decompose_toffoli,
-                    PassName::DecomposeCz => &decompose_cz,
-                    PassName::DecomposeRz => &rz_decompose,
-                    PassName::CancelGates => &cancel_pass,
-                    PassName::SuperOpt => superopt_pass
-                        .as_ref()
-                        .expect("constructed when the pass is selected"),
-                    PassName::PhaseFoldRand => &global,
-                    PassName::PhaseFoldGlobalExpr => &global_expr,
-                }
-            })
-            .collect();
-        let result = if opts.fixpoint {
-            run_to_fixpoint_logged(&circuit, &passes, None, parallel, num_chunks)
-        } else {
-            run_pipeline(&circuit, &passes, parallel, num_chunks)
-        };
-        finish(&circuit, &result, opts, start);
-        return;
-    }
+    let uses_superopt = names.iter().any(|p| matches!(p, PassName::SuperOpt));
+    let superopt_pass =
+        uses_superopt.then(|| initialize_superopt(opts, OptimizationLevel::O1, verbose));
 
-    if parallel || opts.decompose_rz {
-        init_global_pool(num_chunks);
-    }
+    let passes: Vec<&dyn Pass> = names
+        .iter()
+        .map(|p| -> &dyn Pass {
+            match p {
+                PassName::DecomposeToffoli => &decompose_toffoli,
+                PassName::DecomposeCz => &decompose_cz,
+                PassName::DecomposeRz => &rz_decompose,
+                PassName::CancelGates => &cancel_pass,
+                PassName::SuperOpt => superopt_pass
+                    .as_ref()
+                    .expect("constructed when the pass is selected"),
+                PassName::PhaseFoldRand => &global,
+                PassName::PhaseFoldGlobalExpr => &global_expr,
+            }
+        })
+        .collect();
 
-    // Decompose CCX/CCZ eagerly so post-decomp counts form the baseline.
-    let circuit = if circuit.has_toffoli || circuit.has_ccz {
-        run_logged(&decompose_toffoli, &circuit)
+    if opts.fixpoint {
+        run_to_fixpoint_logged(circuit, &passes, None, verbose)
     } else {
-        circuit
+        run_pipeline(circuit, &passes, verbose)
+    }
+}
+
+/// Run the default pipeline (chosen by `-O1`/`-O2`/`-O3`/`-Osuper`) on
+/// `circuit`, constructing a fresh `SuperOpt` whenever the level uses one.
+/// Used as one map-reduce worker per chunk.
+fn optimize_default(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
+    let rz_decompose = DecomposeRz {
+        epsilon: opts.rz_epsilon,
     };
+    let cancel_pass = CancelGates;
+    let global = PhaseFoldRand;
+    let global_expr = PhaseFoldGlobalExpr;
 
     let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
-    let result = if matches!(
+    if matches!(
         optimization_level,
         OptimizationLevel::O3 | OptimizationLevel::Osuper
     ) {
-        let superopt_pass = initialize_superopt(!parallel, opts, optimization_level);
+        let superopt_pass = initialize_superopt(opts, optimization_level, verbose);
         let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
         let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
-        run_to_fixpoint_logged(&circuit, &passes, decompose, parallel, num_chunks)
+        run_to_fixpoint_logged(circuit, &passes, decompose, verbose)
     } else {
         let superopt_pass = (optimization_level == OptimizationLevel::O2)
-            .then(|| initialize_superopt(!parallel, opts, optimization_level));
+            .then(|| initialize_superopt(opts, optimization_level, verbose));
         let phase_fold: &dyn Pass = if opts.expr { &global_expr } else { &global };
         let mut optimization_passes: Vec<&dyn Pass> = vec![&cancel_pass, phase_fold];
         if let Some(pass) = &superopt_pass {
@@ -610,12 +892,66 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
         }
 
         if opts.fixpoint {
-            run_to_fixpoint_logged(&circuit, &passes, None, parallel, num_chunks)
+            run_to_fixpoint_logged(circuit, &passes, None, verbose)
         } else {
-            run_pipeline(&circuit, &passes, parallel, num_chunks)
+            run_pipeline(circuit, &passes, verbose)
         }
+    }
+}
+
+/// Default pipeline: decompose ccx/ccz (and optionally Rz), then cancel + phase-fold.
+/// `--passes` overrides this with an explicit, user-ordered pipeline. Under
+/// `--parallel`, the chosen pipeline runs map-reduce style (see
+/// [`run_map_reduce`]): the circuit is split into independent chunks, each
+/// optimized start-to-finish on its own (own `SuperOpt` instance, no shared
+/// state), then the results are stitched back together in order.
+fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
+    let num_chunks = num_par_chunks();
+
+    // Explicit pipeline via --passes: run exactly what the user listed, in order.
+    if let Some(names) = &opts.passes {
+        let uses_rz = names.iter().any(|p| matches!(p, PassName::DecomposeRz));
+        let uses_superopt = names.iter().any(|p| matches!(p, PassName::SuperOpt));
+        if opts.parallel || uses_rz {
+            init_global_pool();
+        }
+        // Warm the (process-wide cached) synthesis table once, verbosely,
+        // before fanning out — each chunk's own SuperOpt build stays quiet.
+        if opts.parallel && uses_superopt {
+            initialize_superopt(opts, OptimizationLevel::O1, true);
+        }
+        let result = run_map_reduce(&circuit, opts.parallel, num_chunks, |c, verbose| {
+            optimize_explicit(c, opts, verbose)
+        });
+        finish(&circuit, &result, opts, start);
+        return;
+    }
+
+    if opts.parallel || opts.decompose_rz {
+        init_global_pool();
+    }
+
+    // Decompose CCX/CCZ eagerly, once, over the whole circuit — before any
+    // chunking — so post-decomp counts form the baseline.
+    let decompose_toffoli = DecomposeToffoli;
+    let circuit = if circuit.has_toffoli || circuit.has_ccz {
+        run_logged(&decompose_toffoli, &circuit)
+    } else {
+        circuit
     };
 
+    let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
+    let uses_superopt = matches!(
+        optimization_level,
+        OptimizationLevel::O2 | OptimizationLevel::O3 | OptimizationLevel::Osuper
+    );
+    if opts.parallel && uses_superopt {
+        initialize_superopt(opts, optimization_level, true);
+    }
+
+    let result = run_map_reduce(&circuit, opts.parallel, num_chunks, |c, verbose| {
+        optimize_default(c, opts, verbose)
+    });
     finish(&circuit, &result, opts, start);
 }
 
@@ -823,9 +1159,9 @@ mod tests {
     use super::*;
     use tzap::qasm;
 
-    /// Parallel optimization of a measured circuit must round-trip to valid
-    /// QASM. Regression guard: the parallel reconstruction must build chunks and
-    /// the stitched result with the circuit's `num_cbits` (not `Circuit::new`,
+    /// Parallel (map-reduce) optimization of a measured circuit must
+    /// round-trip to valid QASM. Regression guard: the stitched
+    /// reconstruction must use the circuit's `num_cbits` (not `Circuit::new`,
     /// which zeroes it and drops the `creg` declaration).
     #[test]
     fn parallel_mode_preserves_creg() {
@@ -834,8 +1170,9 @@ mod tests {
         c.apply(Gate::measure { qubit: 0, cbit: 0 });
 
         let cancel = CancelGates;
-        let passes: Vec<&dyn Pass> = vec![&cancel];
-        let par = run_pipeline(&c, &passes, true, 4);
+        let par = run_map_reduce(&c, true, 4, |chunk, verbose| {
+            run_pipeline(chunk, &[&cancel], verbose)
+        });
 
         assert_eq!(
             par.num_cbits, 1,
@@ -858,8 +1195,48 @@ mod tests {
     #[test]
     fn parallel_mode_handles_empty_circuit() {
         let empty = Circuit::new(1);
-        let passes: Vec<&dyn Pass> = vec![];
-        let out = run_pipeline(&empty, &passes, true, 4);
+        let out = run_map_reduce(&empty, true, 4, |chunk, verbose| {
+            run_pipeline(chunk, &[], verbose)
+        });
         assert!(out.gates.is_empty());
+    }
+
+    /// Each map-reduce chunk must get its own independent `SuperOpt`
+    /// instance — the whole point of this design (no shared `MatrixStore`,
+    /// no `Arc`, no cross-chunk locking). Regression guard: running the same
+    /// SuperOpt-using pipeline on a circuit split into several chunks must
+    /// not panic or deadlock, and must produce a valid, gate-count-bounded
+    /// output (each chunk's `SuperOpt` instance only ever rewrites within
+    /// its own chunk).
+    #[test]
+    fn parallel_mode_gives_each_chunk_its_own_superopt() {
+        let mut c = Circuit::new(2);
+        for _ in 0..8 {
+            c.apply(Gate::h(0));
+            c.apply(Gate::cnot {
+                control: 0,
+                target: 1,
+            });
+        }
+
+        let opts = Opts {
+            input_path: String::new(),
+            output_path: None,
+            expr: false,
+            decompose_rz: false,
+            rz_epsilon: 1e-10,
+            parallel: true,
+            passes: None,
+            fixpoint: false,
+            optimization_level: Some(OptimizationLevel::O2),
+            superopt_qubits: None,
+            superopt_window_gates: None,
+            superopt_table_entries: None,
+        };
+
+        let out = run_map_reduce(&c, true, 4, |chunk, verbose| {
+            optimize_default(chunk, &opts, verbose)
+        });
+        assert!(out.gates.len() <= c.gates.len());
     }
 }

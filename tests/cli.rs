@@ -770,12 +770,12 @@ fn o3_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Iteration 1 ·") && stderr.contains("Iteration 2 ·"),
+        stderr.contains("Iteration 1") && stderr.contains("Iteration 2"),
         "expected compact progress for at least two iterations:\n{stderr}"
     );
     assert!(
-        stderr.contains(" gates · ") && stderr.contains(" T"),
-        "progress should contain the latest gate counts:\n{stderr}"
+        stderr.contains("Gates") && stderr.contains("T/Tdg") && stderr.contains('%'),
+        "progress should contain the latest gate/T reduction bars:\n{stderr}"
     );
     assert!(
         !stderr.contains("Gate cancellation")
@@ -980,7 +980,7 @@ fn passes_with_parallel_produces_valid_output() {
     assert_success(&out, "--passes with --parallel");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Parallel mode"), "got: {stderr}");
+    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
     assert!(!read_valid_qasm(&output).is_empty());
 }
 
@@ -1001,7 +1001,7 @@ fn passes_with_parallel_and_fixpoint() {
     assert_success(&out, "--passes with --fixpoint --parallel");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
     assert!(!read_valid_qasm(&output).is_empty());
 }
 
@@ -1010,14 +1010,17 @@ fn optimization_levels_run_with_parallel() {
     let dir = tempfile::tempdir().unwrap();
     for level in ["-O1", "-O2", "-O3"] {
         let output = dir.path().join(format!("{level}.qasm"));
-        let out = tzap_run(&[MOD5_4_QASM, "-o", output.to_str().unwrap(), level, "--parallel"]);
+        let out = tzap_run(&[
+            MOD5_4_QASM,
+            "-o",
+            output.to_str().unwrap(),
+            level,
+            "--parallel",
+        ]);
         assert_success(&out, &format!("{level} --parallel"));
 
         let stderr = String::from_utf8_lossy(&out.stderr);
-        match level {
-            "-O3" => assert!(stderr.contains("Fixpoint reached"), "got: {stderr}"),
-            _ => assert!(stderr.contains("Parallel mode"), "got: {stderr}"),
-        }
+        assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
         if level != "-O1" {
             assert!(stderr.contains("Initialized SuperOpt"), "got: {stderr}");
         }
@@ -1034,7 +1037,7 @@ fn default_pipeline_with_parallel() {
     assert_success(&out, "default --parallel");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Parallel mode"), "got: {stderr}");
+    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
     read_valid_qasm(&output);
 }
 
