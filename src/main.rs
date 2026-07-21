@@ -132,8 +132,16 @@ fn looks_like_pass_list_fragment(token: &str) -> bool {
 /// mechanics beyond what the table can synthesize replacements for — see
 /// `super_opt::tests`), but the CLI has no everyday use case for that, so it
 /// only exposes one knob per axis.
+/// `window_gates` was bumped from 10 to 25 (2026-07-21, see the 84-config
+/// grid sweep in the `project_tcount_ceilings` memory): at window_gates=10
+/// T-count comes out at 765,418 suite-wide, clearly short of the ~762,078
+/// floor every other grid point reaches; window_gates=15 already recovers
+/// almost all of that (762,120), and gate-count keeps improving slowly out
+/// to 25+ with no further T change. 25 was chosen over 15 as a deliberately
+/// more thorough default; qubits and table_entries showed no benefit worth
+/// their added cost at this tier and were left alone.
 const DEFAULT_SUPEROPT_QUBITS: usize = 3;
-const DEFAULT_SUPEROPT_WINDOW_GATES: usize = 10;
+const DEFAULT_SUPEROPT_WINDOW_GATES: usize = 25;
 const DEFAULT_SUPEROPT_TABLE_ENTRIES: usize = 200_000;
 
 /// SuperOpt bounds for `-Osuper`: a materially bigger window/table than the
@@ -149,8 +157,13 @@ const DEFAULT_SUPEROPT_TABLE_ENTRIES: usize = 200_000;
 /// starts *regressing* output (a bigger table is a strict fingerprint
 /// superset, but the greedy, non-backtracking rewrite-selection rule doesn't
 /// turn "more matches available" into "better output" monotonically).
+///
+/// A full 84-config qubits×window_gates×table_entries grid swept 2026-07-21
+/// (see `project_tcount_ceilings` memory) found window_gates=40 still the
+/// single best gate-count point at this qubit/entries setting — 1,954,053
+/// vs. 1,955,114 gates at window_gates=30, T-count unchanged either way.
 const SUPER_SUPEROPT_QUBITS: usize = 5;
-const SUPER_SUPEROPT_WINDOW_GATES: usize = 30;
+const SUPER_SUPEROPT_WINDOW_GATES: usize = 40;
 const SUPER_SUPEROPT_TABLE_ENTRIES: usize = 5_000_000;
 
 /// Parsed command-line options.
@@ -180,7 +193,10 @@ struct Opts {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OptimizationLevel {
     O1,
+    /// Adds a SuperOpt pass to O1, capped at 2 rounds rather than run to a
+    /// true fixpoint — see `optimize_default`'s `max_rounds`.
     O2,
+    /// Like O2, but run to a true fixpoint instead of capped at 2 rounds.
     O3,
     /// Like O3 (SuperOpt run to fixpoint), but with `SUPER_SUPEROPT_*` bounds.
     Osuper,
@@ -646,15 +662,18 @@ fn run_fixpoint_sweep(
     c
 }
 
-/// Repeatedly run `passes` until a sweep fails to reduce the gate count.
-/// When `rz_decompose` is given, run it exactly once after the first sweep
-/// and force another sweep if there were Rz gates to decompose. Returns the
-/// result and how many sweeps ran.
+/// Repeatedly run `passes` until a sweep fails to reduce the gate count, or
+/// (when `max_rounds` is given) until that many sweeps have run, whichever
+/// comes first. When `rz_decompose` is given, run it exactly once after the
+/// first sweep and force another sweep if there were Rz gates to decompose
+/// — this extra sweep isn't itself subject to the `max_rounds` cap. Returns
+/// the result and how many sweeps ran.
 fn run_to_fixpoint(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     rz_decompose: Option<&dyn Pass>,
     verbose: bool,
+    max_rounds: Option<usize>,
 ) -> (Circuit, usize) {
     let baseline_gates = circuit.gates.len();
     let baseline_t = count_t(circuit);
@@ -688,7 +707,7 @@ fn run_to_fixpoint(
             }
         }
 
-        if !reduced {
+        if !reduced || max_rounds.is_some_and(|m| round >= m) {
             break;
         }
     }
@@ -789,8 +808,9 @@ fn run_to_fixpoint_logged(
     passes: &[&dyn Pass],
     rz_decompose: Option<&dyn Pass>,
     verbose: bool,
+    max_rounds: Option<usize>,
 ) -> Circuit {
-    let (result, rounds) = run_to_fixpoint(circuit, passes, rz_decompose, verbose);
+    let (result, rounds) = run_to_fixpoint(circuit, passes, rz_decompose, verbose, max_rounds);
     if verbose {
         eprintln!("  Fixpoint reached after {rounds} iteration(s)");
         eprintln!();
@@ -909,7 +929,7 @@ fn optimize_explicit(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
         .collect();
 
     if opts.fixpoint {
-        run_to_fixpoint_logged(circuit, &passes, None, verbose)
+        run_to_fixpoint_logged(circuit, &passes, None, verbose, None)
     } else {
         run_pipeline(circuit, &passes, verbose)
     }
@@ -929,20 +949,19 @@ fn optimize_default(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
     let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
     if matches!(
         optimization_level,
-        OptimizationLevel::O3 | OptimizationLevel::Osuper
+        OptimizationLevel::O2 | OptimizationLevel::O3 | OptimizationLevel::Osuper
     ) {
+        // O2 runs a fixed 2 rounds rather than to a true fixpoint — O3 and
+        // Osuper are the "run it out fully" tiers; O2 is the cheap, bounded
+        // one.
+        let max_rounds = (optimization_level == OptimizationLevel::O2).then_some(2);
         let superopt_pass = initialize_superopt(opts, optimization_level, verbose);
         let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
         let decompose: Option<&dyn Pass> = opts.decompose_rz.then_some(&rz_decompose);
-        run_to_fixpoint_logged(circuit, &passes, decompose, verbose)
+        run_to_fixpoint_logged(circuit, &passes, decompose, verbose, max_rounds)
     } else {
-        let superopt_pass = (optimization_level == OptimizationLevel::O2)
-            .then(|| initialize_superopt(opts, optimization_level, verbose));
         let phase_fold: &dyn Pass = if opts.expr { &global_expr } else { &global };
-        let mut optimization_passes: Vec<&dyn Pass> = vec![&cancel_pass, phase_fold];
-        if let Some(pass) = &superopt_pass {
-            optimization_passes.insert(1, pass);
-        }
+        let optimization_passes: Vec<&dyn Pass> = vec![&cancel_pass, phase_fold];
 
         // Optimize, then (for --decompose-rz) decompose Rz and optimize the result
         // again — so the selected optimization pipeline runs on both sides of gridsynth.
@@ -953,7 +972,7 @@ fn optimize_default(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
         }
 
         if opts.fixpoint {
-            run_to_fixpoint_logged(circuit, &passes, None, verbose)
+            run_to_fixpoint_logged(circuit, &passes, None, verbose, None)
         } else {
             run_pipeline(circuit, &passes, verbose)
         }
@@ -1046,8 +1065,10 @@ fn print_help() {
         "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
     );
     println!("    \x1b[1m-O1\x1b[0m              Default, fast optimization pass schedule");
-    println!("    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1");
-    println!("    \x1b[1m-O3\x1b[0m              Runs O2 iteratively until a fixpoint is reached");
+    println!(
+        "    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1 (2 rounds)"
+    );
+    println!("    \x1b[1m-O3\x1b[0m              Like -O2, run to a fixpoint instead of 2 rounds");
     println!(
         "    \x1b[1m-Osuper\x1b[0m          Like -O3, with a larger SuperOpt window/table (slower"
     );

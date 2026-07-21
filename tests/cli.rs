@@ -735,7 +735,7 @@ fn o1_is_the_default_pipeline() {
 }
 
 #[test]
-fn o2_uses_superopt_pass() {
+fn o2_uses_superopt_pass_capped_at_two_rounds() {
     let out = tzap_run(&[TEST_QASM, "-O2"]);
     assert!(
         out.status.success(),
@@ -747,8 +747,28 @@ fn o2_uses_superopt_pass() {
     assert!(stderr.contains("Initialized SuperOpt"), "got: {stderr}");
     assert!(stderr.contains("% reduction so far"), "got: {stderr}");
     assert!(
-        !stderr.contains("Iteration"),
-        "O2 doesn't run to fixpoint, so its progress box shouldn't show an iteration number:\n{stderr}"
+        stderr.contains("Iteration"),
+        "O2 should still show an iteration number:\n{stderr}"
+    );
+
+    // mod5_4 needs 3 rounds to reach a true fixpoint under -O3; -O2 should
+    // stop at its 2-round cap instead, short of that fixpoint.
+    let capped = tzap_run(&[MOD5_4_QASM, "-O2"]);
+    let capped_stderr = String::from_utf8_lossy(&capped.stderr);
+    assert!(
+        !capped_stderr.contains("Iteration 3"),
+        "O2 should stop after 2 rounds, not reach iteration 3:\n{capped_stderr}"
+    );
+    assert!(
+        capped_stderr.contains("Fixpoint reached after 2 iteration(s)"),
+        "got: {capped_stderr}"
+    );
+
+    let uncapped = tzap_run(&[MOD5_4_QASM, "-O3"]);
+    let uncapped_stderr = String::from_utf8_lossy(&uncapped.stderr);
+    assert!(
+        uncapped_stderr.contains("Fixpoint reached after 3 iteration(s)"),
+        "expected -O3 to run past O2's 2-round cap to a true fixpoint:\n{uncapped_stderr}"
     );
 }
 
