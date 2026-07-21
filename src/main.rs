@@ -238,7 +238,10 @@ fn init_global_pool() {
         .ok();
 }
 
-/// Run one pass with timing and a result line.
+/// Run one pass with timing and a result line, followed by a blank
+/// separator line — every "info" line that can precede a live progress box
+/// (this, [`read_circuit`], and the SuperOpt table-build message) owns its
+/// own trailing blank line, so the box itself never needs to print one.
 fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> Circuit {
     let start = Instant::now();
     let c = pass.run(circuit);
@@ -249,6 +252,7 @@ fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> Circuit {
         fmt_num(count_t(&c)),
         start.elapsed().as_secs_f64()
     );
+    eprintln!();
     c
 }
 
@@ -325,12 +329,13 @@ fn read_circuit(path: &str) -> Circuit {
         process::exit(1);
     });
     eprintln!(
-        "\t└─ {} qubits · {} gates · {} T/Tdg · {:.3}s\n",
+        "\t└─ {} qubits · {} gates · {} T/Tdg · {:.3}s",
         fmt_num(circuit.num_qubits),
         fmt_num(circuit.gates.len()),
         fmt_num(count_t(&circuit)),
         parse_start.elapsed().as_secs_f64()
     );
+    eprintln!();
     circuit
 }
 
@@ -345,7 +350,6 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circu
     let baseline_t = count_t(circuit);
     let mut c = circuit.clone();
     if verbose {
-        eprintln!();
         start_progress_block(box_lines(2));
         update_reduction_progress(
             "% reduction so far",
@@ -644,7 +648,6 @@ fn run_to_fixpoint(
     let mut c = circuit.clone();
     let mut round = 0;
     if verbose {
-        eprintln!();
         start_progress_block(box_lines(2));
     }
     loop {
@@ -735,6 +738,7 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
             "  Initialized SuperOpt table in {:.3}s",
             start.elapsed().as_secs_f64()
         );
+        eprintln!();
     }
     pass.without_subcircuits().incremental()
 }
@@ -797,7 +801,6 @@ fn run_map_reduce(
     }
     let chunks = chunk_circuit(circuit, num_chunks);
     let total = chunks.len();
-    eprintln!();
 
     // Whole-circuit baselines: pending chunks (not yet optimized) count as
     // still contributing their original size, so `current_gates`/`current_t`
