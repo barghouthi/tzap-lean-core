@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["mqt.qcec>=3"]
 # ///
-"""Verify tzap -O3 and -Osuper output against original circuits with MQT QCEC.
+"""Verify every tzap optimization level against original circuits with MQT QCEC.
 
 Usage: uv run tests/qcec_check.py <tzap-binary> <benchmark-dir> [count]
 
@@ -25,7 +25,7 @@ ACCEPTED = (
     EquivalenceCriterion.equivalent,
     EquivalenceCriterion.equivalent_up_to_global_phase,
 )
-OPTIMIZATION_LEVELS = ("-O3", "-Osuper")
+OPTIMIZATION_LEVELS = ("-O1", "-O2", "-O3", "-Osuper")
 
 
 def main() -> None:

@@ -1,4 +1,4 @@
-//! End-to-end equivalence checks of `-O3` and `-Osuper` against MQT QCEC
+//! End-to-end equivalence checks of every optimization level against MQT QCEC
 //! (https://github.com/munich-quantum-toolkit/qcec).
 //!
 //! Ignored by default: it shells out to `uv`, which fetches mqt.qcec on
@@ -25,6 +25,6 @@ fn optimized_circuits_verify_against_qcec() {
 
     assert!(
         status.success(),
-        "QCEC found a non-equivalent -O3 or -Osuper circuit"
+        "QCEC found a non-equivalent optimized circuit"
     );
 }
