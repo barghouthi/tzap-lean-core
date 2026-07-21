@@ -487,12 +487,12 @@ fn update_fixpoint_progress(
             (
                 "Gates",
                 render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
-                format!("{gates_pct:>5.1}% ({gates_str:>gates_width$})"),
+                format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
             ),
             (
                 "T/Tdg",
                 render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
-                format!("{t_pct:>5.1}% ({t_str:>t_width$})"),
+                format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
             ),
         ],
     ));
@@ -534,17 +534,17 @@ fn update_chunk_progress(
             (
                 "Chunks",
                 render_bar(chunk_fraction, BAR_WIDTH, CHUNK_BAR_COLOR),
-                format!("{chunk_pct:>5.1}% ({done_str:>done_width$}/{total_str})"),
+                format!("{chunk_pct:>5.1}% · {done_str:<done_width$}/{total_str}"),
             ),
             (
                 "Gates",
                 render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
-                format!("{gates_pct:>5.1}% ({gates_str:>gates_width$})"),
+                format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
             ),
             (
                 "T/Tdg",
                 render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
-                format!("{t_pct:>5.1}% ({t_str:>t_width$})"),
+                format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
             ),
         ],
     ));
