@@ -1,4 +1,4 @@
-//! End-to-end equivalence check of `-O3` against MQT QCEC
+//! End-to-end equivalence checks of `-O3` and `-Osuper` against MQT QCEC
 //! (https://github.com/munich-quantum-toolkit/qcec).
 //!
 //! Ignored by default: it shells out to `uv`, which fetches mqt.qcec on
@@ -10,7 +10,7 @@ use std::process::Command;
 
 #[test]
 #[ignore = "requires uv (and network on first run)"]
-fn o3_circuits_verify_against_qcec() {
+fn optimized_circuits_verify_against_qcec() {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/qcec_check.py");
     let benchmarks = concat!(env!("CARGO_MANIFEST_DIR"), "/benchmarks/feynman");
 
@@ -23,5 +23,8 @@ fn o3_circuits_verify_against_qcec() {
         .status()
         .expect("failed to launch `uv` — install it from https://docs.astral.sh/uv/");
 
-    assert!(status.success(), "QCEC found a non-equivalent -O3 circuit");
+    assert!(
+        status.success(),
+        "QCEC found a non-equivalent -O3 or -Osuper circuit"
+    );
 }

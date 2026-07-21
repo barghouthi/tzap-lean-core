@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["mqt.qcec>=3"]
 # ///
-"""Verify tzap -O3 output against the original circuits with MQT QCEC.
+"""Verify tzap -O3 and -Osuper output against original circuits with MQT QCEC.
 
 Usage: uv run tests/qcec_check.py <tzap-binary> <benchmark-dir> [count]
 
@@ -25,6 +25,7 @@ ACCEPTED = (
     EquivalenceCriterion.equivalent,
     EquivalenceCriterion.equivalent_up_to_global_phase,
 )
+OPTIMIZATION_LEVELS = ("-O3", "-Osuper")
 
 
 def main() -> None:
@@ -42,30 +43,33 @@ def main() -> None:
     failures = []
     with tempfile.TemporaryDirectory() as tmp:
         for original in files:
-            optimized = Path(tmp) / original.name
-            proc = subprocess.run(
-                [tzap, "-O3", str(original), "-o", str(optimized)],
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode != 0:
-                print(f"FAIL {original.name}: tzap exited {proc.returncode}")
-                print(proc.stderr, file=sys.stderr)
-                failures.append(original.name)
-                continue
+            for level in OPTIMIZATION_LEVELS:
+                optimized = Path(tmp) / f"{level[1:]}_{original.name}"
+                proc = subprocess.run(
+                    [tzap, level, str(original), "-o", str(optimized)],
+                    capture_output=True,
+                    text=True,
+                )
+                label = f"{original.name} ({level})"
+                if proc.returncode != 0:
+                    print(f"FAIL {label}: tzap exited {proc.returncode}")
+                    print(proc.stderr, file=sys.stderr)
+                    failures.append(label)
+                    continue
 
-            result = qcec.verify(str(original), str(optimized))
-            verdict = result.equivalence
-            status = "PASS" if verdict in ACCEPTED else "FAIL"
-            print(f"{status} {original.name}: {verdict}", flush=True)
-            if verdict not in ACCEPTED:
-                failures.append(original.name)
+                result = qcec.verify(str(original), str(optimized))
+                verdict = result.equivalence
+                status = "PASS" if verdict in ACCEPTED else "FAIL"
+                print(f"{status} {label}: {verdict}", flush=True)
+                if verdict not in ACCEPTED:
+                    failures.append(label)
 
         negative_control(tzap, files[0], Path(tmp))
 
+    checks = len(files) * len(OPTIMIZATION_LEVELS)
     if failures:
-        sys.exit(f"{len(failures)}/{len(files)} circuits failed QCEC: {failures}")
-    print(f"all {len(files)} circuits verified equivalent")
+        sys.exit(f"{len(failures)}/{checks} circuits failed QCEC: {failures}")
+    print(f"all {checks} optimized circuits verified equivalent")
 
 
 def negative_control(tzap: str, original: Path, tmp: Path) -> None:
