@@ -289,7 +289,7 @@ fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
 
 /// Print the closing result banner.
 fn print_result(in_gates: usize, out_gates: usize, in_t: usize, out_t: usize, secs: f64) {
-    eprintln!("\n\x1b[1m  ⚡\u{FE0F} Result\x1b[0m");
+    eprintln!("\n\x1b[1m  ⚡\u{FE0F} result\x1b[0m");
     eprintln!(
         "\t├─ Gates  {} → {} (↓{:.1}%)",
         fmt_num(in_gates),
@@ -430,7 +430,8 @@ fn box_lines(num_rows: usize) -> usize {
 /// long each row's trailing text is. Callers that redraw a box across
 /// several frames should keep each row's trailing text a fixed width for the
 /// run (e.g. via a `{:>width$}` on a count derived from a fixed baseline),
-/// or the box will visibly resize frame to frame.
+/// or the box will visibly resize frame to frame. Indented two spaces to
+/// line up with the rest of tzap's output (e.g. "  Parsing ...").
 fn progress_box(title: &str, rows: &[(&str, String, String)]) -> Vec<String> {
     let row_width = |trailing: &str| LABEL_WIDTH + BAR_WIDTH + 1 + trailing.chars().count();
     let inner_width = rows
@@ -442,15 +443,15 @@ fn progress_box(title: &str, rows: &[(&str, String, String)]) -> Vec<String> {
 
     let title_segment = format!("─ {title} ");
     let dashes = inner_width.saturating_sub(title_segment.chars().count());
-    let mut lines = vec![format!("┌{title_segment}{}┐", "─".repeat(dashes))];
+    let mut lines = vec![format!("  ┌{title_segment}{}┐", "─".repeat(dashes))];
     for (label, bar, trailing) in rows {
         let pad = inner_width - (row_width(trailing) + 2);
         lines.push(format!(
-            "│ {label:<LABEL_WIDTH$}{bar} {trailing}{} │",
+            "  │ {label:<LABEL_WIDTH$}{bar} {trailing}{} │",
             " ".repeat(pad)
         ));
     }
-    lines.push(format!("└{}┘", "─".repeat(inner_width)));
+    lines.push(format!("  └{}┘", "─".repeat(inner_width)));
     lines
 }
 

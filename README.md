@@ -50,18 +50,16 @@ tzap output:
   Parsing benchmarks/feynman/barenco_tof_5.qasm (0.0 MB)
 	└─ 9 qubits · 218 gates · 84 T/Tdg · 0.000s
 
-┌─ % reduction so far ─────────────────────────────────────────┐
-│ Gates  ━━━━━━━━━━━━━╸──────────────────────────  33.0% · 146 │
-│ T/Tdg  ━━━━━━━━━━━━━━━━━━━━╸───────────────────  52.4% · 40  │
-└──────────────────────────────────────────────────────────────┘
+  ┌─ % reduction so far ─────────────────────────────────────────┐
+  │ Gates  ━━━━━━━━━━━━━╸──────────────────────────  33.0% · 146 │
+  │ T/Tdg  ━━━━━━━━━━━━━━━━━━━━╸───────────────────  52.4% · 40  │
+  └──────────────────────────────────────────────────────────────┘
 
-  ⚡️ Result
+  ⚡️ result
 	├─ Gates  218 → 146 (↓33.0%)
 	├─ T/Tdg  84 → 40 (↓52.4%)
 	└─ Time   0.000s
 ```
-
-tzap shows a live progress box while it works, redrawn in place (the `Gates`/`T/Tdg` bars fill in as each pass runs) — the snapshot above is just its final frame. `-O3`/`-Osuper`/`--fixpoint` additionally number each iteration in the box title (`Iteration 3 — % reduction so far`), and `--parallel` shows a third bar tracking how many circuit chunks have finished.
 
 **Optimization levels**
 
