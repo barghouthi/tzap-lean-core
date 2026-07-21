@@ -5,7 +5,7 @@
 name = "tzap-opt"
 version = "0.1.0"
 edition = "2024"
-description = "A fast T gate optimizer for large Clifford+T circuits using phase folding"
+description = "A super fast, Rust-based optimizer for large Clifford+T circuits"
 license = "Apache-2.0"
 authors = ["Aws Albarghouthi"]
 repository = "https://github.com/qqq-wisc/tzap"
