@@ -378,7 +378,7 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circu
 }
 
 /// Width, in characters, of a progress bar's fill/track region.
-const BAR_WIDTH: usize = 40;
+const BAR_WIDTH: usize = 32;
 /// Width of a progress box row's label field (fits "Gates  ", "T/Tdg  ",
 /// and "Chunks " with trailing padding to align every bar).
 const LABEL_WIDTH: usize = 7;
