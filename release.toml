@@ -1,0 +1,9 @@
+# Config for `cargo release` (https://github.com/crate-ci/cargo-release).
+#
+# `cargo release <patch|minor|major|X.Y.Z>` bumps the version in Cargo.toml,
+# commits, tags the commit `vX.Y.Z`, pushes both, and publishes to crates.io
+# — the one command covers "version and update all". Pushing the tag is
+# what triggers .github/workflows/release.yml (cargo-dist), which builds
+# the prebuilt binaries and updates the Homebrew tap.
+tag-name = "v{{version}}"
+pre-release-commit-message = "chore: release v{{version}}"

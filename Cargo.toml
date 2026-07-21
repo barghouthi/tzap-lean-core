@@ -1,5 +1,8 @@
 [package]
-name = "tzap"
+# Published to crates.io as "tzap-opt" ("tzap" was already taken by an
+# unrelated project) — the lib/bin names below keep everything else (the
+# `tzap` binary, `use tzap::...` throughout this crate) unchanged.
+name = "tzap-opt"
 version = "0.1.0"
 edition = "2024"
 description = "A fast T gate optimizer for large Clifford+T circuits using phase folding"
@@ -11,6 +14,13 @@ keywords = ["quantum", "circuit", "optimization", "qasm", "clifford"]
 categories = ["science", "command-line-utilities"]
 readme = "README.md"
 
+[lib]
+name = "tzap"
+
+[[bin]]
+name = "tzap"
+path = "src/main.rs"
+
 [dependencies]
 rayon = "1"
 rsgridsynth = "0.2"
@@ -20,3 +30,8 @@ smallvec = "1"
 [dev-dependencies]
 tempfile = "3"
 rand = "0.8"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
