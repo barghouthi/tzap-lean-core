@@ -1,3 +1,5 @@
+//! The `CancelGates` pass: removes adjacent self-inverse gate pairs.
+
 use crate::circuit::{Circuit, Gate, Qubit};
 use crate::pass::Pass;
 use crate::phase_fold_rand::classify_quarter_pi;
@@ -522,6 +524,8 @@ fn commutes_past_cz(g: &Gate, a: Qubit, b: Qubit) -> bool {
     }
 }
 
+/// Removes adjacent self-inverse gate pairs (HH, XX, CNOT-CNOT, etc.),
+/// commuting gates past non-overlapping operands to expose more pairs.
 pub struct CancelGates;
 
 impl Pass for CancelGates {

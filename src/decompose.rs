@@ -13,6 +13,7 @@ use rsgridsynth::gridsynth::gridsynth_gates;
 
 // --- Toffoli decomposition --------------------------------------------------
 
+/// Rewrites every `ccx` and `ccz` gate into Clifford+T.
 pub struct DecomposeToffoli;
 
 fn emit_ccx_decomposition(output: &mut Circuit, c0: usize, c1: usize, t: usize) {
@@ -117,7 +118,10 @@ impl Pass for DecomposeCz {
 
 // --- Rz decomposition via gridsynth -----------------------------------------
 
+/// Synthesizes each `rz(θ)` into Clifford+T via gridsynth (`rsgridsynth`).
 pub struct DecomposeRz {
+    /// Approximation precision; smaller is more accurate but produces a
+    /// larger decomposition. Defaults to `1e-10`.
     pub epsilon: f64,
 }
 

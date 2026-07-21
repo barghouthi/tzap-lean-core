@@ -74,6 +74,8 @@ struct Group {
     indices: Vec<usize>,
 }
 
+/// Merges T/Rz gates that act on the same linear parity of qubits, tracked
+/// via exact symbolic parity expressions rather than randomized sampling.
 pub struct PhaseFoldGlobalExpr;
 
 impl Pass for PhaseFoldGlobalExpr {
@@ -85,6 +87,7 @@ impl Pass for PhaseFoldGlobalExpr {
     }
 }
 
+/// Free-function form of [`PhaseFoldGlobalExpr`], for use outside a [`Pass`] pipeline.
 pub fn phase_fold_global_expr(circuit: &Circuit) -> Circuit {
     let n = circuit.num_qubits;
     let mut next_var = 0usize;

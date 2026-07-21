@@ -2,9 +2,14 @@
 
 use std::fmt;
 
+/// Index of a qubit within a [`Circuit`].
 pub type Qubit = usize;
+/// Index of a classical bit within a [`Circuit`].
 pub type CBit = usize;
 
+/// A single quantum (or classical `measure`/`reset`) operation.
+///
+/// Variants are lowercase to mirror their QASM gate names.
 #[allow(non_camel_case_types)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Gate {
@@ -41,6 +46,10 @@ pub enum Gate {
     reset(Qubit),
 }
 
+/// An ordered sequence of [`Gate`]s over a fixed number of qubits.
+///
+/// The `has_*` flags are maintained by [`Circuit::apply`] and let passes
+/// cheaply skip circuits that don't contain a given gate kind.
 #[derive(Clone, Debug)]
 pub struct Circuit {
     pub num_qubits: usize,
@@ -52,6 +61,7 @@ pub struct Circuit {
 }
 
 impl Circuit {
+    /// An empty circuit over `num_qubits` qubits and no classical bits.
     pub fn new(num_qubits: usize) -> Self {
         Circuit {
             num_qubits,
@@ -63,6 +73,9 @@ impl Circuit {
         }
     }
 
+    /// An empty circuit over `num_qubits` qubits and `num_cbits` classical
+    /// bits. Use this instead of [`Circuit::new`] when the circuit contains
+    /// `measure` gates.
     pub fn with_cbits(num_qubits: usize, num_cbits: usize) -> Self {
         Circuit {
             num_qubits,
@@ -74,6 +87,7 @@ impl Circuit {
         }
     }
 
+    /// Append `gate`, updating the `has_*` flags as needed.
     pub fn apply(&mut self, gate: Gate) {
         match &gate {
             Gate::ccx { .. } => self.has_toffoli = true,
@@ -84,10 +98,12 @@ impl Circuit {
         self.gates.push(gate);
     }
 
+    /// Serialize to OpenQASM 2.0. See [`crate::qasm`] for the supported subset.
     pub fn to_qasm(&self) -> String {
         crate::qasm::serialize(self)
     }
 
+    /// Parse from OpenQASM 2.0. See [`crate::qasm`] for the supported subset.
     pub fn from_qasm(qasm: &str) -> Result<Self, String> {
         crate::qasm::parse(qasm)
     }

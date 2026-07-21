@@ -19,6 +19,7 @@ impl Complex64 {
     pub const ZERO: Self = Self { re: 0.0, im: 0.0 };
     pub const ONE: Self = Self { re: 1.0, im: 0.0 };
 
+    /// Constructs a complex number from its real and imaginary parts.
     pub const fn new(re: f64, im: f64) -> Self {
         Self { re, im }
     }
@@ -27,6 +28,7 @@ impl Complex64 {
         Self::new(radius * angle.cos(), radius * angle.sin())
     }
 
+    /// The squared magnitude, `re^2 + im^2`.
     pub fn norm_sqr(self) -> f64 {
         self.re * self.re + self.im * self.im
     }
@@ -91,14 +93,17 @@ impl UnitaryMatrix {
         })
     }
 
+    /// Number of qubits the matrix acts on; the matrix is `2^n` by `2^n`.
     pub fn num_qubits(&self) -> usize {
         self.num_qubits
     }
 
+    /// The entry at `(row, column)` in the dense matrix.
     pub fn get(&self, row: usize, column: usize) -> Complex64 {
         self.data[row * self.dim + column]
     }
 
+    /// The matrix's entries in row-major order.
     pub fn as_slice(&self) -> &[Complex64] {
         &self.data
     }

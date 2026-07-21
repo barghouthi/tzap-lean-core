@@ -2,17 +2,23 @@ use std::fmt;
 
 use crate::circuit::Qubit;
 
+/// Errors returned by [`crate::super_opt::SuperOpt::new`] and
+/// [`crate::super_opt::SuperOpt::run`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SuperOptError {
+    /// `window_gates` was zero.
     ZeroWindowGates,
+    /// The requested [`crate::super_opt::SuperOptTableConfig`] is unusable.
     InvalidTableConfig {
         reason: String,
     },
+    /// A gate in the input circuit references a qubit outside its declared range.
     InvalidQubit {
         gate_index: usize,
         qubit: Qubit,
         num_qubits: usize,
     },
+    /// A window's dense unitary matrix would be too large to construct.
     MatrixTooLarge {
         num_qubits: usize,
     },

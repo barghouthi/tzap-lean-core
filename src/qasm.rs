@@ -1,7 +1,14 @@
 //! OpenQASM 2.0 parser and serializer.
+//!
+//! Supports `h`, `x`, `z`, `s`, `sdg`, `t`, `tdg`, `rz`, `cx`, `ccx`, `ccz`,
+//! `cz`, `measure`, `reset`, `qreg`, and `creg`. Classical conditionals
+//! (`if`), custom gate definitions (`gate`), barriers, and `include` files
+//! other than `qelib1.inc` (which is ignored) are not supported.
 
 use crate::circuit::{Circuit, Gate};
 
+/// Parse a circuit from OpenQASM 2.0 source. See the [module docs](self) for
+/// the supported subset. Unrecognized lines produce an `Err`.
 pub fn parse(qasm: &str) -> Result<Circuit, String> {
     let qasm = strip_block_comments(qasm);
     let mut registers: Vec<(String, usize, usize)> = Vec::new(); // (name, offset, size)
@@ -156,6 +163,7 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
     Ok(c)
 }
 
+/// Serialize a circuit to OpenQASM 2.0.
 pub fn serialize(circuit: &Circuit) -> String {
     use std::fmt::Write;
     let mut s = String::new();

@@ -40,6 +40,10 @@ struct LivePhase {
     current_sign: bool,
 }
 
+/// Merges T/Rz gates that act on the same linear parity of qubits, tracking
+/// parities as random 128-bit tags (linear-time, O(1) expected-false-positive
+/// rate) rather than exact symbolic expressions. See [`crate::phase_fold_global_expr`]
+/// for the exact variant.
 pub struct PhaseFoldRand;
 
 impl Pass for PhaseFoldRand {
@@ -51,6 +55,7 @@ impl Pass for PhaseFoldRand {
     }
 }
 
+/// Free-function form of [`PhaseFoldRand`], for use outside a [`Pass`] pipeline.
 pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
     let n = circuit.num_qubits;
     let fresh = || fresh_parity();
