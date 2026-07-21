@@ -70,6 +70,7 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
             } else if let Some(rest) = line.strip_prefix("cx ") {
                 seen_gate = true;
                 let qubits = resolve_qubits(rest, &registers, line_num)?;
+                require_arity("cx", &qubits, 2, line_num)?;
                 gates.push(Gate::cnot {
                     control: qubits[0],
                     target: qubits[1],
@@ -86,6 +87,7 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
             } else if let Some(rest) = line.strip_prefix("ccx ") {
                 seen_gate = true;
                 let qubits = resolve_qubits(rest, &registers, line_num)?;
+                require_arity("ccx", &qubits, 3, line_num)?;
                 gates.push(Gate::ccx {
                     control1: qubits[0],
                     control2: qubits[1],
@@ -101,32 +103,47 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                 });
             } else if let Some(rest) = line.strip_prefix("h ") {
                 seen_gate = true;
-                gates.push(Gate::h(resolve_qubits(rest, &registers, line_num)?[0]));
+                gates.push(Gate::h(resolve_single_qubit(
+                    "h", rest, &registers, line_num,
+                )?));
             } else if let Some(rest) = line.strip_prefix("x ") {
                 seen_gate = true;
-                gates.push(Gate::x(resolve_qubits(rest, &registers, line_num)?[0]));
+                gates.push(Gate::x(resolve_single_qubit(
+                    "x", rest, &registers, line_num,
+                )?));
             } else if let Some(rest) = line.strip_prefix("s ") {
                 seen_gate = true;
-                gates.push(Gate::s(resolve_qubits(rest, &registers, line_num)?[0]));
+                gates.push(Gate::s(resolve_single_qubit(
+                    "s", rest, &registers, line_num,
+                )?));
             } else if let Some(rest) = line.strip_prefix("tdg ") {
                 seen_gate = true;
-                gates.push(Gate::tdg(resolve_qubits(rest, &registers, line_num)?[0]));
+                gates.push(Gate::tdg(resolve_single_qubit(
+                    "tdg", rest, &registers, line_num,
+                )?));
             } else if let Some(rest) = line.strip_prefix("z ") {
                 seen_gate = true;
-                gates.push(Gate::z(resolve_qubits(rest, &registers, line_num)?[0]));
+                gates.push(Gate::z(resolve_single_qubit(
+                    "z", rest, &registers, line_num,
+                )?));
             } else if let Some(rest) = line.strip_prefix("sdg ") {
                 seen_gate = true;
-                gates.push(Gate::sdg(resolve_qubits(rest, &registers, line_num)?[0]));
+                gates.push(Gate::sdg(resolve_single_qubit(
+                    "sdg", rest, &registers, line_num,
+                )?));
             } else if let Some(rest) = line.strip_prefix("t ") {
                 seen_gate = true;
-                gates.push(Gate::t(resolve_qubits(rest, &registers, line_num)?[0]));
+                gates.push(Gate::t(resolve_single_qubit(
+                    "t", rest, &registers, line_num,
+                )?));
             } else if let Some(rest) = line.strip_prefix("rz(") {
                 seen_gate = true;
-                if let Some(paren_end) = find_matching_paren(rest) {
-                    let theta = parse_angle(&rest[..paren_end], line_num)?;
-                    let qubits = resolve_qubits(&rest[paren_end + 1..], &registers, line_num)?;
-                    gates.push(Gate::rz(theta, qubits[0]));
-                }
+                let paren_end = find_matching_paren(rest)
+                    .ok_or_else(|| format!("line {line_num}: rz missing closing ')': {line}"))?;
+                let theta = parse_angle(&rest[..paren_end], line_num)?;
+                let qubit =
+                    resolve_single_qubit("rz", &rest[paren_end + 1..], &registers, line_num)?;
+                gates.push(Gate::rz(theta, qubit));
             } else {
                 return Err(format!("line {line_num}: unsupported: {line}"));
             }
@@ -196,11 +213,27 @@ fn require_arity(
     if qubits.len() == expected {
         Ok(())
     } else {
+        let noun = if expected == 1 { "operand" } else { "operands" };
         Err(format!(
-            "line {line_num}: {gate} expects {expected} qubit operands, got {}",
+            "line {line_num}: {gate} expects {expected} qubit {noun}, got {}",
             qubits.len()
         ))
     }
+}
+
+/// Resolve a single-qubit gate's operand, rejecting anything but exactly one
+/// qubit. Regression guard: `resolve_qubits(..)[0]` used to index straight
+/// into the result, panicking on empty operands instead of returning a
+/// parse error.
+fn resolve_single_qubit(
+    gate: &str,
+    s: &str,
+    registers: &[(String, usize, usize)],
+    line_num: usize,
+) -> Result<usize, String> {
+    let qubits = resolve_qubits(s, registers, line_num)?;
+    require_arity(gate, &qubits, 1, line_num)?;
+    Ok(qubits[0])
 }
 
 fn strip_block_comments(s: &str) -> String {

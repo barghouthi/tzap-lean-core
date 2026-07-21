@@ -97,18 +97,19 @@ fn parse_pass_list(list: &str) -> Vec<PassName> {
         .filter(|s| !s.is_empty())
         .map(|name| {
             PassName::parse(name).unwrap_or_else(|| {
-                eprintln!(
+                arg_error(format!(
                     "Unknown pass '{name}'. Available passes: {}",
                     PassName::all_names()
-                );
-                process::exit(1);
+                ))
             })
         })
         .collect::<Vec<_>>();
 
     if parsed.is_empty() {
-        eprintln!("--passes requires at least one pass name");
-        process::exit(1);
+        arg_error(
+            "--passes requires at least one pass name \
+             (e.g. --passes CancelGates,PhaseFoldRand)",
+        );
     }
     parsed
 }
@@ -758,10 +759,8 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
         eprintln!("  🔧 Generating semantic lookup table (one-time — cached for future use)...");
     }
     let start = Instant::now();
-    let pass = SuperOpt::new(qubits, window_gates, table_config).unwrap_or_else(|error| {
-        eprintln!("Failed to initialize SuperOpt: {error}");
-        process::exit(1);
-    });
+    let pass = SuperOpt::new(qubits, window_gates, table_config)
+        .unwrap_or_else(|error| arg_error(format!("failed to initialize SuperOpt: {error}")));
     if verbose {
         eprintln!(
             "  Initialized SuperOpt table in {:.3}s",
@@ -1063,9 +1062,7 @@ fn print_help() {
         "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
     );
     println!("    \x1b[1m-O1\x1b[0m              Default, fast optimization pass schedule");
-    println!(
-        "    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1 (2 rounds)"
-    );
+    println!("    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1 (2 rounds)");
     println!("    \x1b[1m-O3\x1b[0m              Like -O2, run to a fixpoint instead of 2 rounds");
     println!(
         "    \x1b[1m-Osuper\x1b[0m          Like -O3, with a larger SuperOpt window/table (slower"
@@ -1083,13 +1080,29 @@ fn print_help() {
     println!();
 }
 
+/// Print `Error: {msg}` and exit 1. The single entry point for every
+/// argument-parsing failure, so all CLI errors share one unmistakable
+/// prefix instead of some being phrased as errors and others not.
+fn arg_error(msg: impl std::fmt::Display) -> ! {
+    eprintln!("Error: {msg}");
+    process::exit(1);
+}
+
 /// Parse the next argument as a `usize`, exiting with `flag_name` in the
-/// error message on failure or if there is no next argument.
+/// error message on failure, if there is no next argument, or if it parses
+/// to 0 — every caller of this (the hidden `--superopt-*` bounds) feeds a
+/// count or width that must be at least 1, and the message already promises
+/// "positive integer", so 0 must be rejected too rather than silently
+/// accepted as a valid `usize`.
 fn parse_usize_arg(args: &[String], i: usize, flag_name: &str) -> usize {
-    args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-        eprintln!("{flag_name} requires a positive integer");
-        process::exit(1);
-    })
+    let value = args
+        .get(i)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| arg_error(format!("{flag_name} requires a positive integer")));
+    if value == 0 {
+        arg_error(format!("{flag_name} requires a positive integer, got 0"));
+    }
+    value
 }
 
 fn parse_args(args: &[String]) -> Opts {
@@ -1116,16 +1129,25 @@ fn parse_args(args: &[String]) -> Opts {
             "--decompose-rz" => decompose_rz = true,
             "--epsilon" => {
                 i += 1;
-                rz_epsilon = args.get(i).and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                    eprintln!("--epsilon requires a number (e.g. 1e-10)");
-                    process::exit(1);
-                });
+                let value: f64 = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| arg_error("--epsilon requires a number (e.g. 1e-10)"));
+                if !(value.is_finite() && value > 0.0) {
+                    arg_error(format!(
+                        "--epsilon must be a positive, finite number, got {value} \
+                         (e.g. 1e-10) — zero or negative values make Rz synthesis undefined"
+                    ));
+                }
+                rz_epsilon = value;
             }
             "--passes" => {
                 i += 1;
                 let list = args.get(i).unwrap_or_else(|| {
-                    eprintln!("--passes requires a comma-separated list of pass names");
-                    process::exit(1);
+                    arg_error(
+                        "--passes requires a comma-separated list of pass names \
+                         (e.g. --passes CancelGates,PhaseFoldRand)",
+                    )
                 });
                 let mut list = list.clone();
                 while let Some(next) = args.get(i + 1) {
@@ -1142,8 +1164,7 @@ fn parse_args(args: &[String]) -> Opts {
             "--fixpoint" => fixpoint = true,
             "-O1" | "-O2" | "-O3" | "-Osuper" => {
                 if optimization_level.is_some() {
-                    eprintln!("-O1, -O2, -O3, and -Osuper cannot be combined");
-                    process::exit(1);
+                    arg_error("-O1, -O2, -O3, and -Osuper cannot be combined — pick exactly one");
                 }
                 optimization_level = Some(match args[i].as_str() {
                     "-O1" => OptimizationLevel::O1,
@@ -1155,7 +1176,11 @@ fn parse_args(args: &[String]) -> Opts {
             }
             "-o" => {
                 i += 1;
-                output_path = args.get(i).cloned();
+                output_path = Some(
+                    args.get(i)
+                        .cloned()
+                        .unwrap_or_else(|| arg_error("-o requires an output file path")),
+                );
             }
             // Hidden: not listed in --help, for experimentation with SuperOpt's
             // window/table bounds without a rebuild.
@@ -1172,14 +1197,22 @@ fn parse_args(args: &[String]) -> Opts {
                 superopt_table_entries = Some(parse_usize_arg(args, i, "--superopt-table-entries"));
             }
             _ if args[i].starts_with('-') => {
-                eprintln!("Unknown flag: {}", args[i]);
-                process::exit(1);
+                arg_error(format!(
+                    "unknown flag '{}'. Run `tzap --help` for the list of valid options",
+                    args[i]
+                ));
             }
             _ => {
                 if input_path.is_none() {
                     input_path = Some(args[i].clone());
                 } else if output_path.is_none() {
                     output_path = Some(args[i].clone());
+                } else {
+                    arg_error(format!(
+                        "unexpected extra argument '{}' — tzap takes at most \
+                         <input.qasm> and [output.qasm]",
+                        args[i]
+                    ));
                 }
             }
         }
@@ -1187,19 +1220,19 @@ fn parse_args(args: &[String]) -> Opts {
     }
 
     let Some(input_path) = input_path else {
-        eprintln!(
-            "\x1b[1m⚡\u{FE0F} tzap\x1b[0m <input.qasm> [-o output.qasm] [-O1|-O2|-O3|-Osuper] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]"
+        arg_error(
+            "missing required <input.qasm> argument\n\n  \
+             Usage: tzap <input.qasm> [-o output.qasm] [-O1|-O2|-O3|-Osuper] \
+             [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]\n  \
+             Run `tzap --help` for the full option list.",
         );
-        process::exit(1);
     };
 
     if optimization_level.is_some() && (passes.is_some() || fixpoint) {
-        eprintln!("-O1, -O2, -O3, and -Osuper cannot be combined with --passes or --fixpoint");
-        process::exit(1);
+        arg_error("-O1, -O2, -O3, and -Osuper cannot be combined with --passes or --fixpoint");
     }
     if passes.is_some() && (expr || decompose_rz) {
-        eprintln!("--passes cannot be combined with --decompose-rz or --expr");
-        process::exit(1);
+        arg_error("--passes cannot be combined with --decompose-rz or --expr");
     }
     Opts {
         input_path,
