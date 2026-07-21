@@ -1039,11 +1039,11 @@ fn print_help() {
         env!("CARGO_PKG_VERSION")
     );
     println!();
-    println!("  Decomposes Toffoli (ccx) gates into Clifford+T by default.");
-    println!("  Pass --decompose-rz to also decompose Rz gates via gridsynth.");
-    println!();
     println!("  \x1b[1;33mUSAGE\x1b[0m");
     println!("    tzap <input.qasm> [output.qasm] [options]");
+    println!();
+    println!("  Decomposes Toffoli (ccx) gates into Clifford+T by default.");
+    println!("  Pass --decompose-rz to also decompose Rz gates via gridsynth.");
     println!();
     println!("  \x1b[1;33mARGS\x1b[0m");
     println!("    \x1b[1m<input.qasm>\x1b[0m     Input OpenQASM 2.0 file");
