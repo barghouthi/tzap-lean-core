@@ -79,8 +79,8 @@ mod table;
 
 pub use config::SuperOptTableConfig;
 pub use error::SuperOptError;
-pub use matrix::{Complex64, UnitaryMatrix};
 
+use matrix::UnitaryMatrix;
 use matrix_cache::{
     CachedMatrix, MatrixStore, append_compact_gate_key, compact_normalized_key,
     has_lone_arbitrary_rz,
@@ -110,6 +110,7 @@ pub struct SuperOptWindow {
 /// One selected semantics-preserving peephole rewrite, in input coordinates.
 #[derive(Clone, Debug)]
 pub struct SuperOptRewrite {
+    /// Indices, into the input circuit, of the gates this rewrite replaces.
     pub gate_indices: Vec<usize>,
     /// Replacement gates on the original circuit's physical qubits.
     pub replacement: Vec<Gate>,
@@ -120,6 +121,8 @@ pub struct SuperOptRewrite {
 pub struct SuperOptResult {
     /// Input circuit with a non-overlapping set of strictly smaller rewrites applied.
     pub circuit: Circuit,
+    /// Completed windows and their matrices; empty when built with
+    /// [`SuperOpt::without_subcircuits`].
     pub subcircuits: Vec<SuperOptWindow>,
     /// All selected rewrites, including identity removals with empty replacements.
     pub rewrites: Vec<SuperOptRewrite>,

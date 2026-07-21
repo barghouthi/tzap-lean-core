@@ -1,4 +1,4 @@
-use super::matrix::{IDENTITY_TOLERANCE, unitary_fingerprint};
+use super::matrix::{Complex64, IDENTITY_TOLERANCE, UnitaryMatrix, unitary_fingerprint};
 use super::table::{
     LibraryGate, UnitaryCircuitTable, library_circuit_matrix, library_gates, shared_synthesis_table,
 };
