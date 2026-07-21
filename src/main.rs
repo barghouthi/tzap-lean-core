@@ -755,7 +755,7 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
     // verbose warm-up call before fanning out, so the table build (and its
     // one-time cost message) is reported exactly once.
     if verbose && !table_is_cached(table_config) {
-        eprintln!("  🧠 Generating semantic lookup table (one-time — cached for future use)...");
+        eprintln!("  🔧 Generating semantic lookup table (one-time — cached for future use)...");
     }
     let start = Instant::now();
     let pass = SuperOpt::new(qubits, window_gates, table_config).unwrap_or_else(|error| {
