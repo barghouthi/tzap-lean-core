@@ -287,9 +287,12 @@ fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
     out
 }
 
-/// Print the closing result banner.
+/// Print the closing result banner. Assumes whatever ran just before it
+/// (a progress box's erasure, or an "info" line like "Fixpoint reached")
+/// already left exactly one blank line behind — this prints no leading
+/// blank of its own.
 fn print_result(in_gates: usize, out_gates: usize, in_t: usize, out_t: usize, secs: f64) {
-    eprintln!("\n\x1b[1m  Final result\x1b[0m");
+    eprintln!("\x1b[1m  Final result\x1b[0m");
     eprintln!(
         "\t├─ Gates  {} → {} (↓{:.1}%)",
         fmt_num(in_gates),
@@ -463,10 +466,19 @@ fn start_progress_block(n: usize) {
     let _ = io::stderr().flush();
 }
 
-/// Move past a live progress block of `n` lines, leaving its last frame on
-/// screen and the cursor at the start of the row right below it.
+/// Erase a live progress block of `n` lines entirely — every line cleared,
+/// cursor returned to the block's top-left — instead of leaving its last
+/// frame on screen. Called once optimization finishes, so the box
+/// disappears rather than lingering under the closing result banner.
 fn end_progress_block(n: usize) {
-    eprintln!("\x1b[{}B", n.saturating_sub(1));
+    for i in 0..n {
+        eprint!("\x1b[2K");
+        if i + 1 < n {
+            eprint!("\n");
+        } else if n > 1 {
+            eprint!("\x1b[{}A", n - 1);
+        }
+    }
     let _ = io::stderr().flush();
 }
 
@@ -781,6 +793,7 @@ fn run_to_fixpoint_logged(
     let (result, rounds) = run_to_fixpoint(circuit, passes, rz_decompose, verbose);
     if verbose {
         eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+        eprintln!();
     }
     result
 }
