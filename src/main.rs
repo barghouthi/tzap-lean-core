@@ -132,14 +132,12 @@ fn looks_like_pass_list_fragment(token: &str) -> bool {
 /// mechanics beyond what the table can synthesize replacements for — see
 /// `super_opt::tests`), but the CLI has no everyday use case for that, so it
 /// only exposes one knob per axis.
-/// `window_gates` was bumped from 10 to 25 (2026-07-21, see the 84-config
-/// grid sweep in the `project_tcount_ceilings` memory): at window_gates=10
-/// T-count comes out at 765,418 suite-wide, clearly short of the ~762,078
-/// floor every other grid point reaches; window_gates=15 already recovers
-/// almost all of that (762,120), and gate-count keeps improving slowly out
-/// to 25+ with no further T change. 25 was chosen over 15 as a deliberately
-/// more thorough default; qubits and table_entries showed no benefit worth
-/// their added cost at this tier and were left alone.
+///
+/// `window_gates=10` leaves real T-count on the table suite-wide; the T
+/// floor is reached by `window_gates≈15` and gate-count keeps improving
+/// slowly beyond that, so 25 is used as a deliberately more thorough
+/// default. `qubits` and `table_entries` showed no benefit worth their
+/// added cost at this tier and were left alone.
 const DEFAULT_SUPEROPT_QUBITS: usize = 3;
 const DEFAULT_SUPEROPT_WINDOW_GATES: usize = 25;
 const DEFAULT_SUPEROPT_TABLE_ENTRIES: usize = 200_000;
@@ -157,11 +155,8 @@ const DEFAULT_SUPEROPT_TABLE_ENTRIES: usize = 200_000;
 /// starts *regressing* output (a bigger table is a strict fingerprint
 /// superset, but the greedy, non-backtracking rewrite-selection rule doesn't
 /// turn "more matches available" into "better output" monotonically).
-///
-/// A full 84-config qubits×window_gates×table_entries grid swept 2026-07-21
-/// (see `project_tcount_ceilings` memory) found window_gates=40 still the
-/// single best gate-count point at this qubit/entries setting — 1,954,053
-/// vs. 1,955,114 gates at window_gates=30, T-count unchanged either way.
+/// `window_gates=40` is the best gate-count point found at this
+/// qubit/entries setting; T-count is unchanged from `window_gates=30`.
 const SUPER_SUPEROPT_QUBITS: usize = 5;
 const SUPER_SUPEROPT_WINDOW_GATES: usize = 40;
 const SUPER_SUPEROPT_TABLE_ENTRIES: usize = 5_000_000;
@@ -667,18 +662,20 @@ fn run_fixpoint_sweep(
 /// comes first. When `rz_decompose` is given, run it exactly once after the
 /// first sweep and force another sweep if there were Rz gates to decompose
 /// — this extra sweep isn't itself subject to the `max_rounds` cap. Returns
-/// the result and how many sweeps ran.
+/// the result, how many sweeps ran, and whether that was a true fixpoint
+/// (as opposed to hitting the round cap first).
 fn run_to_fixpoint(
     circuit: &Circuit,
     passes: &[&dyn Pass],
     rz_decompose: Option<&dyn Pass>,
     verbose: bool,
     max_rounds: Option<usize>,
-) -> (Circuit, usize) {
+) -> (Circuit, usize, bool) {
     let baseline_gates = circuit.gates.len();
     let baseline_t = count_t(circuit);
     let mut c = circuit.clone();
     let mut round = 0;
+    let mut reduced;
     if verbose {
         start_progress_block(box_lines(2));
     }
@@ -686,7 +683,7 @@ fn run_to_fixpoint(
         round += 1;
         let before = c.gates.len();
         c = run_fixpoint_sweep(&c, passes, round, verbose, baseline_gates, baseline_t);
-        let reduced = c.gates.len() < before;
+        reduced = c.gates.len() < before;
 
         if round == 1
             && let Some(pass) = rz_decompose
@@ -714,7 +711,7 @@ fn run_to_fixpoint(
     if verbose {
         end_progress_block(box_lines(2));
     }
-    (c, round)
+    (c, round, !reduced)
 }
 
 /// Build a fresh `SuperOpt` instance. Callers must construct one of these
@@ -810,8 +807,9 @@ fn run_to_fixpoint_logged(
     verbose: bool,
     max_rounds: Option<usize>,
 ) -> Circuit {
-    let (result, rounds) = run_to_fixpoint(circuit, passes, rz_decompose, verbose, max_rounds);
-    if verbose {
+    let (result, rounds, reached_fixpoint) =
+        run_to_fixpoint(circuit, passes, rz_decompose, verbose, max_rounds);
+    if verbose && reached_fixpoint {
         eprintln!("  Fixpoint reached after {rounds} iteration(s)");
         eprintln!();
     }

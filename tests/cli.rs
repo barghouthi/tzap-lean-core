@@ -760,8 +760,8 @@ fn o2_uses_superopt_pass_capped_at_two_rounds() {
         "O2 should stop after 2 rounds, not reach iteration 3:\n{capped_stderr}"
     );
     assert!(
-        capped_stderr.contains("Fixpoint reached after 2 iteration(s)"),
-        "got: {capped_stderr}"
+        !capped_stderr.contains("Fixpoint reached"),
+        "O2 stopped on the round cap, not a true fixpoint, so it shouldn't claim one:\n{capped_stderr}"
     );
 
     let uncapped = tzap_run(&[MOD5_4_QASM, "-O3"]);
