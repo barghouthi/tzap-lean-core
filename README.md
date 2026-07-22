@@ -94,6 +94,9 @@ Use `--decompose-rz` when the target backend only accepts Clifford+T; tzap uses 
 tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6
 ```
 
+Use `--decompose-cz` to decompose CZ gates into `H`+`CX`+`H` before the
+optimization pipeline. With `--passes`, it is prepended to the listed passes.
+
 **Custom pipeline**
 
 `--passes` runs an explicit, ordered sequence of passes in place of the default pipeline.
@@ -111,7 +114,7 @@ tzap supports a subset of OpenQASM 2.0:
 - **Not supported:** classical conditionals (`if`), custom gate definitions (`gate`), barriers, `include` files (besides `qelib1.inc`, which is ignored)
 - Unrecognized lines produce an error
 
-Toffoli (`ccx`) and doubly controlled-Z (`ccz`) are auto-decomposed into Clifford+T. Controlled-Z (`cz`) is kept native so phase folding and cancellation can operate through it; use `--passes DecomposeCz` for `H`+`CX` output. `Rz` is left as-is unless you pass `--decompose-rz`.
+Toffoli (`ccx`) and doubly controlled-Z (`ccz`) are auto-decomposed into Clifford+T. Controlled-Z (`cz`) is kept native so phase folding and cancellation can operate through it; use `--decompose-cz` for `H`+`CX` output. `Rz` is left as-is unless you pass `--decompose-rz`.
 
 ## Correctness
 

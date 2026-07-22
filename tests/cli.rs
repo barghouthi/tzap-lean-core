@@ -1127,11 +1127,17 @@ fn gate_lines_from(stdout: &str) -> Vec<String> {
 }
 
 fn run_qasm(qasm: &str) -> (Vec<String>, String) {
+    run_qasm_with_args(qasm, &[])
+}
+
+fn run_qasm_with_args(qasm: &str, extra_args: &[&str]) -> (Vec<String>, String) {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("input.qasm");
     let output = dir.path().join("output.qasm");
     fs::write(&input, qasm).unwrap();
-    let out = tzap_run(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+    let mut args = vec![input.to_str().unwrap(), "-o", output.to_str().unwrap()];
+    args.extend_from_slice(extra_args);
+    let out = tzap_run(&args);
     assert!(
         out.status.success(),
         "tzap failed: {}",
@@ -1478,6 +1484,91 @@ cz q[0],q[1];
     assert_eq!(gates, vec!["cz q[0],q[1];"]);
 }
 
+const CZ_CHAIN_QASM: &str = "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[3];
+cz q[0],q[1];
+cz q[1],q[2];
+";
+
+#[test]
+fn decompose_cz_flag_decomposes_the_default_pipeline_input() {
+    let (gates, _) = run_qasm_with_args(CZ_CHAIN_QASM, &["--decompose-cz"]);
+
+    assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
+    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 2);
+    assert_eq!(gates.iter().filter(|gate| gate.starts_with("h ")).count(), 4);
+}
+
+#[test]
+fn decompose_cz_flag_is_a_noop_when_no_cz_is_present() {
+    let (without_flag, _) = run_qasm(
+        "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+h q[0];
+cx q[0],q[1];
+t q[1];
+",
+    );
+    let (with_flag, _) = run_qasm_with_args(
+        "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+h q[0];
+cx q[0],q[1];
+t q[1];
+",
+        &["--decompose-cz"],
+    );
+
+    assert_eq!(with_flag, without_flag);
+}
+
+#[test]
+fn decompose_cz_flag_does_not_duplicate_an_explicit_decompose_pass() {
+    let (gates, _) = run_qasm_with_args(
+        "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+cz q[1],q[0];
+",
+        &["--passes", "DecomposeCz,CancelGates", "--decompose-cz"],
+    );
+
+    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cz ")).count(), 0);
+    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 1);
+    assert_eq!(gates.iter().filter(|gate| gate.starts_with("h ")).count(), 2);
+}
+
+#[test]
+fn decompose_cz_flag_works_with_explicit_fixpoint() {
+    let (gates, stderr) = run_qasm_with_args(
+        CZ_CHAIN_QASM,
+        &["--passes", "CancelGates", "--decompose-cz", "--fixpoint"],
+    );
+
+    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
+    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 2);
+}
+
+#[test]
+fn decompose_cz_flag_works_with_explicit_parallel_pipeline() {
+    let (gates, stderr) = run_qasm_with_args(
+        CZ_CHAIN_QASM,
+        &["--passes", "CancelGates", "--decompose-cz", "--parallel"],
+    );
+
+    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
+    assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
+    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 2);
+}
+
 #[test]
 fn phase_fold_through_native_cz_on_second_operand() {
     let (gates, _) = run_qasm(
@@ -1534,4 +1625,38 @@ cz q[1],q[0];
         .filter(|line| line.starts_with("h ") || line.starts_with("cx "))
         .collect();
     assert_eq!(gates, vec!["h q[0];", "cx q[1],q[0];", "h q[0];"]);
+}
+
+#[test]
+fn decompose_cz_flag_is_prepended_to_explicit_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("cz.qasm");
+    let output = dir.path().join("out.qasm");
+    fs::write(
+        &input,
+        "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+cz q[1],q[0];
+",
+    )
+    .unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "--passes",
+        "CancelGates",
+        "--decompose-cz",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let content = fs::read_to_string(output).unwrap();
+    assert!(!content.lines().any(|line| line.starts_with("cz ")));
+    assert!(content.lines().any(|line| line.starts_with("cx ")));
 }

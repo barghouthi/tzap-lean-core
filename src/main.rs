@@ -169,6 +169,7 @@ struct Opts {
     output_path: Option<String>,
     expr: bool,
     decompose_rz: bool,
+    decompose_cz: bool,
     rz_epsilon: f64,
     parallel: bool,
     /// Explicit pass pipeline from `--passes` (overrides the default pipeline).
@@ -1045,10 +1046,22 @@ fn run_map_reduce(
 /// Run the explicit `--passes` pipeline on `circuit`, constructing a fresh
 /// `SuperOpt` if it's selected. Used as one map-reduce worker per chunk.
 fn optimize_explicit(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
-    let names = opts
+    let listed_names = opts
         .passes
         .as_ref()
         .expect("only called when --passes is set");
+    let names: Vec<PassName> = if opts.decompose_cz {
+        std::iter::once(PassName::DecomposeCz)
+            .chain(
+                listed_names
+                    .iter()
+                    .copied()
+                    .filter(|p| !matches!(p, PassName::DecomposeCz)),
+            )
+            .collect()
+    } else {
+        listed_names.clone()
+    };
     let decompose_toffoli = DecomposeToffoli;
     let decompose_cz = DecomposeCz;
     let rz_decompose = DecomposeRz {
@@ -1171,6 +1184,15 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
         circuit
     };
 
+    let decompose_cz = DecomposeCz;
+    let circuit = if opts.decompose_cz
+        && circuit.gates.iter().any(|g| matches!(g, Gate::cz { .. }))
+    {
+        run_logged(&decompose_cz, &circuit)
+    } else {
+        circuit
+    };
+
     let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
     let uses_superopt = matches!(
         optimization_level,
@@ -1197,6 +1219,7 @@ fn print_help() {
     println!("    tzap <input.qasm> [output.qasm] [options]");
     println!();
     println!("  Decomposes Toffoli (ccx) gates into Clifford+T by default.");
+    println!("  Pass --decompose-cz to decompose CZ gates into H+CX+H.");
     println!("  Pass --decompose-rz to also decompose Rz gates via gridsynth.");
     println!();
     println!("  \x1b[1;33mARGS\x1b[0m");
@@ -1206,6 +1229,7 @@ fn print_help() {
     println!("  \x1b[1;33mOPTIONS\x1b[0m");
     println!("    \x1b[1m-o\x1b[0m <file>        Write output to <file>");
     println!("    \x1b[1m--decompose-rz\x1b[0m   Decompose Rz gates into Clifford+T (gridsynth)");
+    println!("    \x1b[1m--decompose-cz\x1b[0m   Decompose CZ gates into H+CX+H");
     println!(
         "    \x1b[1m--epsilon\x1b[0m <eps>  Approximation epsilon for --decompose-rz (default: 1e-10)"
     );
@@ -1213,7 +1237,8 @@ fn print_help() {
     println!(
         "    \x1b[1m--passes\x1b[0m <list>  Run these passes in order, overriding the default pipeline"
     );
-    println!("                     (see PASSES). Excludes --decompose-rz; --epsilon still");
+    println!("                     (see PASSES). --decompose-cz is prepended when set.");
+    println!("                     Excludes --decompose-rz; --epsilon still");
     println!("                     configures DecomposeRz.");
     println!(
         "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
@@ -1268,6 +1293,7 @@ fn parse_args(args: &[String]) -> Opts {
     let mut output_path: Option<String> = None;
     let mut expr = false;
     let mut decompose_rz = false;
+    let mut decompose_cz = false;
     let mut rz_epsilon: f64 = 1e-10;
     let mut parallel = false;
     let mut passes: Option<Vec<PassName>> = None;
@@ -1289,6 +1315,7 @@ fn parse_args(args: &[String]) -> Opts {
             }
             "--expr" => expr = true,
             "--decompose-rz" => decompose_rz = true,
+            "--decompose-cz" => decompose_cz = true,
             "--epsilon" => {
                 i += 1;
                 let value: f64 = args
@@ -1385,7 +1412,7 @@ fn parse_args(args: &[String]) -> Opts {
         arg_error(
             "missing required <input.qasm> argument\n\n  \
              Usage: tzap <input.qasm> [-o output.qasm] [-O1|-O2|-O3|-Osuper] \
-             [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]\n  \
+             [--decompose-cz] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]\n  \
              Run `tzap --help` for the full option list.",
         );
     };
@@ -1401,6 +1428,7 @@ fn parse_args(args: &[String]) -> Opts {
         output_path,
         expr,
         decompose_rz,
+        decompose_cz,
         rz_epsilon,
         parallel,
         passes,
@@ -1518,6 +1546,7 @@ mod tests {
             output_path: None,
             expr: false,
             decompose_rz: false,
+            decompose_cz: false,
             rz_epsilon: 1e-10,
             parallel: true,
             passes: None,
