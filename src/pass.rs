@@ -1,4 +1,4 @@
-use crate::circuit::{Circuit, Gate};
+use crate::circuit::{Circuit, Gate, qubits_of};
 
 /// An optimization pass: takes a circuit, returns an equivalent one.
 pub trait Pass: Sync {
@@ -42,7 +42,96 @@ pub fn count_t(c: &Circuit) -> usize {
         .count()
 }
 
+/// Number of two-qubit `cnot`/`cz` gates in the circuit.
+pub fn count_2q(c: &Circuit) -> usize {
+    c.gates
+        .iter()
+        .filter(|g| matches!(g, Gate::cnot { .. } | Gate::cz { .. }))
+        .count()
+}
+
+/// Circuit depth, where gates on disjoint qubits may occupy the same layer.
+pub fn depth(c: &Circuit) -> usize {
+    let mut next_layer = vec![0; c.num_qubits];
+    for gate in &c.gates {
+        let qubits = qubits_of(gate);
+        let layer = qubits.iter().map(|&q| next_layer[q]).max().unwrap_or(0) + 1;
+        for q in qubits {
+            next_layer[q] = layer;
+        }
+    }
+    next_layer.into_iter().max().unwrap_or(0)
+}
+
 /// Number of `rz` gates in the circuit.
 pub fn count_rz(c: &Circuit) -> usize {
     c.gates.iter().filter(|g| matches!(g, Gate::rz(..))).count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{count_2q, depth};
+    use crate::circuit::{Circuit, Gate};
+
+    #[test]
+    fn count_2q_counts_cnot_and_cz_only() {
+        let mut circuit = Circuit::new(3);
+        circuit.apply(Gate::h(0));
+        circuit.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        circuit.apply(Gate::cz {
+            control: 1,
+            target: 2,
+        });
+        circuit.apply(Gate::t(0));
+
+        assert_eq!(count_2q(&circuit), 2);
+    }
+
+    #[test]
+    fn depth_layers_disjoint_gates_and_serializes_shared_qubits() {
+        let mut circuit = Circuit::new(3);
+        circuit.apply(Gate::h(0));
+        circuit.apply(Gate::h(1));
+        circuit.apply(Gate::cnot {
+            control: 0,
+            target: 2,
+        });
+        circuit.apply(Gate::t(1));
+
+        assert_eq!(depth(&circuit), 2);
+    }
+
+    #[test]
+    fn depth_of_empty_circuit_is_zero() {
+        assert_eq!(depth(&Circuit::new(4)), 0);
+    }
+
+    #[test]
+    fn depth_serializes_gates_on_one_qubit() {
+        let mut circuit = Circuit::new(1);
+        circuit.apply(Gate::h(0));
+        circuit.apply(Gate::t(0));
+        circuit.apply(Gate::z(0));
+
+        assert_eq!(depth(&circuit), 3);
+    }
+
+    #[test]
+    fn depth_propagates_through_multi_qubit_dependencies() {
+        let mut circuit = Circuit::new(3);
+        circuit.apply(Gate::cnot {
+            control: 0,
+            target: 1,
+        });
+        circuit.apply(Gate::x(1));
+        circuit.apply(Gate::cz {
+            control: 1,
+            target: 2,
+        });
+
+        assert_eq!(depth(&circuit), 3);
+    }
 }

@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -10,7 +11,7 @@ use rayon::prelude::*;
 use tzap::cancel::CancelGates;
 use tzap::circuit::{Circuit, Gate};
 use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
-use tzap::pass::{Pass, count_t};
+use tzap::pass::{Pass, count_2q, count_t, depth};
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_is_cached};
@@ -258,10 +259,12 @@ fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> Circuit {
     let start = Instant::now();
     let c = pass.run(circuit);
     eprintln!(
-        "  {}\n\t└─ {} gates · {} T · {:.3}s",
+        "  {}\n\t└─ {} gates · {} 2q gates · {} T · {} depth · {:.3}s",
         pass.name(),
         fmt_num(c.gates.len()),
+        fmt_num(count_2q(&c)),
         fmt_num(count_t(&c)),
+        fmt_num(depth(&c)),
         start.elapsed().as_secs_f64()
     );
     eprintln!();
@@ -303,21 +306,66 @@ fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
 /// (a progress box's erasure, or an "info" line like "Fixpoint reached")
 /// already left exactly one blank line behind — this prints no leading
 /// blank of its own.
-fn print_result(in_gates: usize, out_gates: usize, in_t: usize, out_t: usize, secs: f64) {
+fn print_result(
+    in_gates: usize,
+    out_gates: usize,
+    in_2q: usize,
+    out_2q: usize,
+    in_depth: usize,
+    out_depth: usize,
+    in_t: usize,
+    out_t: usize,
+    secs: f64,
+) {
+    let in_values = [
+        fmt_num(in_gates),
+        fmt_num(in_2q),
+        fmt_num(in_t),
+        fmt_num(in_depth),
+    ];
+    let out_values = [
+        fmt_num(out_gates),
+        fmt_num(out_2q),
+        fmt_num(out_t),
+        fmt_num(out_depth),
+    ];
+    let in_width = in_values.iter().map(String::len).max().unwrap_or(0);
+    let out_width = out_values.iter().map(String::len).max().unwrap_or(0);
+
     eprintln!("\x1b[1m  Final result\x1b[0m");
     eprintln!(
-        "\t├─ Gates  {} → {} (↓{:.1}%)",
-        fmt_num(in_gates),
-        fmt_num(out_gates),
-        pct(in_gates, out_gates)
+        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
+        label = "Gates",
+        input = in_values[0],
+        output = out_values[0],
+        reduction = pct(in_gates, out_gates),
     );
     eprintln!(
-        "\t├─ T/Tdg  {} → {} (↓{:.1}%)",
-        fmt_num(in_t),
-        fmt_num(out_t),
-        pct(in_t, out_t)
+        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
+        label = "2q gates",
+        input = in_values[1],
+        output = out_values[1],
+        reduction = pct(in_2q, out_2q),
     );
-    eprintln!("\t└─ Time   {secs:.3}s");
+    eprintln!(
+        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
+        label = "T/Tdg",
+        input = in_values[2],
+        output = out_values[2],
+        reduction = pct(in_t, out_t),
+    );
+    eprintln!(
+        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
+        label = "Depth",
+        input = in_values[3],
+        output = out_values[3],
+        reduction = pct(in_depth, out_depth),
+    );
+    eprintln!(
+        "\t└─ {label:<8} {time:>in_width$}",
+        label = "Time",
+        time = format!("{secs:.3}s"),
+    );
 }
 
 /// Write a circuit to the output path (if any), exiting on error.
@@ -344,10 +392,12 @@ fn read_circuit(path: &str) -> Circuit {
         process::exit(1);
     });
     eprintln!(
-        "\t└─ {} qubits · {} gates · {} T/Tdg · {:.3}s",
+        "\t└─ {} qubits · {} gates · {} 2q gates · {} T/Tdg · {} depth · {:.3}s",
         fmt_num(circuit.num_qubits),
         fmt_num(circuit.gates.len()),
+        fmt_num(count_2q(&circuit)),
         fmt_num(count_t(&circuit)),
+        fmt_num(depth(&circuit)),
         parse_start.elapsed().as_secs_f64()
     );
     eprintln!();
@@ -362,15 +412,21 @@ fn read_circuit(path: &str) -> Circuit {
 /// interleave garbled output.
 fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circuit {
     let baseline_gates = circuit.gates.len();
+    let baseline_2q = count_2q(circuit);
+    let baseline_depth = depth(circuit);
     let baseline_t = count_t(circuit);
     let mut c = circuit.clone();
     if verbose {
-        start_progress_block(box_lines(2));
+        start_progress_block(box_lines(4));
         update_reduction_progress(
             "% reduction so far",
             c.gates.len(),
+            count_2q(&c),
+            depth(&c),
             count_t(&c),
             baseline_gates,
+            baseline_2q,
+            baseline_depth,
             baseline_t,
         );
     }
@@ -380,30 +436,38 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circu
             update_reduction_progress(
                 "% reduction so far",
                 c.gates.len(),
+                count_2q(&c),
+                depth(&c),
                 count_t(&c),
                 baseline_gates,
+                baseline_2q,
+                baseline_depth,
                 baseline_t,
             );
         }
     }
     if verbose {
-        end_progress_block(box_lines(2));
+        end_progress_block(box_lines(4));
     }
     c
 }
 
 /// Width, in characters, of a progress bar's fill/track region.
 const BAR_WIDTH: usize = 32;
-/// Width of a progress box row's label field (fits "Gates  ", "T/Tdg  ",
-/// and "Chunks " with trailing padding to align every bar).
-const LABEL_WIDTH: usize = 7;
+/// Width of a progress box row's label field, with one column of padding after
+/// the longest label ("2q gates").
+const LABEL_WIDTH: usize = 9;
 
 /// Green fill, used for the map-reduce chunk-completion bar.
 const CHUNK_BAR_COLOR: &str = "\x1b[32m";
 /// Cyan fill, used for the gate-count reduction bar.
 const GATES_BAR_COLOR: &str = "\x1b[36m";
+/// Yellow fill, used for the two-qubit-gate reduction bar.
+const TWO_QUBIT_BAR_COLOR: &str = "\x1b[33m";
 /// Magenta fill, used for the T-count reduction bar.
 const T_BAR_COLOR: &str = "\x1b[35m";
+/// Blue fill, used for the depth reduction bar.
+const DEPTH_BAR_COLOR: &str = "\x1b[34m";
 
 /// Render a thin bar — heavy `color` fill, a partial tip glyph at the exact
 /// boundary, dim light-line track for the remainder — in the style of
@@ -441,22 +505,20 @@ fn box_lines(num_rows: usize) -> usize {
 /// Build the lines of a live progress box: a top border with `title`
 /// embedded, one line per `(label, colored_bar, trailing)` row, and a bottom
 /// border. Every line is padded to equal *visible* width — the ANSI escapes
-/// inside `bar` don't count — so the box stays rectangular regardless of how
-/// long each row's trailing text is. Callers that redraw a box across
-/// several frames should keep each row's trailing text a fixed width for the
-/// run (e.g. via a `{:>width$}` on a count derived from a fixed baseline),
-/// or the box will visibly resize frame to frame. Indented two spaces to
+/// inside `bar` don't count — so the box grows to fit large counts and stays
+/// rectangular as values change. Indented two spaces to
 /// line up with the rest of tzap's output (e.g. "  Parsing ...").
 fn progress_box(title: &str, rows: &[(&str, String, String)]) -> Vec<String> {
     let row_width = |trailing: &str| LABEL_WIDTH + BAR_WIDTH + 1 + trailing.chars().count();
-    let inner_width = rows
+    let title_segment = format!("─ {title} ");
+    let content_width = rows
         .iter()
         .map(|(_, _, trailing)| row_width(trailing))
         .max()
         .unwrap_or(0)
-        + 2;
+        .max(title_segment.chars().count());
+    let inner_width = content_width + 2;
 
-    let title_segment = format!("─ {title} ");
     let dashes = inner_width.saturating_sub(title_segment.chars().count());
     let mut lines = vec![format!("  ┌{title_segment}{}┐", "─".repeat(dashes))];
     for (label, bar, trailing) in rows {
@@ -517,23 +579,33 @@ fn redraw_progress_block(lines: &[String]) {
 }
 
 /// Redraw a live "% reduction so far" progress box under `title`: a
-/// gate-count-reduction bar and a T-count-reduction bar (reduction relative
-/// to `baseline_gates`/`baseline_t`, the counts at the start of this run),
-/// each in its own color. Shared by the fixpoint driver (title carries the
+/// gate, two-qubit, depth, and T-count reduction bars (reduction relative to
+/// the corresponding baselines at the start of this run), each in its own
+/// color. Shared by the fixpoint driver (title carries the
 /// iteration number) and the plain pipeline driver (no iteration — it
-/// doesn't loop). Must be bracketed by `start_progress_block(box_lines(2))`
-/// / `end_progress_block(box_lines(2))`.
+/// doesn't loop). Must be bracketed by `start_progress_block(box_lines(4))`
+/// / `end_progress_block(box_lines(4))`.
 fn update_reduction_progress(
     title: &str,
     gates: usize,
+    two_qubit: usize,
+    circuit_depth: usize,
     t_count: usize,
     baseline_gates: usize,
+    baseline_two_qubit: usize,
+    baseline_depth: usize,
     baseline_t: usize,
 ) {
     let gates_pct = pct(baseline_gates, gates);
+    let two_qubit_pct = pct(baseline_two_qubit, two_qubit);
+    let depth_pct = pct(baseline_depth, circuit_depth);
     let t_pct = pct(baseline_t, t_count);
     let gates_str = fmt_num(gates);
     let gates_width = fmt_num(baseline_gates).chars().count();
+    let two_qubit_str = fmt_num(two_qubit);
+    let two_qubit_width = fmt_num(baseline_two_qubit).chars().count();
+    let depth_str = fmt_num(circuit_depth);
+    let depth_width = fmt_num(baseline_depth).chars().count();
     let t_str = fmt_num(t_count);
     let t_width = fmt_num(baseline_t).chars().count();
     redraw_progress_block(&progress_box(
@@ -545,9 +617,19 @@ fn update_reduction_progress(
                 format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
             ),
             (
+                "2q gates",
+                render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
+                format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
+            ),
+            (
                 "T/Tdg",
                 render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
                 format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
+            ),
+            (
+                "Depth",
+                render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
+                format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
             ),
         ],
     ));
@@ -558,31 +640,41 @@ fn update_reduction_progress(
 fn update_fixpoint_progress(
     iteration: usize,
     gates: usize,
+    two_qubit: usize,
+    circuit_depth: usize,
     t_count: usize,
     baseline_gates: usize,
+    baseline_two_qubit: usize,
+    baseline_depth: usize,
     baseline_t: usize,
 ) {
     update_reduction_progress(
         &format!("Iteration {iteration} — % reduction so far"),
         gates,
+        two_qubit,
+        circuit_depth,
         t_count,
         baseline_gates,
+        baseline_two_qubit,
+        baseline_depth,
         baseline_t,
     );
 }
 
 /// Redraw the live parallel map-reduce progress box: how many chunks have
 /// finished, and the whole circuit's gate/T reduction achieved so far.
-/// Finished chunks contribute their optimized size to `current_gates`/
-/// `current_t`; chunks still pending contribute their original size — so
-/// this converges to the exact numbers in the closing Result banner once
-/// every chunk is done. Must be bracketed by `start_progress_block(box_lines(3))`
-/// / `end_progress_block(box_lines(3))`.
+/// Finished chunks contribute their optimized metrics while chunks still
+/// pending contribute their original metrics. Must be bracketed by
+/// `start_progress_block(box_lines(5))` / `end_progress_block(box_lines(5))`.
 fn update_chunk_progress(
     done: usize,
     total: usize,
     baseline_gates: usize,
     current_gates: usize,
+    baseline_2q: usize,
+    current_2q: usize,
+    baseline_depth: usize,
+    current_depth: usize,
     baseline_t: usize,
     current_t: usize,
 ) {
@@ -593,12 +685,18 @@ fn update_chunk_progress(
     };
     let chunk_pct = chunk_fraction * 100.0;
     let gates_pct = pct(baseline_gates, current_gates);
+    let two_qubit_pct = pct(baseline_2q, current_2q);
+    let depth_pct = pct(baseline_depth, current_depth);
     let t_pct = pct(baseline_t, current_t);
     let done_str = fmt_num(done);
     let done_width = fmt_num(total).chars().count();
     let total_str = fmt_num(total);
     let gates_str = fmt_num(current_gates);
     let gates_width = fmt_num(baseline_gates).chars().count();
+    let two_qubit_str = fmt_num(current_2q);
+    let two_qubit_width = fmt_num(baseline_2q).chars().count();
+    let depth_str = fmt_num(current_depth);
+    let depth_width = fmt_num(baseline_depth).chars().count();
     let t_str = fmt_num(current_t);
     let t_width = fmt_num(baseline_t).chars().count();
     redraw_progress_block(&progress_box(
@@ -615,9 +713,19 @@ fn update_chunk_progress(
                 format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
             ),
             (
+                "2q gates",
+                render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
+                format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
+            ),
+            (
                 "T/Tdg",
                 render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
                 format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
+            ),
+            (
+                "Depth",
+                render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
+                format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
             ),
         ],
     ));
@@ -631,6 +739,8 @@ fn run_fixpoint_sweep(
     iteration: usize,
     verbose: bool,
     baseline_gates: usize,
+    baseline_2q: usize,
+    baseline_depth: usize,
     baseline_t: usize,
 ) -> Circuit {
     let mut c = circuit.clone();
@@ -638,8 +748,12 @@ fn run_fixpoint_sweep(
         update_fixpoint_progress(
             iteration,
             c.gates.len(),
+            count_2q(&c),
+            depth(&c),
             count_t(&c),
             baseline_gates,
+            baseline_2q,
+            baseline_depth,
             baseline_t,
         );
     }
@@ -649,8 +763,12 @@ fn run_fixpoint_sweep(
             update_fixpoint_progress(
                 iteration,
                 c.gates.len(),
+                count_2q(&c),
+                depth(&c),
                 count_t(&c),
                 baseline_gates,
+                baseline_2q,
+                baseline_depth,
                 baseline_t,
             );
         }
@@ -673,17 +791,28 @@ fn run_to_fixpoint(
     max_rounds: Option<usize>,
 ) -> (Circuit, usize, bool) {
     let baseline_gates = circuit.gates.len();
+    let baseline_2q = count_2q(circuit);
+    let baseline_depth = depth(circuit);
     let baseline_t = count_t(circuit);
     let mut c = circuit.clone();
     let mut round = 0;
     let mut reduced;
     if verbose {
-        start_progress_block(box_lines(2));
+        start_progress_block(box_lines(4));
     }
     loop {
         round += 1;
         let before = c.gates.len();
-        c = run_fixpoint_sweep(&c, passes, round, verbose, baseline_gates, baseline_t);
+        c = run_fixpoint_sweep(
+            &c,
+            passes,
+            round,
+            verbose,
+            baseline_gates,
+            baseline_2q,
+            baseline_depth,
+            baseline_t,
+        );
         reduced = c.gates.len() < before;
 
         if round == 1
@@ -695,8 +824,12 @@ fn run_to_fixpoint(
                 update_fixpoint_progress(
                     round,
                     c.gates.len(),
+                    count_2q(&c),
+                    depth(&c),
                     count_t(&c),
                     baseline_gates,
+                    baseline_2q,
+                    baseline_depth,
                     baseline_t,
                 );
             }
@@ -710,7 +843,7 @@ fn run_to_fixpoint(
         }
     }
     if verbose {
-        end_progress_block(box_lines(2));
+        end_progress_block(box_lines(4));
     }
     (c, round, !reduced)
 }
@@ -777,6 +910,10 @@ fn finish(input: &Circuit, result: &Circuit, opts: &Opts, start: Instant) {
     print_result(
         input.gates.len(),
         result.gates.len(),
+        count_2q(input),
+        count_2q(result),
+        depth(input),
+        depth(result),
         count_t(input),
         count_t(result),
         start.elapsed().as_secs_f64(),
@@ -833,30 +970,37 @@ fn run_map_reduce(
     let chunks = chunk_circuit(circuit, num_chunks);
     let total = chunks.len();
 
-    // Whole-circuit baselines: pending chunks (not yet optimized) count as
-    // still contributing their original size, so `current_gates`/`current_t`
-    // read as "the reduction achieved if we stopped right now" and converge
-    // to the exact Result-banner numbers once every chunk is done.
+    // Whole-circuit baselines: pending chunks (not yet optimized) contribute
+    // their original metrics, while completed chunks contribute their current
+    // metrics.
     let baseline_gates = circuit.gates.len();
+    let baseline_2q = count_2q(circuit);
+    let baseline_depth = depth(circuit);
     let baseline_t = count_t(circuit);
+    let progress_chunks = Arc::new(Mutex::new(chunks.clone()));
     let done = AtomicUsize::new(0);
     let sum_before_gates = AtomicUsize::new(0);
     let sum_after_gates = AtomicUsize::new(0);
     let sum_before_t = AtomicUsize::new(0);
     let sum_after_t = AtomicUsize::new(0);
 
-    start_progress_block(box_lines(3));
+    start_progress_block(box_lines(5));
     update_chunk_progress(
         0,
         total,
         baseline_gates,
         baseline_gates,
+        baseline_2q,
+        baseline_2q,
+        baseline_depth,
+        baseline_depth,
         baseline_t,
         baseline_t,
     );
     let optimized: Vec<Circuit> = chunks
         .par_iter()
-        .map(|chunk| {
+        .enumerate()
+        .map(|(chunk_index, chunk)| {
             let before_gates = chunk.gates.len();
             let before_t = count_t(chunk);
             let result = optimize(chunk, false);
@@ -873,18 +1017,28 @@ fn run_map_reduce(
 
             let current_gates = baseline_gates - sum_before_gates + sum_after_gates;
             let current_t = baseline_t - sum_before_t + sum_after_t;
+            let (current_2q, current_depth) = {
+                let mut progress_chunks = progress_chunks.lock().unwrap();
+                progress_chunks[chunk_index] = result.clone();
+                let current = stitch(circuit.num_qubits, circuit.num_cbits, &progress_chunks);
+                (count_2q(&current), depth(&current))
+            };
             update_chunk_progress(
                 n,
                 total,
                 baseline_gates,
                 current_gates,
+                baseline_2q,
+                current_2q,
+                baseline_depth,
+                current_depth,
                 baseline_t,
                 current_t,
             );
             result
         })
         .collect();
-    end_progress_block(box_lines(3));
+    end_progress_block(box_lines(5));
     stitch(circuit.num_qubits, circuit.num_cbits, &optimized)
 }
 
@@ -1279,6 +1433,25 @@ fn main() {
 mod tests {
     use super::*;
     use tzap::qasm;
+
+    #[test]
+    fn progress_box_grows_for_large_counts() {
+        let rows = [(
+            "2q gates",
+            render_bar(1.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
+            "↓0.0% · 1,234,567,890,123".to_string(),
+        )];
+        let lines = progress_box("Large counts", &rows);
+        let width = lines[0].chars().count();
+        let visible_row = lines[1]
+            .replace("\x1b[33m", "")
+            .replace("\x1b[0m\x1b[2m", "")
+            .replace("\x1b[0m", "");
+
+        assert_eq!(lines[2].chars().count(), width);
+        assert!(width > 60);
+        assert!(visible_row.contains("1,234,567,890,123"));
+    }
 
     /// Parallel (map-reduce) optimization of a measured circuit must
     /// round-trip to valid QASM. Regression guard: the stitched
