@@ -1595,6 +1595,28 @@ fn disk_read_rejects_a_mismatched_config() {
 }
 
 #[test]
+fn disk_read_rejects_a_different_crate_version() {
+    let config = SuperOptTableConfig::new(1, 2, 100);
+    let built = UnitaryCircuitTable::build(config).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("table.bin");
+    built.write_to_disk(&path, config).unwrap();
+
+    // Corrupt the length-prefixed crate-version string right after the
+    // magic (4 bytes) and format-version (4 bytes) fields, simulating a
+    // cache file written by a different tzap release.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let version_len = bytes[8] as usize;
+    assert!(version_len > 0, "crate version string must be non-empty");
+    let last_byte = &mut bytes[8 + version_len];
+    *last_byte = last_byte.wrapping_add(1);
+    std::fs::write(&path, &bytes).unwrap();
+
+    assert!(UnitaryCircuitTable::read_from_disk(&path, config).is_err());
+}
+
+#[test]
 fn disk_read_rejects_a_missing_or_corrupt_file() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("does-not-exist.bin");

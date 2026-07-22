@@ -28,8 +28,17 @@ use super::{SuperOptError, SuperOptTableConfig};
 /// `CACHE_FORMAT_VERSION` whenever the byte layout below changes; a mismatch
 /// (or a missing/corrupt file) simply falls back to rebuilding, never to a
 /// misread table.
+///
+/// The crate version is checked too (see `CACHE_CRATE_VERSION`), separately
+/// from the byte layout: table *construction* (pruning rules, the library
+/// gate set, etc.) can change between releases without touching how a table
+/// is serialized, and such a change must still invalidate old caches even
+/// though `CACHE_FORMAT_VERSION` didn't move. Tying invalidation to the crate
+/// version means that never has to be caught by hand — every release gets a
+/// fresh cache namespace for free.
 const CACHE_MAGIC: &[u8; 4] = b"TZS1";
 const CACHE_FORMAT_VERSION: u32 = 1;
+const CACHE_CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Reads and validates a cache file's header — magic, format version, and
 /// config fields — against `config`. Shared by `read_from_disk` (which
@@ -47,6 +56,14 @@ fn read_cache_header(input: &mut impl Read, config: SuperOptTableConfig) -> io::
     input.read_exact(&mut version_buf)?;
     if u32::from_le_bytes(version_buf) != CACHE_FORMAT_VERSION {
         return Err(invalid("cache format version mismatch"));
+    }
+
+    let mut crate_version_len = [0u8; 1];
+    input.read_exact(&mut crate_version_len)?;
+    let mut crate_version_buf = vec![0u8; crate_version_len[0] as usize];
+    input.read_exact(&mut crate_version_buf)?;
+    if crate_version_buf != CACHE_CRATE_VERSION.as_bytes() {
+        return Err(invalid("cache crate version mismatch"));
     }
 
     let mut qubits_buf = [0u8; 4];
@@ -310,6 +327,8 @@ impl UnitaryCircuitTable {
             let mut out = io::BufWriter::new(file);
             out.write_all(CACHE_MAGIC)?;
             out.write_all(&CACHE_FORMAT_VERSION.to_le_bytes())?;
+            out.write_all(&[CACHE_CRATE_VERSION.len() as u8])?;
+            out.write_all(CACHE_CRATE_VERSION.as_bytes())?;
             out.write_all(&(config.max_qubits as u32).to_le_bytes())?;
             out.write_all(&(config.max_gates as u32).to_le_bytes())?;
             out.write_all(&(config.max_entries_per_qubit as u64).to_le_bytes())?;
@@ -446,13 +465,14 @@ fn cache_dir() -> Option<std::path::PathBuf> {
 }
 
 /// One file per distinct `config`, since different bounds produce different
-/// tables; the format version is in the name too so a version bump can't
-/// collide with (and doesn't need to explicitly invalidate) old files —
-/// they're simply never looked up again and can be cleaned up manually.
+/// tables; the format version and crate version are in the name too so a
+/// bump of either can't collide with (and doesn't need to explicitly
+/// invalidate) old files — they're simply never looked up again and can be
+/// cleaned up manually.
 fn cache_file_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
     let mut path = cache_dir()?;
     path.push(format!(
-        "q{}_g{}_e{}.v{CACHE_FORMAT_VERSION}.bin",
+        "q{}_g{}_e{}.v{CACHE_FORMAT_VERSION}.tzap{CACHE_CRATE_VERSION}.bin",
         config.max_qubits, config.max_gates, config.max_entries_per_qubit
     ));
     Some(path)
