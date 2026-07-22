@@ -133,8 +133,12 @@ from `tzap::pass`.
 and replaces it with the smallest equivalent circuit from a precomputed
 unitary-to-circuit table, applying a rewrite only when it strictly reduces the
 gate count. Every replacement is verified by matrix equality up to global phase
-before use, so rewrites are always semantics-preserving. The pass accepts unitary
-circuits only.
+before use, so rewrites are always semantics-preserving. Matrices use exact
+Clifford+T arithmetic; Rz gates act as window barriers and are left unchanged.
+The pass accepts unitary circuits only.
+
+See [Exact cyclotomic matrices in SuperOpt](docs/superopt-cyclotomic-matrices.md)
+for the representation and canonicalization rules.
 
 ```rust,ignore
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig};

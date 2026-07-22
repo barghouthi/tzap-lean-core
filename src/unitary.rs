@@ -33,6 +33,11 @@ impl C {
             im: -self.im,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) const fn components(self) -> (f64, f64) {
+        (self.re, self.im)
+    }
 }
 
 impl std::ops::Add for C {

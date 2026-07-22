@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use tzap::cancel::CancelGates;
 use tzap::circuit::{Circuit, Gate};
 use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
-use tzap::pass::{Pass, count_2q, count_t, depth};
+use tzap::pass::{Pass, count_2q, count_rz, count_t, depth};
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_is_cached};
@@ -259,12 +259,15 @@ fn init_global_pool() {
 fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> Circuit {
     let start = Instant::now();
     let c = pass.run(circuit);
+    let rz = count_rz(&c);
+    let rz_report = (rz > 0).then(|| format!(" · {} Rz", fmt_num(rz)));
     eprintln!(
-        "  {}\n\t└─ {} gates · {} 2q gates · {} T · {} depth · {:.3}s",
+        "  {}\n\t└─ {} gates · {} 2q gates · {} T{} · {} depth · {:.3}s",
         pass.name(),
         fmt_num(c.gates.len()),
         fmt_num(count_2q(&c)),
         fmt_num(count_t(&c)),
+        rz_report.as_deref().unwrap_or(""),
         fmt_num(depth(&c)),
         start.elapsed().as_secs_f64()
     );
@@ -316,6 +319,8 @@ fn print_result(
     out_depth: usize,
     in_t: usize,
     out_t: usize,
+    in_rz: usize,
+    out_rz: usize,
     secs: f64,
 ) {
     let in_values = [
@@ -355,6 +360,15 @@ fn print_result(
         output = out_values[2],
         reduction = pct(in_t, out_t),
     );
+    if in_rz > 0 || out_rz > 0 {
+        eprintln!(
+            "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
+            label = "Rz",
+            input = fmt_num(in_rz),
+            output = fmt_num(out_rz),
+            reduction = pct(in_rz, out_rz),
+        );
+    }
     eprintln!(
         "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
         label = "Depth",
@@ -392,12 +406,15 @@ fn read_circuit(path: &str) -> Circuit {
         eprintln!("Error parsing {path}: {e}");
         process::exit(1);
     });
+    let rz = count_rz(&circuit);
+    let rz_report = (rz > 0).then(|| format!(" · {} Rz", fmt_num(rz)));
     eprintln!(
-        "\t└─ {} qubits · {} gates · {} 2q gates · {} T/Tdg · {} depth · {:.3}s",
+        "\t└─ {} qubits · {} gates · {} 2q gates · {} T/Tdg{} · {} depth · {:.3}s",
         fmt_num(circuit.num_qubits),
         fmt_num(circuit.gates.len()),
         fmt_num(count_2q(&circuit)),
         fmt_num(count_t(&circuit)),
+        rz_report.as_deref().unwrap_or(""),
         fmt_num(depth(&circuit)),
         parse_start.elapsed().as_secs_f64()
     );
@@ -416,9 +433,10 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circu
     let baseline_2q = count_2q(circuit);
     let baseline_depth = depth(circuit);
     let baseline_t = count_t(circuit);
+    let baseline_rz = count_rz(circuit);
     let mut c = circuit.clone();
     if verbose {
-        start_progress_block(box_lines(4));
+        start_progress_block(box_lines(if baseline_rz > 0 { 5 } else { 4 }));
         update_reduction_progress(
             "% reduction so far",
             c.gates.len(),
@@ -429,6 +447,8 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circu
             baseline_2q,
             baseline_depth,
             baseline_t,
+            count_rz(&c),
+            baseline_rz,
         );
     }
     for p in passes {
@@ -444,11 +464,13 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circu
                 baseline_2q,
                 baseline_depth,
                 baseline_t,
+                count_rz(&c),
+                baseline_rz,
             );
         }
     }
     if verbose {
-        end_progress_block(box_lines(4));
+        end_progress_block(box_lines(if baseline_rz > 0 { 5 } else { 4 }));
     }
     c
 }
@@ -467,6 +489,8 @@ const GATES_BAR_COLOR: &str = "\x1b[36m";
 const TWO_QUBIT_BAR_COLOR: &str = "\x1b[33m";
 /// Magenta fill, used for the T-count reduction bar.
 const T_BAR_COLOR: &str = "\x1b[35m";
+/// Red fill, used for the Rz-count reduction bar.
+const RZ_BAR_COLOR: &str = "\x1b[31m";
 /// Blue fill, used for the depth reduction bar.
 const DEPTH_BAR_COLOR: &str = "\x1b[34m";
 
@@ -596,6 +620,8 @@ fn update_reduction_progress(
     baseline_two_qubit: usize,
     baseline_depth: usize,
     baseline_t: usize,
+    rz_count: usize,
+    baseline_rz: usize,
 ) {
     let gates_pct = pct(baseline_gates, gates);
     let two_qubit_pct = pct(baseline_two_qubit, two_qubit);
@@ -609,9 +635,7 @@ fn update_reduction_progress(
     let depth_width = fmt_num(baseline_depth).chars().count();
     let t_str = fmt_num(t_count);
     let t_width = fmt_num(baseline_t).chars().count();
-    redraw_progress_block(&progress_box(
-        title,
-        &[
+    let mut rows = vec![
             (
                 "Gates",
                 render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
@@ -632,8 +656,21 @@ fn update_reduction_progress(
                 render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
                 format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
             ),
-        ],
-    ));
+    ];
+    if baseline_rz > 0 {
+        let rz_pct = pct(baseline_rz, rz_count);
+        let rz_str = fmt_num(rz_count);
+        let rz_width = fmt_num(baseline_rz).chars().count();
+        rows.insert(
+            3,
+            (
+                "Rz",
+                render_bar(rz_pct / 100.0, BAR_WIDTH, RZ_BAR_COLOR),
+                format!("{rz_pct:>5.1}% · {rz_str:<rz_width$}"),
+            ),
+        );
+    }
+    redraw_progress_block(&progress_box(title, &rows));
 }
 
 /// Redraw the live fixpoint progress box — [`update_reduction_progress`]
@@ -648,6 +685,8 @@ fn update_fixpoint_progress(
     baseline_two_qubit: usize,
     baseline_depth: usize,
     baseline_t: usize,
+    rz_count: usize,
+    baseline_rz: usize,
 ) {
     update_reduction_progress(
         &format!("Iteration {iteration} — % reduction so far"),
@@ -659,6 +698,8 @@ fn update_fixpoint_progress(
         baseline_two_qubit,
         baseline_depth,
         baseline_t,
+        rz_count,
+        baseline_rz,
     );
 }
 
@@ -678,6 +719,8 @@ fn update_chunk_progress(
     current_depth: usize,
     baseline_t: usize,
     current_t: usize,
+    baseline_rz: usize,
+    current_rz: usize,
 ) {
     let chunk_fraction = if total > 0 {
         done as f64 / total as f64
@@ -700,9 +743,7 @@ fn update_chunk_progress(
     let depth_width = fmt_num(baseline_depth).chars().count();
     let t_str = fmt_num(current_t);
     let t_width = fmt_num(baseline_t).chars().count();
-    redraw_progress_block(&progress_box(
-        "Parallel optimization — % reduction so far",
-        &[
+    let mut rows = vec![
             (
                 "Chunks",
                 render_bar(chunk_fraction, BAR_WIDTH, CHUNK_BAR_COLOR),
@@ -728,7 +769,23 @@ fn update_chunk_progress(
                 render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
                 format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
             ),
-        ],
+    ];
+    if baseline_rz > 0 {
+        let rz_pct = pct(baseline_rz, current_rz);
+        let rz_str = fmt_num(current_rz);
+        let rz_width = fmt_num(baseline_rz).chars().count();
+        rows.insert(
+            4,
+            (
+                "Rz",
+                render_bar(rz_pct / 100.0, BAR_WIDTH, RZ_BAR_COLOR),
+                format!("{rz_pct:>5.1}% · {rz_str:<rz_width$}"),
+            ),
+        );
+    }
+    redraw_progress_block(&progress_box(
+        "Parallel optimization — % reduction so far",
+        &rows,
     ));
 }
 
@@ -743,6 +800,7 @@ fn run_fixpoint_sweep(
     baseline_2q: usize,
     baseline_depth: usize,
     baseline_t: usize,
+    baseline_rz: usize,
 ) -> Circuit {
     let mut c = circuit.clone();
     if verbose {
@@ -756,6 +814,8 @@ fn run_fixpoint_sweep(
             baseline_2q,
             baseline_depth,
             baseline_t,
+            count_rz(&c),
+            baseline_rz,
         );
     }
     for pass in passes {
@@ -771,6 +831,8 @@ fn run_fixpoint_sweep(
                 baseline_2q,
                 baseline_depth,
                 baseline_t,
+                count_rz(&c),
+                baseline_rz,
             );
         }
     }
@@ -795,11 +857,12 @@ fn run_to_fixpoint(
     let baseline_2q = count_2q(circuit);
     let baseline_depth = depth(circuit);
     let baseline_t = count_t(circuit);
+    let baseline_rz = count_rz(circuit);
     let mut c = circuit.clone();
     let mut round = 0;
     let mut reduced;
     if verbose {
-        start_progress_block(box_lines(4));
+        start_progress_block(box_lines(if baseline_rz > 0 { 5 } else { 4 }));
     }
     loop {
         round += 1;
@@ -813,6 +876,7 @@ fn run_to_fixpoint(
             baseline_2q,
             baseline_depth,
             baseline_t,
+            baseline_rz,
         );
         reduced = c.gates.len() < before;
 
@@ -832,6 +896,8 @@ fn run_to_fixpoint(
                     baseline_2q,
                     baseline_depth,
                     baseline_t,
+                    count_rz(&c),
+                    baseline_rz,
                 );
             }
             if had_rz {
@@ -844,7 +910,7 @@ fn run_to_fixpoint(
         }
     }
     if verbose {
-        end_progress_block(box_lines(4));
+        end_progress_block(box_lines(if baseline_rz > 0 { 5 } else { 4 }));
     }
     (c, round, !reduced)
 }
@@ -917,6 +983,8 @@ fn finish(input: &Circuit, result: &Circuit, opts: &Opts, start: Instant) {
         depth(result),
         count_t(input),
         count_t(result),
+        count_rz(input),
+        count_rz(result),
         start.elapsed().as_secs_f64(),
     );
 
@@ -978,14 +1046,17 @@ fn run_map_reduce(
     let baseline_2q = count_2q(circuit);
     let baseline_depth = depth(circuit);
     let baseline_t = count_t(circuit);
+    let baseline_rz = count_rz(circuit);
     let progress_chunks = Arc::new(Mutex::new(chunks.clone()));
     let done = AtomicUsize::new(0);
     let sum_before_gates = AtomicUsize::new(0);
     let sum_after_gates = AtomicUsize::new(0);
     let sum_before_t = AtomicUsize::new(0);
     let sum_after_t = AtomicUsize::new(0);
+    let sum_before_rz = AtomicUsize::new(0);
+    let sum_after_rz = AtomicUsize::new(0);
 
-    start_progress_block(box_lines(5));
+    start_progress_block(box_lines(if baseline_rz > 0 { 6 } else { 5 }));
     update_chunk_progress(
         0,
         total,
@@ -997,6 +1068,8 @@ fn run_map_reduce(
         baseline_depth,
         baseline_t,
         baseline_t,
+        baseline_rz,
+        baseline_rz,
     );
     let optimized: Vec<Circuit> = chunks
         .par_iter()
@@ -1004,9 +1077,11 @@ fn run_map_reduce(
         .map(|(chunk_index, chunk)| {
             let before_gates = chunk.gates.len();
             let before_t = count_t(chunk);
+            let before_rz = count_rz(chunk);
             let result = optimize(chunk, false);
             let after_gates = result.gates.len();
             let after_t = count_t(&result);
+            let after_rz = count_rz(&result);
 
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             let sum_before_gates =
@@ -1015,9 +1090,13 @@ fn run_map_reduce(
                 sum_after_gates.fetch_add(after_gates, Ordering::Relaxed) + after_gates;
             let sum_before_t = sum_before_t.fetch_add(before_t, Ordering::Relaxed) + before_t;
             let sum_after_t = sum_after_t.fetch_add(after_t, Ordering::Relaxed) + after_t;
+            let sum_before_rz =
+                sum_before_rz.fetch_add(before_rz, Ordering::Relaxed) + before_rz;
+            let sum_after_rz = sum_after_rz.fetch_add(after_rz, Ordering::Relaxed) + after_rz;
 
             let current_gates = baseline_gates - sum_before_gates + sum_after_gates;
             let current_t = baseline_t - sum_before_t + sum_after_t;
+            let current_rz = baseline_rz - sum_before_rz + sum_after_rz;
             let (current_2q, current_depth) = {
                 let mut progress_chunks = progress_chunks.lock().unwrap();
                 progress_chunks[chunk_index] = result.clone();
@@ -1035,11 +1114,13 @@ fn run_map_reduce(
                 current_depth,
                 baseline_t,
                 current_t,
+                baseline_rz,
+                current_rz,
             );
             result
         })
         .collect();
-    end_progress_block(box_lines(5));
+    end_progress_block(box_lines(if baseline_rz > 0 { 6 } else { 5 }));
     stitch(circuit.num_qubits, circuit.num_cbits, &optimized)
 }
 

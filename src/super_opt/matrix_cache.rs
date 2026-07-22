@@ -8,9 +8,8 @@
 //! across runs.
 //!
 //! Keys come in two forms: a packed `u128` fast path covering the common
-//! case (Clifford+T gates, at most ten of them, at most four qubits), and a
-//! general [`NormalizedGate`] sequence for everything else — notably windows
-//! containing `rz`, whose angle needs exact representation.
+//! case (at most ten gates on at most four qubits), and a general
+//! [`NormalizedGate`] sequence for wider or longer Clifford+T windows.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -118,9 +117,8 @@ impl MatrixStore {
     }
 }
 
-/// One gate of a general canonical key: the gate kind on support-local qubit
-/// positions, with `rz` angles kept bit-exact. The fallback when the packed
-/// `u128` form below cannot represent the window.
+/// One gate of a general canonical key on support-local qubit positions. The
+/// fallback when the packed `u128` form below cannot represent the window.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum NormalizedGate {
     X(usize),
@@ -130,7 +128,6 @@ enum NormalizedGate {
     Z(usize),
     T(usize),
     Tdg(usize),
-    Rz(u64, usize),
     Cnot(usize, usize),
     Cz(usize, usize),
     Ccx(usize, usize, usize),
@@ -144,7 +141,7 @@ const COMPACT_KEY_MAX_GATES: usize =
 
 /// Exact packed normalized key for the common Clifford+T window. Four bits
 /// hold the gate count and each gate uses twelve bits, fitting ten gates in a
-/// `u128`. Windows containing `rz` use the general key representation below.
+/// `u128`.
 pub(super) fn compact_normalized_key(
     circuit: &Circuit,
     gate_indices: &[usize],
@@ -209,37 +206,6 @@ fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
     })
 }
 
-/// Whether the window contains exactly one rotation outside Clifford+T.
-///
-/// Such a window's unitary can never be in the Clifford+T synthesis table —
-/// a single arbitrary rotation leaves the discrete Clifford+T group and
-/// nothing else in the window can bring it back — so its lookup is a
-/// guaranteed miss and optimization-only callers skip it. With two or more
-/// arbitrary rotations the angles may cancel, so those windows are looked up.
-pub(super) fn has_lone_arbitrary_rz(circuit: &Circuit, gate_indices: &[usize]) -> bool {
-    let mut arbitrary_rotations = 0;
-    for &gate_index in gate_indices {
-        if let Gate::rz(theta, _) = circuit.gates[gate_index]
-            && !rz_is_clifford_t(theta)
-        {
-            arbitrary_rotations += 1;
-            if arbitrary_rotations > 1 {
-                return false;
-            }
-        }
-    }
-    arbitrary_rotations == 1
-}
-
-/// Whether `rz(theta)` is a Clifford+T rotation, i.e. a multiple of π/4 up
-/// to a tolerance absorbing accumulated floating-point drift.
-fn rz_is_clifford_t(theta: f64) -> bool {
-    const ANGLE_TOLERANCE: f64 = 4e-10;
-    let step = std::f64::consts::FRAC_PI_4;
-    let nearest = (theta / step).round() * step;
-    (theta - nearest).abs() <= ANGLE_TOLERANCE
-}
-
 /// Write the window's general canonical key into `key` (reused scratch, so
 /// the hot path allocates nothing on a hit).
 fn normalized_gate_key(
@@ -265,7 +231,7 @@ fn normalized_gate_key(
                 Gate::z(q) => NormalizedGate::Z(local(*q)),
                 Gate::t(q) => NormalizedGate::T(local(*q)),
                 Gate::tdg(q) => NormalizedGate::Tdg(local(*q)),
-                Gate::rz(theta, q) => NormalizedGate::Rz(theta.to_bits(), local(*q)),
+                Gate::rz(..) => unreachable!("Rz gates are SuperOpt window barriers"),
                 Gate::cnot { control, target } => {
                     NormalizedGate::Cnot(local(*control), local(*target))
                 }
@@ -281,7 +247,7 @@ fn normalized_gate_key(
                     target,
                 } => NormalizedGate::Ccz(local(*control1), local(*control2), local(*target)),
                 Gate::measure { .. } | Gate::reset(_) => {
-                    unreachable!("measurement and reset are window barriers")
+                    unreachable!("measurement and reset are SuperOpt window barriers")
                 }
             }),
     );

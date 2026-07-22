@@ -45,17 +45,17 @@ fn naive_matrix(circuit: &Circuit, gate_indices: &[usize], support: &[Qubit]) ->
 
 fn assert_matrix_close(actual: &UnitaryMatrix, expected: &UnitaryMatrix) {
     assert_eq!(actual.num_qubits(), expected.num_qubits());
-    for (index, (a, b)) in actual
-        .as_slice()
-        .iter()
-        .zip(expected.as_slice())
-        .enumerate()
-    {
-        let delta = Complex64::new(a.re - b.re, a.im - b.im);
-        assert!(
-            delta.norm_sqr() < 1e-20,
-            "matrix entry {index} differs: {a:?} != {b:?}"
-        );
+    let dim = 1 << actual.num_qubits();
+    for row in 0..dim {
+        for column in 0..dim {
+            let a = actual.get(row, column);
+            let b = expected.get(row, column);
+            let delta = Complex64::new(a.re - b.re, a.im - b.im);
+            assert!(
+                delta.norm_sqr() < 1e-20,
+                "matrix entry ({row}, {column}) differs: {a:?} != {b:?}"
+            );
+        }
     }
 }
 
@@ -219,7 +219,12 @@ fn naive_windows(
             }
             if indices != previous_indices {
                 previous_indices = indices.clone();
-                result.push((indices.clone(), qubits));
+                if !indices
+                    .iter()
+                    .any(|&index| matches!(circuit.gates[index], Gate::rz(..)))
+                {
+                    result.push((indices.clone(), qubits));
+                }
             }
             if indices.len() == max_gates {
                 break;
@@ -624,10 +629,11 @@ fn oversized_matrix_request_errors_instead_of_allocating() {
 
 #[test]
 fn global_phase_equivalence_accepts_phase_and_rejects_difference() {
+    let x = single_qubit_matrix(&[Gate::x(0)]);
+    let minus_x = single_qubit_matrix(&[Gate::z(0), Gate::x(0), Gate::z(0)]);
     let s = single_qubit_matrix(&[Gate::s(0)]);
     let sdg = single_qubit_matrix(&[Gate::sdg(0)]);
-    let rz_half_pi = single_qubit_matrix(&[Gate::rz(std::f64::consts::FRAC_PI_2, 0)]);
-    assert!(s.equivalent_up_to_global_phase(&rz_half_pi));
+    assert!(x.equivalent_up_to_global_phase(&minus_x));
     assert!(!s.equivalent_up_to_global_phase(&sdg));
 }
 
@@ -637,6 +643,16 @@ fn fingerprint_ignores_global_phase() {
     // Z X Z = -X: same unitary up to a global phase of -1.
     let minus_x = single_qubit_matrix(&[Gate::z(0), Gate::x(0), Gate::z(0)]);
     assert_eq!(unitary_fingerprint(&x), unitary_fingerprint(&minus_x));
+
+    // T X T X = omega I, exercising a non-real eighth-root global phase.
+    let identity = single_qubit_matrix(&[]);
+    let omega_identity =
+        single_qubit_matrix(&[Gate::x(0), Gate::t(0), Gate::x(0), Gate::t(0)]);
+    assert!(identity.equivalent_up_to_global_phase(&omega_identity));
+    assert_eq!(
+        unitary_fingerprint(&identity),
+        unitary_fingerprint(&omega_identity)
+    );
 }
 
 #[test]
@@ -647,10 +663,11 @@ fn fingerprint_distinguishes_s_from_sdg() {
 }
 
 #[test]
-fn fingerprint_buckets_rz_half_pi_with_s() {
-    let s = single_qubit_matrix(&[Gate::s(0)]);
-    let rz = single_qubit_matrix(&[Gate::rz(std::f64::consts::FRAC_PI_2, 0)]);
-    assert_eq!(unitary_fingerprint(&s), unitary_fingerprint(&rz));
+fn denominator_normalization_buckets_hh_with_identity() {
+    let identity = single_qubit_matrix(&[]);
+    let hh = single_qubit_matrix(&[Gate::h(0), Gate::h(0)]);
+    assert!(identity.equivalent_up_to_global_phase(&hh));
+    assert_eq!(unitary_fingerprint(&identity), unitary_fingerprint(&hh));
 }
 
 #[test]
@@ -843,96 +860,27 @@ fn toffoli_metadata_tracks_surviving_and_removed_gates() {
 }
 
 #[test]
-fn rz_inverse_pair_is_removed_as_identity() {
-    let mut circuit = Circuit::new(1);
-    circuit.apply(Gate::rz(0.37, 0));
-    circuit.apply(Gate::rz(-0.37, 0));
-    let result = SuperOpt::analyzer(1, 2)
-        .with_synthesis_table(synthesis_table(1, 0))
-        .run(&circuit)
-        .unwrap();
-    assert_eq!(removed_indices(&result), vec![vec![0, 1]]);
-    assert!(result.circuit.gates.is_empty());
-}
-
-#[test]
-fn lone_arbitrary_rz_windows_skip_clifford_t_lookup() {
+fn rz_windows_are_rejected_without_matrix_lookup() {
     let table = synthesis_table(1, 0);
-
-    let mut lone = Circuit::new(1);
-    lone.apply(Gate::rz(0.37, 0));
-    lone.apply(Gate::h(0));
-    let result = SuperOpt::analyzer(1, 2)
-        .with_synthesis_table(Arc::clone(&table))
-        .without_subcircuits()
-        .run(&lone)
-        .unwrap();
-    assert!(result.rewrites.is_empty());
-    assert_eq!(result.cache_hits + result.cache_misses, 0);
-
-    // Two arbitrary rotations can cancel, so those windows must still reach
-    // the table and find the identity representative.
-    let mut cancelling = Circuit::new(1);
-    cancelling.apply(Gate::rz(0.37, 0));
-    cancelling.apply(Gate::rz(-0.37, 0));
-    let result = SuperOpt::analyzer(1, 2)
-        .with_synthesis_table(table)
-        .without_subcircuits()
-        .run(&cancelling)
-        .unwrap();
-    assert!(result.circuit.gates.is_empty());
-    assert_eq!(result.cache_hits + result.cache_misses, 1);
-}
-
-#[test]
-fn arbitrary_rz_shortcut_respects_tolerance_and_nonfinite_angles() {
-    let step = std::f64::consts::FRAC_PI_4;
-    for (theta, arbitrary) in [
-        (0.0, false),
-        (-0.0, false),
-        (std::f64::consts::TAU, false),
-        (step + 3.9e-10, false),
-        (step - 3.9e-10, false),
-        (step + 4.1e-10, true),
-        (step - 4.1e-10, true),
-        (f64::INFINITY, true),
-        (f64::NEG_INFINITY, true),
-        (f64::NAN, true),
+    for angles in [
+        vec![0.37],
+        vec![0.37, -0.37],
+        vec![std::f64::consts::FRAC_PI_4; 2],
+        vec![f64::NAN],
     ] {
         let mut circuit = Circuit::new(1);
-        circuit.apply(Gate::rz(theta, 0));
-        assert_eq!(has_lone_arbitrary_rz(&circuit, &[0]), arbitrary);
-    }
-
-    // Optimization-only mode must safely skip non-finite arbitrary rotations
-    // rather than attempting to fingerprint their non-unitary matrices.
-    for theta in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
-        let mut circuit = Circuit::new(1);
-        circuit.apply(Gate::rz(theta, 0));
-        let result = SuperOpt::analyzer(1, 1)
-            .with_synthesis_table(synthesis_table(1, 1))
+        for angle in angles {
+            circuit.apply(Gate::rz(angle, 0));
+        }
+        let result = SuperOpt::analyzer(1, circuit.gates.len())
+            .with_synthesis_table(Arc::clone(&table))
             .without_subcircuits()
             .run(&circuit)
             .unwrap();
         assert!(result.rewrites.is_empty());
         assert_eq!(result.cache_hits + result.cache_misses, 0);
+        assert_eq!(result.circuit.gates.len(), circuit.gates.len());
     }
-}
-
-#[test]
-fn rz_pair_is_rewritten_to_library_gate() {
-    let mut circuit = Circuit::new(1);
-    circuit.apply(Gate::rz(std::f64::consts::FRAC_PI_4, 0));
-    circuit.apply(Gate::rz(std::f64::consts::FRAC_PI_4, 0));
-    let pass = SuperOpt::analyzer(1, 2).with_synthesis_table(synthesis_table(1, 1));
-    let result = pass.run(&circuit).unwrap();
-    assert_eq!(result.circuit.gates.len(), 1);
-    assert!(matches!(result.circuit.gates[0], Gate::s(0)));
-    assert!(crate::unitary::circuits_equiv(
-        &circuit,
-        &result.circuit,
-        IDENTITY_TOLERANCE,
-    ));
 }
 
 #[test]

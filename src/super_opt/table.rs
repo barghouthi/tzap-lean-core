@@ -37,7 +37,9 @@ use super::{SuperOptError, SuperOptTableConfig};
 /// version means that never has to be caught by hand — every release gets a
 /// fresh cache namespace for free.
 const CACHE_MAGIC: &[u8; 4] = b"TZS1";
-const CACHE_FORMAT_VERSION: u32 = 1;
+// Version 2 uses exact cyclotomic-matrix fingerprints rather than rounded
+// floating-point fingerprints.
+const CACHE_FORMAT_VERSION: u32 = 2;
 const CACHE_CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Reads and validates a cache file's header — magic, format version, and
@@ -424,9 +426,9 @@ impl UnitaryCircuitTable {
         let table = self.entries.get(matrix.num_qubits())?;
         let node = table.node_for(&unitary_fingerprint(matrix))?;
         let circuit = table.circuit(node);
-        // The fingerprint is a lossy, rounded hash. This comparison is the
-        // release-mode collision guard that makes accepting a rewrite sound;
-        // it is not a redundant post-rewrite audit.
+        // A fingerprint is still a finite hash of the exact matrix. This
+        // exact comparison is the release-mode collision guard that makes
+        // accepting a rewrite sound; it is not a redundant post-rewrite audit.
         let candidate = library_circuit_matrix(matrix.num_qubits(), &circuit).ok()?;
         matrix
             .equivalent_up_to_global_phase(&candidate)

@@ -26,11 +26,12 @@
 //!   place is still sound because every skipped gate commutes past the
 //!   window: it shares no qubit with any member between anchor and head.
 //!
-//! A window dies when it exceeds `max_qubits` or `window_gates`, when
-//! measurement or reset touches one of its qubits (its region is no longer
-//! unitary), or when one of its gates is claimed by a selected rewrite. Each
-//! window is analyzed after every extension, so every intermediate size is
-//! considered, not just the final one.
+//! A window dies when it exceeds `max_qubits` or `window_gates`, when Rz,
+//! measurement, or reset touches one of its qubits (Rz is outside SuperOpt's
+//! exact Clifford+T matrix domain; measurement/reset are non-unitary), or when
+//! one of its gates is claimed by a selected rewrite. Each window is analyzed
+//! after every extension, so every intermediate size is considered, not just
+//! the final one.
 //!
 //! # Rewrites
 //!
@@ -81,10 +82,7 @@ pub use config::SuperOptTableConfig;
 pub use error::SuperOptError;
 
 use matrix::UnitaryMatrix;
-use matrix_cache::{
-    CachedMatrix, MatrixStore, append_compact_gate_key, compact_normalized_key,
-    has_lone_arbitrary_rz,
-};
+use matrix_cache::{CachedMatrix, MatrixStore, append_compact_gate_key, compact_normalized_key};
 use table::{UnitaryCircuitTable, shared_synthesis_table};
 
 /// Whether a synthesis table matching `config` is already cached on disk —
@@ -252,10 +250,11 @@ impl SuperOpt {
             touched_windows.sort_unstable();
             touched_windows.dedup();
 
-            // Measurement and reset terminate every unitary window touching
-            // their qubit. Keep the gate in the per-qubit history so a window
-            // on a disjoint qubit cannot later bridge across this barrier.
-            if matches!(gate, Gate::measure { .. } | Gate::reset(_)) {
+            // Rz is outside the exact Clifford+T matrix domain; measurement
+            // and reset are non-unitary. All three terminate windows touching
+            // their qubit. Keep the gate in per-qubit history so a disjoint
+            // window cannot later bridge across this barrier.
+            if matches!(gate, Gate::rz(..) | Gate::measure { .. } | Gate::reset(_)) {
                 for &window_id in &touched_windows {
                     let window = active[window_id]
                         .take()
@@ -341,12 +340,10 @@ impl SuperOpt {
                     compact_key: compact_normalized_key(circuit, &[gate_index], &gate_qubits),
                     qubits: gate_qubits,
                 };
-                // A single non-identity gate can only be rewritten to the empty
-                // circuit, which requires its matrix to be identity up to phase.
-                // Only `rz` can be that (rz(0)); every other library gate never
-                // is, so its lookup can never yield a rewrite. Skip it unless we
-                // must collect the window's diagnostics.
-                if self.collect_subcircuits || matches!(gate, Gate::rz(..)) {
+                // A single non-identity Clifford+T gate cannot be rewritten to
+                // the empty circuit. Analyze it only when diagnostics were
+                // requested; Rz windows are rejected inside `analyze_window`.
+                if self.collect_subcircuits {
                     self.analyze_window(
                         circuit,
                         &window,
@@ -410,9 +407,12 @@ impl SuperOpt {
         // Unspill the SmallVecs once; this runs per emitted window.
         let gate_indices: &[usize] = &window.gate_indices;
         let qubits: &[Qubit] = &window.qubits;
-        if !self.collect_subcircuits
-            && self.synthesis_table.is_some()
-            && has_lone_arbitrary_rz(circuit, gate_indices)
+        // Exact SuperOpt matrices represent Clifford+T only. Never construct
+        // a matrix or accept a rewrite for a window containing Rz; phase
+        // folding/decomposition is responsible for those rotations.
+        if gate_indices
+            .iter()
+            .any(|&gate_index| matches!(circuit.gates[gate_index], Gate::rz(..)))
         {
             return Ok(false);
         }

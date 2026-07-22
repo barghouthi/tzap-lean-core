@@ -42,6 +42,11 @@ pub fn count_t(c: &Circuit) -> usize {
         .count()
 }
 
+/// Number of `rz` gates in the circuit.
+pub fn count_rz(c: &Circuit) -> usize {
+    c.gates.iter().filter(|g| matches!(g, Gate::rz(..))).count()
+}
+
 /// Number of two-qubit `cnot`/`cz` gates in the circuit.
 pub fn count_2q(c: &Circuit) -> usize {
     c.gates
@@ -63,14 +68,9 @@ pub fn depth(c: &Circuit) -> usize {
     next_layer.into_iter().max().unwrap_or(0)
 }
 
-/// Number of `rz` gates in the circuit.
-pub fn count_rz(c: &Circuit) -> usize {
-    c.gates.iter().filter(|g| matches!(g, Gate::rz(..))).count()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{count_2q, depth};
+    use super::{count_2q, count_rz, depth};
     use crate::circuit::{Circuit, Gate};
 
     #[test]
@@ -88,6 +88,16 @@ mod tests {
         circuit.apply(Gate::t(0));
 
         assert_eq!(count_2q(&circuit), 2);
+    }
+
+    #[test]
+    fn count_rz_counts_only_rz_gates() {
+        let mut circuit = Circuit::new(1);
+        circuit.apply(Gate::rz(0.25, 0));
+        circuit.apply(Gate::t(0));
+        circuit.apply(Gate::rz(-0.5, 0));
+
+        assert_eq!(count_rz(&circuit), 2);
     }
 
     #[test]
