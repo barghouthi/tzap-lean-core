@@ -65,12 +65,14 @@ tzap output:
 ```text
 ⚡️ tzap
   Parsing benchmarks/feynman/gf2^256_mult.qasm (13.9 MB)
-	└─ 768 qubits · 1,115,899 gates · 458,752 T/Tdg · 0.207s
+	└─ 768 qubits · 1,115,899 gates · 393,981 2q gates · 458,752 T/Tdg · 10,711 depth · 1.530s
 
   Final result
-	├─ Gates  1,115,899 → 657,723 (↓41.1%)
-	├─ T/Tdg  458,752 → 262,400 (↓42.8%)
-	└─ Time   0.320s
+	├─ Gates    1,115,899 → 657,723 (↓41.1%)
+	├─ 2q gates   393,981 → 393,981 (↓0.0%)
+	├─ T/Tdg      458,752 → 262,400 (↓42.8%)
+	├─ Depth       10,711 →   8,162 (↓23.8%)
+	└─ Time        3.104s
 ```
 
 **Optimization levels**
