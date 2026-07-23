@@ -323,64 +323,47 @@ fn print_result(
     out_rz: usize,
     secs: f64,
 ) {
-    let in_values = [
-        fmt_num(in_gates),
-        fmt_num(in_2q),
-        fmt_num(in_t),
-        fmt_num(in_depth),
-    ];
-    let out_values = [
-        fmt_num(out_gates),
-        fmt_num(out_2q),
-        fmt_num(out_t),
-        fmt_num(out_depth),
-    ];
-    let in_width = in_values.iter().map(String::len).max().unwrap_or(0);
-    let out_width = out_values.iter().map(String::len).max().unwrap_or(0);
+    // Same box/bar rendering as the live progress boxes, but each row's
+    // trailing text keeps both endpoints ("before → after") rather than just
+    // the current count, since this box is printed once and never redrawn.
+    let row = |before: usize, after: usize, color: &str| {
+        let reduction = pct(before, after);
+        let before_str = fmt_num(before);
+        let after_str = fmt_num(after);
+        let width = before_str.chars().count().max(after_str.chars().count());
+        (
+            render_bar(reduction / 100.0, BAR_WIDTH, color),
+            format!("{before_str:>width$} → {after_str:>width$} (↓{reduction:.1}%)"),
+        )
+    };
 
-    eprintln!("\x1b[1m  Final result\x1b[0m");
-    eprintln!(
-        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
-        label = "Gates",
-        input = in_values[0],
-        output = out_values[0],
-        reduction = pct(in_gates, out_gates),
-    );
-    eprintln!(
-        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
-        label = "2q gates",
-        input = in_values[1],
-        output = out_values[1],
-        reduction = pct(in_2q, out_2q),
-    );
-    eprintln!(
-        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
-        label = "T/Tdg",
-        input = in_values[2],
-        output = out_values[2],
-        reduction = pct(in_t, out_t),
-    );
+    let (gates_bar, gates_trailing) = row(in_gates, out_gates, GATES_BAR_COLOR);
+    let (two_q_bar, two_q_trailing) = row(in_2q, out_2q, TWO_QUBIT_BAR_COLOR);
+    let (t_bar, t_trailing) = row(in_t, out_t, T_BAR_COLOR);
+    let (depth_bar, depth_trailing) = row(in_depth, out_depth, DEPTH_BAR_COLOR);
+
+    let mut rows = vec![
+        ("Gates", gates_bar, gates_trailing),
+        ("2q gates", two_q_bar, two_q_trailing),
+        ("T/Tdg", t_bar, t_trailing),
+        ("Depth", depth_bar, depth_trailing),
+    ];
     if in_rz > 0 || out_rz > 0 {
-        eprintln!(
-            "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
-            label = "Rz",
-            input = fmt_num(in_rz),
-            output = fmt_num(out_rz),
-            reduction = pct(in_rz, out_rz),
-        );
+        let (rz_bar, rz_trailing) = row(in_rz, out_rz, RZ_BAR_COLOR);
+        rows.insert(3, ("Rz", rz_bar, rz_trailing));
     }
-    eprintln!(
-        "\t├─ {label:<8} {input:>in_width$} → {output:>out_width$} (↓{reduction:.1}%)",
-        label = "Depth",
-        input = in_values[3],
-        output = out_values[3],
-        reduction = pct(in_depth, out_depth),
-    );
-    eprintln!(
-        "\t└─ {label:<8} {time:>in_width$}",
-        label = "Time",
-        time = format!("{secs:.3}s"),
-    );
+    // Time has no reduction fraction, so its "bar" is an all-dim empty
+    // track (fraction 0.0; the color argument is unused at that fraction) —
+    // reads as "not applicable" while keeping the box rectangular.
+    rows.push((
+        "Time",
+        render_bar(0.0, BAR_WIDTH, GATES_BAR_COLOR),
+        format!("{secs:.3}s"),
+    ));
+
+    for line in progress_box("Final result", &rows) {
+        eprintln!("{line}");
+    }
 }
 
 /// Write a circuit to the output path (if any), exiting on error.
