@@ -1,9 +1,17 @@
 //! Dense exact unitary matrices for Clifford+T window semantics.
 //!
-//! Every entry is represented in the cyclotomic ring
-//! `Z[omega] / sqrt(2)^k`, where `omega = exp(i*pi/4)` and one denominator
-//! exponent is shared by the whole matrix. This makes gate application,
-//! equality, and phase-canonical fingerprints exact and deterministic.
+//! Each entry is `(a + b*omega + c*omega^2 + d*omega^3) / sqrt(2)^k`, where
+//! `omega = exp(i*pi/4)`, `omega^4 = -1`, and one denominator exponent is
+//! shared by the whole matrix. Numerators use four symmetric `i8` coefficients
+//! (`-127..=127`); arithmetic widens to `i16`, and an unrepresentable window or
+//! table child is conservatively skipped.
+//!
+//! Hadamards add and subtract row pairs and increment `k`; phase gates multiply
+//! rows by powers of `omega`; controlled-X gates permute rows. Common factors of
+//! `sqrt(2)` are removed exactly after each Hadamard. Equality and deterministic
+//! 64-bit fingerprints canonicalize the eight possible Clifford+T global
+//! phases, and every fingerprint hit is confirmed by exact matrix comparison.
+//! Rz gates are window barriers and never reach this code.
 
 use crate::circuit::{Gate, Qubit};
 

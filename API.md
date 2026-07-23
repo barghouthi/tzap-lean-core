@@ -137,9 +137,6 @@ before use, so rewrites are always semantics-preserving. Matrices use exact
 Clifford+T arithmetic; Rz gates act as window barriers and are left unchanged.
 The pass accepts unitary circuits only.
 
-See [Exact cyclotomic matrices in SuperOpt](docs/superopt-cyclotomic-matrices.md)
-for the representation and canonicalization rules.
-
 ```rust,ignore
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
 
