@@ -7,11 +7,13 @@
 //! probe serve every recurrence of a shape, across the whole circuit and
 //! across runs.
 //!
-//! Keys come in two forms: a packed `u128` fast path covering the common
-//! case (at most ten gates on at most four qubits), and a general
-//! [`NormalizedGate`] sequence for wider or longer Clifford+T windows.
+//! Keys come in two forms: a fixed-size, non-allocating [`CompactKey`] fast
+//! path covering the common case (at most [`COMPACT_KEY_MAX_GATES`] gates on
+//! at most four qubits), and a general, heap-allocated [`NormalizedGate`]
+//! sequence for wider or longer Clifford+T windows.
 
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
@@ -46,7 +48,7 @@ pub(super) struct MatrixStore {
     // large circuits), and the keys are short gate sequences where SipHash's
     // per-lookup overhead dominates.
     cache: FxHashMap<Box<[NormalizedGate]>, usize>,
-    compact_cache: FxHashMap<u128, usize>,
+    compact_cache: FxHashMap<CompactKey, usize>,
     entries: Vec<CachedMatrix>,
     scratch: Vec<NormalizedGate>,
     pub(super) hits: usize,
@@ -81,7 +83,7 @@ impl MatrixStore {
         circuit: &Circuit,
         gate_indices: &[usize],
         qubits: &[Qubit],
-        compact_key: Option<u128>,
+        compact_key: Option<CompactKey>,
         table: Option<&UnitaryCircuitTable>,
     ) -> Result<Option<&CachedMatrix>, SuperOptError> {
         if let Some(key) = compact_key {
@@ -140,35 +142,72 @@ enum NormalizedGate {
     Ccz(usize, usize, usize),
 }
 
-const COMPACT_KEY_LENGTH_BITS: usize = 4;
-const COMPACT_GATE_BITS: usize = 12;
-const COMPACT_KEY_MAX_GATES: usize =
-    (u128::BITS as usize - COMPACT_KEY_LENGTH_BITS) / COMPACT_GATE_BITS;
+/// Longest window the fixed-size compact key can represent without falling
+/// back to the heap-allocated general key. Comfortably covers `-Osuper`'s
+/// `window_gates=40` (see `main.rs`), with headroom for the hidden
+/// `--superopt-window-gates` experimentation flag.
+pub(super) const COMPACT_KEY_MAX_GATES: usize = 64;
 
-/// Exact packed normalized key for the common Clifford+T window. Four bits
-/// hold the gate count and each gate uses twelve bits, fitting ten gates in a
-/// `u128`.
+/// Exact non-allocating normalized key for the common Clifford+T window: one
+/// `u16` gate code (see `compact_gate`) per slot, with only the first `len`
+/// slots meaningful. Hashing and equality look at just that prefix (see the
+/// trait impls below), so cost tracks the window's actual length rather than
+/// the array's fixed capacity.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CompactKey {
+    len: u8,
+    gates: [u16; COMPACT_KEY_MAX_GATES],
+}
+
+impl CompactKey {
+    const EMPTY: Self = Self {
+        len: 0,
+        gates: [0; COMPACT_KEY_MAX_GATES],
+    };
+
+    fn as_slice(&self) -> &[u16] {
+        &self.gates[..usize::from(self.len)]
+    }
+}
+
+impl PartialEq for CompactKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for CompactKey {}
+
+impl Hash for CompactKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_slice().hash(state);
+    }
+}
+
 pub(super) fn compact_normalized_key(
     circuit: &Circuit,
     gate_indices: &[usize],
     support: &[Qubit],
-) -> Option<u128> {
-    let mut key = 0;
+) -> Option<CompactKey> {
+    let mut key = CompactKey::EMPTY;
     for &gate_index in gate_indices {
         key = append_compact_gate_key(key, &circuit.gates[gate_index], support)?;
     }
     Some(key)
 }
 
-pub(super) fn append_compact_gate_key(key: u128, gate: &Gate, support: &[Qubit]) -> Option<u128> {
-    let length_mask = (1u128 << COMPACT_KEY_LENGTH_BITS) - 1;
-    let length = (key & length_mask) as usize;
-    if length >= COMPACT_KEY_MAX_GATES {
+pub(super) fn append_compact_gate_key(
+    mut key: CompactKey,
+    gate: &Gate,
+    support: &[Qubit],
+) -> Option<CompactKey> {
+    let len = usize::from(key.len);
+    if len >= COMPACT_KEY_MAX_GATES {
         return None;
     }
-    let encoded = u128::from(compact_gate(gate, support)?);
-    let shift = COMPACT_KEY_LENGTH_BITS + length * COMPACT_GATE_BITS;
-    Some((key & !length_mask) | (encoded << shift) | (length + 1) as u128)
+    key.gates[len] = compact_gate(gate, support)?;
+    key.len = (len + 1) as u8;
+    Some(key)
 }
 
 fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {

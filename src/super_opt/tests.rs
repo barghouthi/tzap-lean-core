@@ -1,4 +1,5 @@
 use super::matrix::{IDENTITY_TOLERANCE, UnitaryMatrix, unitary_fingerprint};
+use super::matrix_cache::COMPACT_KEY_MAX_GATES;
 use super::table::{
     LibraryGate, UnitaryCircuitTable, library_circuit_matrix, library_gates, shared_synthesis_table,
 };
@@ -392,7 +393,7 @@ fn canonical_cache_reuses_shifted_windows() {
 
 #[test]
 fn compact_cache_boundary_falls_back_without_changing_matrices() {
-    let sequence = [
+    let pattern = [
         Gate::h(0),
         Gate::t(0),
         Gate::s(0),
@@ -400,31 +401,26 @@ fn compact_cache_boundary_falls_back_without_changing_matrices() {
         Gate::tdg(0),
         Gate::z(0),
         Gate::sdg(0),
-        Gate::h(0),
-        Gate::t(0),
-        Gate::x(0),
-        Gate::s(0),
     ];
+    let sequence: Vec<Gate> = pattern
+        .iter()
+        .cycle()
+        .take(COMPACT_KEY_MAX_GATES + 1)
+        .cloned()
+        .collect();
     let mut circuit = Circuit::new(2);
     for gate in &sequence {
         circuit.apply(gate.clone());
     }
     for gate in &sequence {
-        circuit.apply(match gate {
-            Gate::x(_) => Gate::x(1),
-            Gate::h(_) => Gate::h(1),
-            Gate::s(_) => Gate::s(1),
-            Gate::sdg(_) => Gate::sdg(1),
-            Gate::z(_) => Gate::z(1),
-            Gate::t(_) => Gate::t(1),
-            Gate::tdg(_) => Gate::tdg(1),
-            _ => unreachable!(),
-        });
+        circuit.apply(gate.map_qubits(|_| 1));
     }
 
     let first_indices: Vec<_> = (0..sequence.len()).collect();
     let second_indices: Vec<_> = (sequence.len()..2 * sequence.len()).collect();
-    assert!(compact_normalized_key(&circuit, &first_indices[..10], &[0]).is_some());
+    assert!(
+        compact_normalized_key(&circuit, &first_indices[..COMPACT_KEY_MAX_GATES], &[0]).is_some()
+    );
     assert!(compact_normalized_key(&circuit, &first_indices, &[0]).is_none());
 
     let result = SuperOpt::analyzer(1, sequence.len()).run(&circuit).unwrap();

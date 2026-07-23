@@ -84,7 +84,9 @@ pub use config::SuperOptTableConfig;
 pub use error::SuperOptError;
 
 use matrix::UnitaryMatrix;
-use matrix_cache::{CachedMatrix, MatrixStore, append_compact_gate_key, compact_normalized_key};
+use matrix_cache::{
+    CachedMatrix, CompactKey, MatrixStore, append_compact_gate_key, compact_normalized_key,
+};
 use table::{UnitaryCircuitTable, shared_synthesis_table};
 
 /// Whether a synthesis table matching `config` is already cached on disk —
@@ -168,7 +170,7 @@ pub struct SuperOpt {
 struct ActiveWindow {
     gate_indices: IndexVec,
     qubits: QubitVec,
-    compact_key: Option<u128>,
+    compact_key: Option<CompactKey>,
 }
 
 impl SuperOpt {
