@@ -82,24 +82,29 @@ impl MatrixStore {
         qubits: &[Qubit],
         compact_key: Option<u128>,
         table: Option<&UnitaryCircuitTable>,
-    ) -> Result<&CachedMatrix, SuperOptError> {
+    ) -> Result<Option<&CachedMatrix>, SuperOptError> {
         if let Some(key) = compact_key {
             if let Some(&entry_index) = self.compact_cache.get(&key) {
                 self.hits += 1;
-                return Ok(&self.entries[entry_index]);
+                return Ok(Some(&self.entries[entry_index]));
             }
         } else {
             normalized_gate_key(circuit, gate_indices, qubits, &mut self.scratch);
             if let Some(&entry_index) = self.cache.get(self.scratch.as_slice()) {
                 self.hits += 1;
-                return Ok(&self.entries[entry_index]);
+                return Ok(Some(&self.entries[entry_index]));
             }
         }
 
         self.misses += 1;
         let mut matrix = UnitaryMatrix::identity(qubits.len())?;
         for &gate_index in gate_indices {
-            matrix.apply_gate_left(&circuit.gates[gate_index], qubits);
+            if matrix
+                .apply_gate_left(&circuit.gates[gate_index], qubits)
+                .is_err()
+            {
+                return Ok(None);
+            }
         }
         let synthesized_replacement = table.and_then(|table| table.synthesize(&matrix));
         let entry_index = self.entries.len();
@@ -113,7 +118,7 @@ impl MatrixStore {
             self.cache
                 .insert(self.scratch.as_slice().into(), entry_index);
         }
-        Ok(&self.entries[entry_index])
+        Ok(Some(&self.entries[entry_index]))
     }
 }
 

@@ -416,13 +416,18 @@ impl SuperOpt {
         {
             return Ok(false);
         }
-        let cached = store.lookup(
+        let Some(cached) = store.lookup(
             circuit,
             gate_indices,
             qubits,
             window.compact_key,
             self.synthesis_table.as_deref(),
-        )?;
+        )?
+        else {
+            // The exact i8 numerator bound was exceeded. Leaving this window
+            // untouched is conservative and preserves rewrite soundness.
+            return Ok(false);
+        };
         let selected = rewrites.consider(cached, gate_indices, qubits);
         if self.collect_subcircuits {
             subcircuits.push(SuperOptWindow {

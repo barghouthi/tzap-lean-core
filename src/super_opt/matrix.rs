@@ -12,66 +12,22 @@ use super::SuperOptError;
 #[cfg(test)]
 pub(super) const IDENTITY_TOLERANCE: f64 = 1e-10;
 
-/// A double-precision complex number exposed only for diagnostics and tests.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Complex64 {
-    pub re: f64,
-    pub im: f64,
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CoefficientOverflow;
 
-#[cfg(test)]
-impl Complex64 {
-    pub const ZERO: Self = Self { re: 0.0, im: 0.0 };
-    pub const ONE: Self = Self { re: 1.0, im: 0.0 };
-
-    pub const fn new(re: f64, im: f64) -> Self {
-        Self { re, im }
-    }
-
-    pub fn norm_sqr(self) -> f64 {
-        self.re * self.re + self.im * self.im
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Add for Complex64 {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self::new(self.re + rhs.re, self.im + rhs.im)
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Mul for Complex64 {
-    type Output = Self;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        Self::new(
-            self.re * rhs.re - self.im * rhs.im,
-            self.re * rhs.im + self.im * rhs.re,
-        )
-    }
-}
-
-#[cfg(test)]
-impl std::ops::Mul<f64> for Complex64 {
-    type Output = Self;
-
-    fn mul(self, rhs: f64) -> Self::Output {
-        Self::new(self.re * rhs, self.im * rhs)
-    }
+fn narrow_coefficient(value: i16) -> Option<i8> {
+    let value = i8::try_from(value).ok()?;
+    (value != i8::MIN).then_some(value)
 }
 
 /// `a + b*omega + c*omega^2 + d*omega^3`, with `omega^4 = -1`.
 ///
-/// `i32` keeps each matrix entry the same 16-byte size as the old pair of
-/// `f64`s. The configured SuperOpt windows contain at most 40 gates, far
-/// below the checked coefficient-overflow boundary.
+/// The symmetric range `-127..=127` is maintained so multiplying by any power
+/// of `omega` (a signed permutation) remains representable. Arithmetic widens
+/// to `i16` and reports overflow before narrowing back to `i8`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Cyclotomic {
-    coefficients: [i32; 4],
+    coefficients: [i8; 4],
 }
 
 impl Cyclotomic {
@@ -86,35 +42,31 @@ impl Cyclotomic {
         self == Self::ZERO
     }
 
-    fn checked_add(self, rhs: Self) -> Self {
-        self.checked_zip(rhs, i64::checked_add)
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.checked_zip(rhs, i16::checked_add)
     }
 
-    fn checked_sub(self, rhs: Self) -> Self {
-        self.checked_zip(rhs, i64::checked_sub)
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        self.checked_zip(rhs, i16::checked_sub)
     }
 
-    fn checked_zip(self, rhs: Self, op: fn(i64, i64) -> Option<i64>) -> Self {
+    fn checked_zip(self, rhs: Self, op: fn(i16, i16) -> Option<i16>) -> Option<Self> {
         let mut coefficients = [0; 4];
         for (index, output) in coefficients.iter_mut().enumerate() {
             let value = op(
-                i64::from(self.coefficients[index]),
-                i64::from(rhs.coefficients[index]),
-            )
-            .expect("exact matrix coefficient overflow");
-            *output = i32::try_from(value).expect("exact matrix coefficient overflow");
+                i16::from(self.coefficients[index]),
+                i16::from(rhs.coefficients[index]),
+            )?;
+            *output = narrow_coefficient(value)?;
         }
-        Self { coefficients }
+        Some(Self { coefficients })
     }
 
     /// Multiply by `omega^power` using `omega^4 = -1`.
     fn times_omega(self, power: u8) -> Self {
         let [a, b, c, d] = self.coefficients;
-        let neg = |value: i32| {
-            value
-                .checked_neg()
-                .expect("exact matrix coefficient overflow")
-        };
+        debug_assert!(self.coefficients.iter().all(|&value| value != i8::MIN));
+        let neg = |value: i8| -value;
         let coefficients = match power & 7 {
             0 => [a, b, c, d],
             1 => [neg(d), a, b, c],
@@ -136,20 +88,23 @@ impl Cyclotomic {
     }
 
     /// Divide an exactly divisible numerator by `sqrt(2)`.
-    fn divide_by_sqrt_2(self) -> Self {
+    fn divide_by_sqrt_2(self) -> Option<Self> {
         debug_assert!(self.divisible_by_sqrt_2());
-        let [a, b, c, d] = self.coefficients.map(i64::from);
-        let coefficients = [(b - d) / 2, (a + c) / 2, (b + d) / 2, (c - a) / 2]
-            .map(|value| i32::try_from(value).expect("exact matrix coefficient overflow"));
-        Self { coefficients }
+        let [a, b, c, d] = self.coefficients.map(i16::from);
+        let values = [(b - d) / 2, (a + c) / 2, (b + d) / 2, (c - a) / 2];
+        let mut coefficients = [0; 4];
+        for (output, value) in coefficients.iter_mut().zip(values) {
+            *output = narrow_coefficient(value)?;
+        }
+        Some(Self { coefficients })
     }
 
     #[cfg(test)]
-    fn to_complex(self, denominator_exponent: u16) -> Complex64 {
+    fn to_cartesian(self, denominator_exponent: u16) -> (f64, f64) {
         let [a, b, c, d] = self.coefficients.map(f64::from);
         let root_half = std::f64::consts::FRAC_1_SQRT_2;
         let denominator = root_half.powi(i32::from(denominator_exponent));
-        Complex64::new(
+        (
             (a + (b - d) * root_half) * denominator,
             (c + (b + d) * root_half) * denominator,
         )
@@ -159,7 +114,7 @@ impl Cyclotomic {
 /// A dense `2^n` by `2^n` exact unitary matrix in row-major order.
 ///
 /// Qubit zero is the most significant basis-state bit.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnitaryMatrix {
     num_qubits: usize,
     dim: usize,
@@ -189,10 +144,12 @@ impl UnitaryMatrix {
         self.num_qubits
     }
 
-    /// Convert one exact entry to `f64` for test machinery.
     #[cfg(test)]
-    pub fn get(&self, row: usize, column: usize) -> Complex64 {
-        self.data[row * self.dim + column].to_complex(self.denominator_exponent)
+    pub(super) fn entry_coefficients(&self, row: usize, column: usize) -> ([i8; 4], u16) {
+        (
+            self.data[row * self.dim + column].coefficients,
+            self.denominator_exponent,
+        )
     }
 
     pub(super) fn equivalent_up_to_global_phase(&self, other: &Self) -> bool {
@@ -226,11 +183,11 @@ impl UnitaryMatrix {
         (&mut head[row0 * dim..(row0 + 1) * dim], &mut tail[..dim])
     }
 
-    fn apply_h_left(&mut self, bit: usize) {
+    fn apply_h_left(&mut self, bit: usize) -> Result<(), CoefficientOverflow> {
         self.denominator_exponent = self
             .denominator_exponent
             .checked_add(1)
-            .expect("exact matrix denominator overflow");
+            .ok_or(CoefficientOverflow)?;
         for row0 in 0..self.dim {
             if row0 & bit != 0 {
                 continue;
@@ -238,22 +195,25 @@ impl UnitaryMatrix {
             let (top, bottom) = self.row_pair_mut(row0, row0 | bit);
             for (a, b) in top.iter_mut().zip(bottom) {
                 let (x, y) = (*a, *b);
-                *a = x.checked_add(y);
-                *b = x.checked_sub(y);
+                let sum = x.checked_add(y).ok_or(CoefficientOverflow)?;
+                let difference = x.checked_sub(y).ok_or(CoefficientOverflow)?;
+                (*a, *b) = (sum, difference);
             }
         }
-        self.normalize_denominator();
+        self.normalize_denominator()?;
+        Ok(())
     }
 
-    fn normalize_denominator(&mut self) {
+    fn normalize_denominator(&mut self) -> Result<(), CoefficientOverflow> {
         while self.denominator_exponent > 0
             && self.data.iter().all(|entry| entry.divisible_by_sqrt_2())
         {
             for entry in &mut self.data {
-                *entry = entry.divide_by_sqrt_2();
+                *entry = entry.divide_by_sqrt_2().ok_or(CoefficientOverflow)?;
             }
             self.denominator_exponent -= 1;
         }
+        Ok(())
     }
 
     /// Multiply target-one rows by a power of `omega`.
@@ -287,14 +247,18 @@ impl UnitaryMatrix {
         }
     }
 
-    pub(super) fn apply_gate_left(&mut self, gate: &Gate, support: &[Qubit]) {
+    pub(super) fn apply_gate_left(
+        &mut self,
+        gate: &Gate,
+        support: &[Qubit],
+    ) -> Result<(), CoefficientOverflow> {
         let bit = |q: &Qubit| {
             let local = support.binary_search(q).expect("gate qubit is in support");
             qubit_bit(self.num_qubits, local)
         };
         match gate {
             Gate::x(q) => self.apply_controlled_x_left(0, bit(q)),
-            Gate::h(q) => self.apply_h_left(bit(q)),
+            Gate::h(q) => return self.apply_h_left(bit(q)),
             Gate::s(q) => self.apply_phase_left(bit(q), 2),
             Gate::sdg(q) => self.apply_phase_left(bit(q), 6),
             Gate::z(q) => self.apply_phase_flip_left(bit(q)),
@@ -319,6 +283,7 @@ impl UnitaryMatrix {
                 unreachable!("measurement and reset are window barriers")
             }
         }
+        Ok(())
     }
 }
 
@@ -335,22 +300,19 @@ fn canonical_phase_power(matrix: &UnitaryMatrix) -> u8 {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub(super) struct UnitaryFingerprint {
-    first: u64,
-    second: u64,
-}
+pub(super) struct UnitaryFingerprint(u64);
 
 impl UnitaryFingerprint {
-    pub(super) fn to_bits(self) -> (u64, u64) {
-        (self.first, self.second)
+    pub(super) fn to_bits(self) -> u64 {
+        self.0
     }
 
-    pub(super) fn from_bits(first: u64, second: u64) -> Self {
-        Self { first, second }
+    pub(super) fn from_bits(bits: u64) -> Self {
+        Self(bits)
     }
 }
 
-/// A deterministic 128-bit hash of the exact phase-canonical matrix.
+/// A deterministic 64-bit hash of the exact phase-canonical matrix.
 /// Hash collisions are still confirmed by exact matrix comparison before a
 /// rewrite is accepted.
 pub(super) fn unitary_fingerprint(matrix: &UnitaryMatrix) -> UnitaryFingerprint {
@@ -370,7 +332,16 @@ pub(super) fn unitary_fingerprint(matrix: &UnitaryMatrix) -> UnitaryFingerprint 
             mix(i64::from(coefficient) as u64);
         }
     }
-    UnitaryFingerprint { first, second }
+    // Fold the independently mixed streams, then avalanche so every output
+    // bit depends on both halves. Keeping both streams preserves the previous
+    // mixer's distribution while halving the stored and in-memory key width.
+    let mut fingerprint = first ^ second.rotate_left(32);
+    fingerprint ^= fingerprint >> 30;
+    fingerprint = fingerprint.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    fingerprint ^= fingerprint >> 27;
+    fingerprint = fingerprint.wrapping_mul(0x94d0_49bb_1331_11eb);
+    fingerprint ^= fingerprint >> 31;
+    UnitaryFingerprint(fingerprint)
 }
 
 fn qubit_bit(num_qubits: usize, position: usize) -> usize {
@@ -391,7 +362,7 @@ mod exact_tests {
         let support: Vec<_> = (0..circuit.num_qubits).collect();
         let mut matrix = UnitaryMatrix::identity(circuit.num_qubits).unwrap();
         for gate in &circuit.gates {
-            matrix.apply_gate_left(gate, &support);
+            matrix.apply_gate_left(gate, &support).unwrap();
             assert_normalized(&matrix);
         }
         matrix
@@ -418,9 +389,10 @@ mod exact_tests {
         let dim = 1 << circuit.num_qubits;
         for (row, floating_row) in floating.iter().enumerate().take(dim) {
             for (column, &expected) in floating_row.iter().enumerate().take(dim) {
-                let actual = exact.get(row, column);
+                let actual =
+                    exact.data[row * dim + column].to_cartesian(exact.denominator_exponent);
                 let (expected_re, expected_im) = expected.components();
-                let error = (actual.re - expected_re).hypot(actual.im - expected_im);
+                let error = (actual.0 - expected_re).hypot(actual.1 - expected_im);
                 assert!(
                     error <= FLOAT_TOLERANCE,
                     "entry ({row}, {column}) differs after {:?}: exact={actual:?}, floating=({expected_re}, {expected_im}), error={error}",
@@ -441,10 +413,10 @@ mod exact_tests {
     #[test]
     fn omega_powers_match_eighth_roots_of_unity() {
         for power in 0..8 {
-            let exact = Cyclotomic::ONE.times_omega(power).to_complex(0);
+            let exact = Cyclotomic::ONE.times_omega(power).to_cartesian(0);
             let angle = f64::from(power) * FRAC_PI_4;
-            assert!((exact.re - angle.cos()).abs() < 1e-15, "power {power}");
-            assert!((exact.im - angle.sin()).abs() < 1e-15, "power {power}");
+            assert!((exact.0 - angle.cos()).abs() < 1e-15, "power {power}");
+            assert!((exact.1 - angle.sin()).abs() < 1e-15, "power {power}");
         }
     }
 
@@ -483,9 +455,12 @@ mod exact_tests {
                             coefficients: [a, b, c, d],
                         };
                         // sqrt(2) = omega - omega^3.
-                        let multiplied = value.times_omega(1).checked_sub(value.times_omega(3));
+                        let multiplied = value
+                            .times_omega(1)
+                            .checked_sub(value.times_omega(3))
+                            .unwrap();
                         assert!(multiplied.divisible_by_sqrt_2());
-                        assert_eq!(multiplied.divide_by_sqrt_2(), value);
+                        assert_eq!(multiplied.divide_by_sqrt_2().unwrap(), value);
                     }
                 }
             }
@@ -509,6 +484,18 @@ mod exact_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn coefficient_bound_rejects_both_unrepresentable_endpoints() {
+        let positive_limit = Cyclotomic {
+            coefficients: [127, 0, 0, 0],
+        };
+        let negative_limit = Cyclotomic {
+            coefficients: [-127, 0, 0, 0],
+        };
+        assert_eq!(positive_limit.checked_add(Cyclotomic::ONE), None);
+        assert_eq!(negative_limit.checked_sub(Cyclotomic::ONE), None);
     }
 
     #[test]
@@ -637,6 +624,11 @@ mod exact_tests {
                 "distinct one-gate matrices shared a fingerprint"
             );
         }
+    }
+
+    #[test]
+    fn fingerprint_occupies_eight_bytes() {
+        assert_eq!(std::mem::size_of::<UnitaryFingerprint>(), 8);
     }
 
     #[test]
@@ -903,6 +895,8 @@ mod exact_tests {
     #[should_panic(expected = "Rz windows are rejected before matrix construction")]
     fn direct_rz_matrix_application_is_rejected() {
         let mut matrix = UnitaryMatrix::identity(1).unwrap();
-        matrix.apply_gate_left(&Gate::rz(TAU / 7.0, 0), &[0]);
+        matrix
+            .apply_gate_left(&Gate::rz(TAU / 7.0, 0), &[0])
+            .unwrap();
     }
 }

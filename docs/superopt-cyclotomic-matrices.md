@@ -18,13 +18,15 @@ Every matrix entry is stored as
 \frac{a+b\omega+c\omega^2+d\omega^3}{(\sqrt{2})^k},
 \]
 
-where `a`, `b`, `c`, and `d` are `i32` coefficients. A matrix has one shared
-denominator exponent `k`, so an entry occupies 16 bytes—the same size as the
-former pair of `f64` values.
+where `a`, `b`, `c`, and `d` are `i8` coefficients in the symmetric range
+`-127..=127`. A matrix has one shared denominator exponent `k`, so an entry
+occupies 4 bytes.
 
-The current SuperOpt presets use windows of at most 40 gates. Coefficient
-operations are checked, so exceeding the fixed-width representation fails
-instead of silently producing an unsound rewrite.
+Coefficient operations widen to `i16` and are checked before narrowing. If a
+window exceeds the fixed-width representation, SuperOpt conservatively leaves
+that window unchanged. Table construction similarly skips an unrepresentable
+child, so overflow can reduce optimization coverage but cannot make a rewrite
+unsound.
 
 ## Gate operations
 
@@ -63,10 +65,11 @@ powers of `omega`, so the implementation tries all eight powers on the first
 nonzero entry and selects the lexicographically smallest coefficient tuple.
 The selected phase is then applied while hashing or comparing the full matrix.
 
-Fingerprints are deterministic 128-bit hashes of the canonical integer data.
+Fingerprints are deterministic 64-bit hashes of the canonical integer data.
 A hash hit is still confirmed by exact matrix comparison before any rewrite is
 accepted, protecting soundness against hash collisions.
 
 The on-disk synthesis-table format is versioned. Moving from rounded
-floating-point fingerprints to exact cyclotomic fingerprints bumped the cache
-format to version 2, causing older tables to be rebuilt automatically.
+floating-point fingerprints to exact cyclotomic fingerprints produced version
+2; adopting bounded `i8` coefficients produced version 3; compact 64-bit
+fingerprints produced version 4. Older tables are rebuilt automatically.

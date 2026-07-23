@@ -9,8 +9,8 @@ pub(crate) struct C {
 }
 
 impl C {
-    const ZERO: C = C { re: 0.0, im: 0.0 };
-    const ONE: C = C { re: 1.0, im: 0.0 };
+    pub(crate) const ZERO: C = C { re: 0.0, im: 0.0 };
+    pub(crate) const ONE: C = C { re: 1.0, im: 0.0 };
 
     fn new(re: f64, im: f64) -> C {
         C { re, im }
@@ -23,11 +23,11 @@ impl C {
         }
     }
 
-    fn norm_sq(self) -> f64 {
+    pub(crate) fn norm_sq(self) -> f64 {
         self.re * self.re + self.im * self.im
     }
 
-    fn conj(self) -> C {
+    pub(crate) fn conj(self) -> C {
         C {
             re: self.re,
             im: -self.im,

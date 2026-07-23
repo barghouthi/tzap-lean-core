@@ -37,9 +37,9 @@ use super::{SuperOptError, SuperOptTableConfig};
 /// version means that never has to be caught by hand — every release gets a
 /// fresh cache namespace for free.
 const CACHE_MAGIC: &[u8; 4] = b"TZS1";
-// Version 2 uses exact cyclotomic-matrix fingerprints rather than rounded
-// floating-point fingerprints.
-const CACHE_FORMAT_VERSION: u32 = 2;
+// Version 2 introduced exact cyclotomic fingerprints, version 3 the compact
+// i8 coefficient bound, and version 4 stores 64-bit rather than 128-bit keys.
+const CACHE_FORMAT_VERSION: u32 = 4;
 const CACHE_CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Reads and validates a cache file's header — magic, format version, and
@@ -255,7 +255,9 @@ impl UnitaryCircuitTable {
                                     continue;
                                 }
                                 scratch.copy_from(base);
-                                scratch.apply_gate_left(&gate.to_gate(), &support);
+                                if scratch.apply_gate_left(&gate.to_gate(), &support).is_err() {
+                                    continue;
+                                }
                                 let fingerprint = unitary_fingerprint(&scratch);
                                 if !table.contains_key(&fingerprint) {
                                     survivors.push((gate, fingerprint));
@@ -293,7 +295,9 @@ impl UnitaryCircuitTable {
                     .into_par_iter()
                     .map(|(position, node, gate)| {
                         let mut matrix = frontier[position].1.clone();
-                        matrix.apply_gate_left(&gate.to_gate(), &support);
+                        matrix
+                            .apply_gate_left(&gate.to_gate(), &support)
+                            .expect("an accepted table child remains representable");
                         (node, matrix)
                     })
                     .collect();
@@ -429,7 +433,9 @@ impl UnitaryCircuitTable {
         // A fingerprint is still a finite hash of the exact matrix. This
         // exact comparison is the release-mode collision guard that makes
         // accepting a rewrite sound; it is not a redundant post-rewrite audit.
-        let candidate = library_circuit_matrix(matrix.num_qubits(), &circuit).ok()?;
+        let candidate = library_circuit_matrix(matrix.num_qubits(), &circuit)
+            .ok()
+            .flatten()?;
         matrix
             .equivalent_up_to_global_phase(&candidate)
             .then(|| circuit.into_iter().map(LibraryGate::to_gate).collect())
@@ -520,16 +526,21 @@ fn build_or_load_from_disk(
     Ok(table)
 }
 
+/// Build a library circuit's exact matrix. The outer `Result` reports an
+/// unusably large dense matrix; `Ok(None)` means its coefficients exceeded the
+/// bounded i8 representation and the candidate must be skipped.
 pub(super) fn library_circuit_matrix(
     num_qubits: usize,
     circuit: &[LibraryGate],
-) -> Result<UnitaryMatrix, SuperOptError> {
+) -> Result<Option<UnitaryMatrix>, SuperOptError> {
     let support: Vec<_> = (0..num_qubits).collect();
     let mut matrix = UnitaryMatrix::identity(num_qubits)?;
     for &gate in circuit {
-        matrix.apply_gate_left(&gate.to_gate(), &support);
+        if matrix.apply_gate_left(&gate.to_gate(), &support).is_err() {
+            return Ok(None);
+        }
     }
-    Ok(matrix)
+    Ok(Some(matrix))
 }
 
 pub(super) fn library_gates(num_qubits: usize) -> Vec<LibraryGate> {
