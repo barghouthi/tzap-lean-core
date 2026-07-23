@@ -932,12 +932,16 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
     // this would otherwise print once per chunk. The caller instead does one
     // verbose warm-up call before fanning out, so the table build (and its
     // one-time cost message) is reported exactly once.
+    // Captured once, before the build/load below can create the cache file
+    // (which would make a second `table_is_cached` call always say "cached").
+    let cached = verbose && table_is_cached(table_config);
     if verbose {
-        if table_is_cached(table_config) {
+        if cached {
             // Reading a large cached table off disk can itself take a
-            // moment, so say so before it starts rather than only reporting
-            // it after the fact.
-            eprintln!("  Loading minimal unitary representatives...");
+            // moment, so say so before it starts; overwritten in place with
+            // the completed message below rather than left as its own line.
+            eprint!("  Loading minimal unitary representatives...");
+            let _ = io::stderr().flush();
         } else {
             eprintln!(
                 "  🔧 Generating semantic lookup table (one-time — cached for future use)..."
@@ -951,6 +955,9 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
         let size = table_cache_size_bytes(table_config)
             .map(|bytes| format!(" ({:.1} MB)", bytes as f64 / (1024.0 * 1024.0)))
             .unwrap_or_default();
+        if cached {
+            eprint!("\r\x1b[2K");
+        }
         eprintln!(
             "  Loaded minimal unitary representatives{size} in {:.3}s",
             start.elapsed().as_secs_f64()
