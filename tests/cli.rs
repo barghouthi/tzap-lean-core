@@ -52,6 +52,7 @@ fn optimizes_test_qasm_to_file() {
     assert!(content.contains("qreg q[3];"));
 
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(&format!("\x1b[2mv{}\x1b[0m", env!("CARGO_PKG_VERSION"))));
     assert!(stderr.contains("test.qasm"));
     assert!(stderr.contains("gates"));
     assert!(stderr.contains("T/Tdg"));

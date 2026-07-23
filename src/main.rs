@@ -1527,7 +1527,10 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let opts = parse_args(&args);
 
-    eprintln!("\x1b[1m⚡\u{FE0F} tzap\x1b[0m");
+    eprintln!(
+        "\x1b[1m⚡\u{FE0F} tzap\x1b[0m  \x1b[2mv{}\x1b[0m",
+        env!("CARGO_PKG_VERSION")
+    );
     let file_size = fs::metadata(&opts.input_path).map(|m| m.len()).unwrap_or(0);
     eprintln!(
         "  Parsing {} ({:.1} MB)",
