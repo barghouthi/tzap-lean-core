@@ -41,8 +41,6 @@ jobs:
   publish-pypi:
     needs: build-wheels
     runs-on: ubuntu-22.04
-    permissions:
-      id-token: write
     steps:
       - name: Download wheels
         uses: actions/download-artifact@v8
@@ -54,3 +52,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          password: ${{ secrets.PYPI_API_TOKEN }}
