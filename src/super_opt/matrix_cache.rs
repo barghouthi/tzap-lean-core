@@ -8,11 +8,11 @@
 //! across runs.
 //!
 //! Keys come in two forms: a packed `u128` fast path covering the common
-//! case (Clifford+T gates, at most ten of them, at most four qubits), and a
-//! general [`NormalizedGate`] sequence for everything else — notably windows
-//! containing `rz`, whose angle needs exact representation.
+//! case (at most ten gates on at most four qubits), and a general
+//! [`NormalizedGate`] sequence for wider or longer Clifford+T windows.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::cell::RefCell;
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
@@ -56,21 +56,21 @@ pub(super) struct MatrixStore {
 impl MatrixStore {
     /// Take the persistent store out of `slot` for one run, leaving the slot
     /// empty. The hit/miss counters describe a single run and are reset here.
-    pub(super) fn take_from(slot: &Mutex<MatrixStore>) -> MatrixStore {
-        let mut store = {
-            let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
-            std::mem::take(&mut *guard)
-        };
+    pub(super) fn take_from(slot: &RefCell<MatrixStore>) -> MatrixStore {
+        let mut store = std::mem::take(&mut *slot.borrow_mut());
         store.hits = 0;
         store.misses = 0;
         store
     }
 
-    /// Return the store to `slot` so the pass's next run starts warm. Parallel
-    /// chunked runs race for the slot; the store with the most interned
-    /// entries wins, and the losers are simply dropped.
-    pub(super) fn store_back(self, slot: &Mutex<MatrixStore>) {
-        let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    /// Return the store to `slot` so the pass's next run starts warm. If two
+    /// clones of the same pass instance (sharing this `Rc`) both ran and are
+    /// now returning their store, the one with more interned entries wins
+    /// and the other is simply dropped — clones only ever run one at a time
+    /// on the single thread they're confined to, so this is an ordering
+    /// choice, not a data race.
+    pub(super) fn store_back(self, slot: &RefCell<MatrixStore>) {
+        let mut guard = slot.borrow_mut();
         if guard.entries.len() < self.entries.len() {
             *guard = self;
         }
@@ -83,24 +83,29 @@ impl MatrixStore {
         qubits: &[Qubit],
         compact_key: Option<u128>,
         table: Option<&UnitaryCircuitTable>,
-    ) -> Result<&CachedMatrix, SuperOptError> {
+    ) -> Result<Option<&CachedMatrix>, SuperOptError> {
         if let Some(key) = compact_key {
             if let Some(&entry_index) = self.compact_cache.get(&key) {
                 self.hits += 1;
-                return Ok(&self.entries[entry_index]);
+                return Ok(Some(&self.entries[entry_index]));
             }
         } else {
             normalized_gate_key(circuit, gate_indices, qubits, &mut self.scratch);
             if let Some(&entry_index) = self.cache.get(self.scratch.as_slice()) {
                 self.hits += 1;
-                return Ok(&self.entries[entry_index]);
+                return Ok(Some(&self.entries[entry_index]));
             }
         }
 
         self.misses += 1;
         let mut matrix = UnitaryMatrix::identity(qubits.len())?;
         for &gate_index in gate_indices {
-            matrix.apply_gate_left(&circuit.gates[gate_index], qubits);
+            if matrix
+                .apply_gate_left(&circuit.gates[gate_index], qubits)
+                .is_err()
+            {
+                return Ok(None);
+            }
         }
         let synthesized_replacement = table.and_then(|table| table.synthesize(&matrix));
         let entry_index = self.entries.len();
@@ -114,13 +119,12 @@ impl MatrixStore {
             self.cache
                 .insert(self.scratch.as_slice().into(), entry_index);
         }
-        Ok(&self.entries[entry_index])
+        Ok(Some(&self.entries[entry_index]))
     }
 }
 
-/// One gate of a general canonical key: the gate kind on support-local qubit
-/// positions, with `rz` angles kept bit-exact. The fallback when the packed
-/// `u128` form below cannot represent the window.
+/// One gate of a general canonical key on support-local qubit positions. The
+/// fallback when the packed `u128` form below cannot represent the window.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum NormalizedGate {
     X(usize),
@@ -130,7 +134,6 @@ enum NormalizedGate {
     Z(usize),
     T(usize),
     Tdg(usize),
-    Rz(u64, usize),
     Cnot(usize, usize),
     Cz(usize, usize),
     Ccx(usize, usize, usize),
@@ -144,7 +147,7 @@ const COMPACT_KEY_MAX_GATES: usize =
 
 /// Exact packed normalized key for the common Clifford+T window. Four bits
 /// hold the gate count and each gate uses twelve bits, fitting ten gates in a
-/// `u128`. Windows containing `rz` use the general key representation below.
+/// `u128`.
 pub(super) fn compact_normalized_key(
     circuit: &Circuit,
     gate_indices: &[usize],
@@ -209,37 +212,6 @@ fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
     })
 }
 
-/// Whether the window contains exactly one rotation outside Clifford+T.
-///
-/// Such a window's unitary can never be in the Clifford+T synthesis table —
-/// a single arbitrary rotation leaves the discrete Clifford+T group and
-/// nothing else in the window can bring it back — so its lookup is a
-/// guaranteed miss and optimization-only callers skip it. With two or more
-/// arbitrary rotations the angles may cancel, so those windows are looked up.
-pub(super) fn has_lone_arbitrary_rz(circuit: &Circuit, gate_indices: &[usize]) -> bool {
-    let mut arbitrary_rotations = 0;
-    for &gate_index in gate_indices {
-        if let Gate::rz(theta, _) = circuit.gates[gate_index]
-            && !rz_is_clifford_t(theta)
-        {
-            arbitrary_rotations += 1;
-            if arbitrary_rotations > 1 {
-                return false;
-            }
-        }
-    }
-    arbitrary_rotations == 1
-}
-
-/// Whether `rz(theta)` is a Clifford+T rotation, i.e. a multiple of π/4 up
-/// to a tolerance absorbing accumulated floating-point drift.
-fn rz_is_clifford_t(theta: f64) -> bool {
-    const ANGLE_TOLERANCE: f64 = 4e-10;
-    let step = std::f64::consts::FRAC_PI_4;
-    let nearest = (theta / step).round() * step;
-    (theta - nearest).abs() <= ANGLE_TOLERANCE
-}
-
 /// Write the window's general canonical key into `key` (reused scratch, so
 /// the hot path allocates nothing on a hit).
 fn normalized_gate_key(
@@ -265,7 +237,7 @@ fn normalized_gate_key(
                 Gate::z(q) => NormalizedGate::Z(local(*q)),
                 Gate::t(q) => NormalizedGate::T(local(*q)),
                 Gate::tdg(q) => NormalizedGate::Tdg(local(*q)),
-                Gate::rz(theta, q) => NormalizedGate::Rz(theta.to_bits(), local(*q)),
+                Gate::rz(..) => unreachable!("Rz gates are SuperOpt window barriers"),
                 Gate::cnot { control, target } => {
                     NormalizedGate::Cnot(local(*control), local(*target))
                 }
@@ -281,7 +253,7 @@ fn normalized_gate_key(
                     target,
                 } => NormalizedGate::Ccz(local(*control1), local(*control2), local(*target)),
                 Gate::measure { .. } | Gate::reset(_) => {
-                    unreachable!("measurement and reset are window barriers")
+                    unreachable!("measurement and reset are SuperOpt window barriers")
                 }
             }),
     );

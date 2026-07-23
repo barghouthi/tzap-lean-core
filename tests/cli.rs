@@ -727,7 +727,10 @@ fn o1_is_the_default_pipeline() {
         stderr.contains("Gates") && stderr.contains("T/Tdg"),
         "expected a live reduction progress box:\n{stderr}"
     );
-    assert!(!stderr.contains("Initialized SuperOpt"), "got: {stderr}");
+    assert!(
+        !stderr.contains("Loaded minimal unitary representatives"),
+        "got: {stderr}"
+    );
     assert!(
         !stderr.contains("Iteration"),
         "O1 doesn't run to fixpoint, so its progress box shouldn't show an iteration number:\n{stderr}"
@@ -744,7 +747,10 @@ fn o2_uses_superopt_pass_capped_at_two_rounds() {
     );
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Initialized SuperOpt"), "got: {stderr}");
+    assert!(
+        stderr.contains("Loaded minimal unitary representatives"),
+        "got: {stderr}"
+    );
     assert!(stderr.contains("% reduction so far"), "got: {stderr}");
     assert!(
         stderr.contains("Iteration"),
@@ -1048,7 +1054,10 @@ fn optimization_levels_run_with_parallel() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
         if level != "-O1" {
-            assert!(stderr.contains("Initialized SuperOpt"), "got: {stderr}");
+            assert!(
+                stderr.contains("Loaded minimal unitary representatives"),
+                "got: {stderr}"
+            );
         }
         assert!(!read_valid_qasm(&output).is_empty());
     }
@@ -1497,8 +1506,14 @@ fn decompose_cz_flag_decomposes_the_default_pipeline_input() {
     let (gates, _) = run_qasm_with_args(CZ_CHAIN_QASM, &["--decompose-cz"]);
 
     assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
-    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 2);
-    assert_eq!(gates.iter().filter(|gate| gate.starts_with("h ")).count(), 4);
+    assert_eq!(
+        gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
+        2
+    );
+    assert_eq!(
+        gates.iter().filter(|gate| gate.starts_with("h ")).count(),
+        4
+    );
 }
 
 #[test]
@@ -1540,9 +1555,18 @@ cz q[1],q[0];
         &["--passes", "DecomposeCz,CancelGates", "--decompose-cz"],
     );
 
-    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cz ")).count(), 0);
-    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 1);
-    assert_eq!(gates.iter().filter(|gate| gate.starts_with("h ")).count(), 2);
+    assert_eq!(
+        gates.iter().filter(|gate| gate.starts_with("cz ")).count(),
+        0
+    );
+    assert_eq!(
+        gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
+        1
+    );
+    assert_eq!(
+        gates.iter().filter(|gate| gate.starts_with("h ")).count(),
+        2
+    );
 }
 
 #[test]
@@ -1554,7 +1578,10 @@ fn decompose_cz_flag_works_with_explicit_fixpoint() {
 
     assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
     assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
-    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 2);
+    assert_eq!(
+        gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
+        2
+    );
 }
 
 #[test]
@@ -1566,7 +1593,10 @@ fn decompose_cz_flag_works_with_explicit_parallel_pipeline() {
 
     assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
     assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
-    assert_eq!(gates.iter().filter(|gate| gate.starts_with("cx ")).count(), 2);
+    assert_eq!(
+        gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
+        2
+    );
 }
 
 #[test]

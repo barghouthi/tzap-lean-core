@@ -64,7 +64,7 @@ Every pass implements the `Pass` trait:
 ```rust,ignore
 use tzap::pass::Pass;
 
-pub trait Pass: Sync {
+pub trait Pass {
     fn name(&self) -> &str;
     fn run(&self, circuit: &Circuit) -> Circuit;
 }
@@ -133,8 +133,9 @@ from `tzap::pass`.
 and replaces it with the smallest equivalent circuit from a precomputed
 unitary-to-circuit table, applying a rewrite only when it strictly reduces the
 gate count. Every replacement is verified by matrix equality up to global phase
-before use, so rewrites are always semantics-preserving. The pass accepts unitary
-circuits only.
+before use, so rewrites are always semantics-preserving. Matrices use exact
+Clifford+T arithmetic; Rz gates act as window barriers and are left unchanged.
+The pass accepts unitary circuits only.
 
 ```rust,ignore
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig};
