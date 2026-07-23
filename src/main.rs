@@ -14,7 +14,9 @@ use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use tzap::pass::{Pass, count_2q, count_rz, count_t, depth};
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
-use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_cache_size_bytes, table_is_cached};
+use tzap::super_opt::{
+    SuperOpt, SuperOptTableConfig, table_cache_path, table_cache_size_bytes, table_is_cached,
+};
 
 /// Map-reduce chunks per logical core. Deliberately more than one thread per
 /// core (see [`num_threads`]): chunks cost varies (some hit more SuperOpt
@@ -369,7 +371,7 @@ fn write_output(output_path: &Option<String>, circuit: &Circuit) {
             eprintln!("Error writing {p}: {e}");
             process::exit(1);
         });
-        eprintln!("  wrote \x1b[2m{p}\x1b[0m");
+        eprintln!("  wrote {p}");
     }
 }
 
@@ -380,7 +382,7 @@ fn read_circuit(path: &str) -> Circuit {
     let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let size_mb = file_size as f64 / (1024.0 * 1024.0);
     let parse_start = Instant::now();
-    start_inline(&format!("  Parsing \x1b[2m{path} ({size_mb:.1} MB)\x1b[0m"));
+    start_inline(&format!("  Parsing {path} ({size_mb:.1} MB)"));
 
     let qasm = fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("\nError reading {path}: {e}");
@@ -390,20 +392,14 @@ fn read_circuit(path: &str) -> Circuit {
         eprintln!("\nError parsing {path}: {e}");
         process::exit(1);
     });
-    let rz = count_rz(&circuit);
-    let rz_report = (rz > 0).then(|| format!(" · {} Rz", fmt_num(rz)));
     finish_inline(&format!(
-        "  Parsed \x1b[2m{path} ({size_mb:.1} MB)\x1b[0m in {:.3}s",
+        "  Parsed {path} ({size_mb:.1} MB) in {:.3}s",
         parse_start.elapsed().as_secs_f64()
     ));
     eprintln!(
-        "\t\x1b[2m└─ {} qubits · {} gates · {} 2q gates · {} T/Tdg{} · {} depth\x1b[0m",
+        "\t└─ {} qubits · {} gates",
         fmt_num(circuit.num_qubits),
         fmt_num(circuit.gates.len()),
-        fmt_num(count_2q(&circuit)),
-        fmt_num(count_t(&circuit)),
-        rz_report.as_deref().unwrap_or(""),
-        fmt_num(depth(&circuit)),
     );
     circuit
 }
@@ -976,12 +972,7 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
         .unwrap_or_else(|error| arg_error(format!("failed to initialize SuperOpt: {error}")));
     if verbose {
         let size = table_cache_size_bytes(table_config)
-            .map(|bytes| {
-                format!(
-                    " \x1b[2m({:.1} MB)\x1b[0m",
-                    bytes as f64 / (1024.0 * 1024.0)
-                )
-            })
+            .map(|bytes| format!(" ({:.1} MB)", bytes as f64 / (1024.0 * 1024.0)))
             .unwrap_or_default();
         let message = format!(
             "  Loaded minimal unitary representatives{size} in {:.3}s",
@@ -991,6 +982,9 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
             finish_inline(&message);
         } else {
             eprintln!("{message}");
+        }
+        if let Some(path) = table_cache_path(table_config) {
+            eprintln!("\t└─ {}", path.display());
         }
         eprintln!();
     }
