@@ -94,6 +94,13 @@ pub fn table_is_cached(config: SuperOptTableConfig) -> bool {
     table::disk_cache_exists(config)
 }
 
+/// Size in bytes of the on-disk synthesis-table cache for `config`, if one
+/// exists — a reporting aid alongside `table_is_cached`, never load-bearing
+/// for correctness.
+pub fn table_cache_size_bytes(config: SuperOptTableConfig) -> Option<u64> {
+    table::disk_cache_size_bytes(config)
+}
+
 /// Matrix and location information for one completed anchored window.
 #[derive(Clone, Debug)]
 pub struct SuperOptWindow {

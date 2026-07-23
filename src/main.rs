@@ -14,7 +14,7 @@ use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use tzap::pass::{Pass, count_2q, count_rz, count_t, depth};
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
-use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_is_cached};
+use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_cache_size_bytes, table_is_cached};
 
 /// Map-reduce chunks per logical core. Deliberately more than one thread per
 /// core (see [`num_threads`]): chunks cost varies (some hit more SuperOpt
@@ -636,26 +636,26 @@ fn update_reduction_progress(
     let t_str = fmt_num(t_count);
     let t_width = fmt_num(baseline_t).chars().count();
     let mut rows = vec![
-            (
-                "Gates",
-                render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
-                format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
-            ),
-            (
-                "2q gates",
-                render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
-                format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
-            ),
-            (
-                "T/Tdg",
-                render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
-                format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
-            ),
-            (
-                "Depth",
-                render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
-                format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
-            ),
+        (
+            "Gates",
+            render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
+            format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
+        ),
+        (
+            "2q gates",
+            render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
+            format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
+        ),
+        (
+            "T/Tdg",
+            render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
+            format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
+        ),
+        (
+            "Depth",
+            render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
+            format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
+        ),
     ];
     if baseline_rz > 0 {
         let rz_pct = pct(baseline_rz, rz_count);
@@ -744,31 +744,31 @@ fn update_chunk_progress(
     let t_str = fmt_num(current_t);
     let t_width = fmt_num(baseline_t).chars().count();
     let mut rows = vec![
-            (
-                "Chunks",
-                render_bar(chunk_fraction, BAR_WIDTH, CHUNK_BAR_COLOR),
-                format!("{chunk_pct:>5.1}% · {done_str:<done_width$}/{total_str}"),
-            ),
-            (
-                "Gates",
-                render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
-                format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
-            ),
-            (
-                "2q gates",
-                render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
-                format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
-            ),
-            (
-                "T/Tdg",
-                render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
-                format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
-            ),
-            (
-                "Depth",
-                render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
-                format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
-            ),
+        (
+            "Chunks",
+            render_bar(chunk_fraction, BAR_WIDTH, CHUNK_BAR_COLOR),
+            format!("{chunk_pct:>5.1}% · {done_str:<done_width$}/{total_str}"),
+        ),
+        (
+            "Gates",
+            render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
+            format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
+        ),
+        (
+            "2q gates",
+            render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
+            format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
+        ),
+        (
+            "T/Tdg",
+            render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
+            format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
+        ),
+        (
+            "Depth",
+            render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
+            format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
+        ),
     ];
     if baseline_rz > 0 {
         let rz_pct = pct(baseline_rz, current_rz);
@@ -962,8 +962,11 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
     let pass = SuperOpt::new(qubits, window_gates, table_config)
         .unwrap_or_else(|error| arg_error(format!("failed to initialize SuperOpt: {error}")));
     if verbose {
+        let size = table_cache_size_bytes(table_config)
+            .map(|bytes| format!(" ({:.1} MB)", bytes as f64 / (1024.0 * 1024.0)))
+            .unwrap_or_default();
         eprintln!(
-            "  Initialized SuperOpt table in {:.3}s",
+            "  Loaded minimal unitary representatives{size} in {:.3}s",
             start.elapsed().as_secs_f64()
         );
         eprintln!();
@@ -1090,8 +1093,7 @@ fn run_map_reduce(
                 sum_after_gates.fetch_add(after_gates, Ordering::Relaxed) + after_gates;
             let sum_before_t = sum_before_t.fetch_add(before_t, Ordering::Relaxed) + before_t;
             let sum_after_t = sum_after_t.fetch_add(after_t, Ordering::Relaxed) + after_t;
-            let sum_before_rz =
-                sum_before_rz.fetch_add(before_rz, Ordering::Relaxed) + before_rz;
+            let sum_before_rz = sum_before_rz.fetch_add(before_rz, Ordering::Relaxed) + before_rz;
             let sum_after_rz = sum_after_rz.fetch_add(after_rz, Ordering::Relaxed) + after_rz;
 
             let current_gates = baseline_gates - sum_before_gates + sum_after_gates;
@@ -1266,8 +1268,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
     };
 
     let decompose_cz = DecomposeCz;
-    let circuit = if opts.decompose_cz
-        && circuit.gates.iter().any(|g| matches!(g, Gate::cz { .. }))
+    let circuit = if opts.decompose_cz && circuit.gates.iter().any(|g| matches!(g, Gate::cz { .. }))
     {
         run_logged(&decompose_cz, &circuit)
     } else {

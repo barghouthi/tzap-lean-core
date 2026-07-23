@@ -504,6 +504,17 @@ pub(super) fn disk_cache_exists(config: SuperOptTableConfig) -> bool {
     read_cache_header(&mut io::BufReader::new(file), config).is_ok()
 }
 
+/// Size in bytes of the on-disk cache file for `config`, if a valid one
+/// exists — a reporting aid alongside `disk_cache_exists`, never
+/// load-bearing for correctness.
+pub(super) fn disk_cache_size_bytes(config: SuperOptTableConfig) -> Option<u64> {
+    if !disk_cache_exists(config) {
+        return None;
+    }
+    let path = cache_file_path(config)?;
+    std::fs::metadata(&path).ok().map(|metadata| metadata.len())
+}
+
 /// Load a matching table from disk if one exists, else build it and (on a
 /// best-effort basis) write it back for the next process to reuse. A disk
 /// read/write failure of any kind — missing file, corrupt content, a
