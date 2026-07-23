@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tzap"
+description = "A super fast, Rust-based optimizer for large Clifford+T circuits"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Aws Albarghouthi" }]
+requires-python = ">=3.8"
+keywords = ["quantum", "circuit", "optimization", "qasm", "clifford"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Environment :: Console",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/qqq-wisc/tzap"
+Homepage = "https://github.com/qqq-wisc/tzap"
+
+[tool.maturin]
+bindings = "bin"
+strip = true

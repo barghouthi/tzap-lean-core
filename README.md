@@ -26,6 +26,12 @@ tzap is **multiple orders of mangitude** faster than other optimizers&mdash;and 
 brew install qqq-wisc/tap/tzap
 ```
 
+**pip / pipx** (no Rust required, downloads a prebuilt binary):
+
+```bash
+pipx install tzap
+```
+
 **crates.io** (requires [Rust](https://rustup.rs/); builds from source):
 
 ```bash
