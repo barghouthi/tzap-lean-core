@@ -369,32 +369,41 @@ fn write_output(output_path: &Option<String>, circuit: &Circuit) {
             eprintln!("Error writing {p}: {e}");
             process::exit(1);
         });
-        eprintln!("  wrote {p}");
+        eprintln!("  wrote \x1b[2m{p}\x1b[0m");
     }
 }
 
-/// Read and parse a QASM file into a circuit, logging parse stats. Exits on error.
+/// Read and parse a QASM file into a circuit, logging parse stats. Exits on
+/// error. Overwrites its own "Parsing..." line with "Parsed..." in place
+/// (see [`start_inline`]/[`finish_inline`]) once done.
 fn read_circuit(path: &str) -> Circuit {
+    let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let size_mb = file_size as f64 / (1024.0 * 1024.0);
+    let parse_start = Instant::now();
+    start_inline(&format!("  Parsing \x1b[2m{path} ({size_mb:.1} MB)\x1b[0m"));
+
     let qasm = fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("Error reading {path}: {e}");
+        eprintln!("\nError reading {path}: {e}");
         process::exit(1);
     });
-    let parse_start = Instant::now();
     let circuit = Circuit::from_qasm(&qasm).unwrap_or_else(|e| {
-        eprintln!("Error parsing {path}: {e}");
+        eprintln!("\nError parsing {path}: {e}");
         process::exit(1);
     });
     let rz = count_rz(&circuit);
     let rz_report = (rz > 0).then(|| format!(" · {} Rz", fmt_num(rz)));
+    finish_inline(&format!(
+        "  Parsed \x1b[2m{path} ({size_mb:.1} MB)\x1b[0m in {:.3}s",
+        parse_start.elapsed().as_secs_f64()
+    ));
     eprintln!(
-        "\t└─ {} qubits · {} gates · {} 2q gates · {} T/Tdg{} · {} depth · {:.3}s",
+        "\t\x1b[2m└─ {} qubits · {} gates · {} 2q gates · {} T/Tdg{} · {} depth\x1b[0m",
         fmt_num(circuit.num_qubits),
         fmt_num(circuit.gates.len()),
         fmt_num(count_2q(&circuit)),
         fmt_num(count_t(&circuit)),
         rz_report.as_deref().unwrap_or(""),
         fmt_num(depth(&circuit)),
-        parse_start.elapsed().as_secs_f64()
     );
     circuit
 }
@@ -532,6 +541,21 @@ fn progress_box(title: &str, rows: &[(&str, String, String)]) -> Vec<String> {
     }
     lines.push(format!("  └{}┘", "─".repeat(inner_width)));
     lines
+}
+
+/// Print `text` with no trailing newline (flushed immediately), so a later
+/// [`finish_inline`] call can overwrite it in place once the operation it
+/// describes completes. Shared by the Parsing and table-load status lines —
+/// both start with an in-progress message and end by replacing it, rather
+/// than leaving both lines on screen.
+fn start_inline(text: &str) {
+    eprint!("{text}");
+    let _ = io::stderr().flush();
+}
+
+/// Overwrite an in-progress line started by [`start_inline`] with `text`.
+fn finish_inline(text: &str) {
+    eprintln!("\r\x1b[2K{text}");
 }
 
 /// Reserve `n` blank lines for a live-redrawn progress block and leave the
@@ -940,8 +964,7 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
             // Reading a large cached table off disk can itself take a
             // moment, so say so before it starts; overwritten in place with
             // the completed message below rather than left as its own line.
-            eprint!("  Loading minimal unitary representatives...");
-            let _ = io::stderr().flush();
+            start_inline("  Loading minimal unitary representatives...");
         } else {
             eprintln!(
                 "  🔧 Generating semantic lookup table (one-time — cached for future use)..."
@@ -953,15 +976,22 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
         .unwrap_or_else(|error| arg_error(format!("failed to initialize SuperOpt: {error}")));
     if verbose {
         let size = table_cache_size_bytes(table_config)
-            .map(|bytes| format!(" ({:.1} MB)", bytes as f64 / (1024.0 * 1024.0)))
+            .map(|bytes| {
+                format!(
+                    " \x1b[2m({:.1} MB)\x1b[0m",
+                    bytes as f64 / (1024.0 * 1024.0)
+                )
+            })
             .unwrap_or_default();
-        if cached {
-            eprint!("\r\x1b[2K");
-        }
-        eprintln!(
+        let message = format!(
             "  Loaded minimal unitary representatives{size} in {:.3}s",
             start.elapsed().as_secs_f64()
         );
+        if cached {
+            finish_inline(&message);
+        } else {
+            eprintln!("{message}");
+        }
         eprintln!();
     }
     pass.without_subcircuits().incremental()
@@ -1523,12 +1553,6 @@ fn main() {
     eprintln!(
         "\x1b[1m⚡\u{FE0F} tzap\x1b[0m  \x1b[2mv{}\x1b[0m",
         env!("CARGO_PKG_VERSION")
-    );
-    let file_size = fs::metadata(&opts.input_path).map(|m| m.len()).unwrap_or(0);
-    eprintln!(
-        "  Parsing {} ({:.1} MB)",
-        opts.input_path,
-        file_size as f64 / (1024.0 * 1024.0)
     );
 
     let circuit = read_circuit(&opts.input_path);
