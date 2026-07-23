@@ -9,9 +9,7 @@ pub enum SuperOptError {
     /// `window_gates` was zero.
     ZeroWindowGates,
     /// The requested [`crate::super_opt::SuperOptTableConfig`] is unusable.
-    InvalidTableConfig {
-        reason: String,
-    },
+    InvalidTableConfig { reason: String },
     /// A gate in the input circuit references a qubit outside its declared range.
     InvalidQubit {
         gate_index: usize,
@@ -19,9 +17,7 @@ pub enum SuperOptError {
         num_qubits: usize,
     },
     /// A window's dense unitary matrix would be too large to construct.
-    MatrixTooLarge {
-        num_qubits: usize,
-    },
+    MatrixTooLarge { num_qubits: usize },
 }
 
 impl fmt::Display for SuperOptError {
