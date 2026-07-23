@@ -170,7 +170,16 @@ pub struct SuperOpt {
 struct ActiveWindow {
     gate_indices: IndexVec,
     qubits: QubitVec,
-    compact_key: Option<CompactKey>,
+    // Boxed: `ActiveWindow` is moved in and out of `active` on every touched
+    // window for every gate processed (the hottest loop in `run`), so keeping
+    // `CompactKey`'s fixed-size array behind a pointer keeps that move O(1)
+    // instead of copying the whole array each time.
+    compact_key: Option<Box<CompactKey>>,
+    // Tracked incrementally by `expand_component_closure` (the only place an
+    // Rz gate can enter `gate_indices`, via a bridged-in qubit's history), so
+    // `analyze_window` can reject an Rz window in O(1) instead of rescanning
+    // the whole (monotonically growing) gate list on every touch.
+    contains_rz: bool,
 }
 
 impl SuperOpt {
@@ -314,12 +323,11 @@ impl SuperOpt {
                 // O(1), but a bridged-in qubit renumbers the support-local
                 // encoding of every member, so the key must be rebuilt.
                 if added_qubits.is_empty() {
-                    window.compact_key = window
-                        .compact_key
-                        .and_then(|key| append_compact_gate_key(key, gate, &window.qubits));
+                    append_compact_gate_key(&mut window.compact_key, gate, &window.qubits);
                 } else {
                     window.compact_key =
-                        compact_normalized_key(circuit, &window.gate_indices, &window.qubits);
+                        compact_normalized_key(circuit, &window.gate_indices, &window.qubits)
+                            .map(Box::new);
                 }
 
                 let at_gate_limit = window.gate_indices.len() == self.window_gates;
@@ -353,8 +361,12 @@ impl SuperOpt {
             {
                 let window = ActiveWindow {
                     gate_indices: smallvec![gate_index],
-                    compact_key: compact_normalized_key(circuit, &[gate_index], &gate_qubits),
+                    compact_key: compact_normalized_key(circuit, &[gate_index], &gate_qubits)
+                        .map(Box::new),
                     qubits: gate_qubits,
+                    // The barrier check above already sent Rz/measure/reset
+                    // gates to `continue` before this anchor point is reached.
+                    contains_rz: false,
                 };
                 // A single non-identity Clifford+T gate cannot be rewritten to
                 // the empty circuit. Analyze it only when diagnostics were
@@ -423,17 +435,17 @@ impl SuperOpt {
         // Exact SuperOpt matrices represent Clifford+T only. Never construct
         // a matrix or accept a rewrite for a window containing Rz; phase
         // folding/decomposition is responsible for those rotations.
-        if gate_indices
-            .iter()
-            .any(|&gate_index| matches!(circuit.gates[gate_index], Gate::rz(..)))
-        {
+        // `contains_rz` is tracked incrementally by `expand_component_closure`,
+        // so this is O(1) rather than a rescan of the (monotonically growing)
+        // gate list on every touch.
+        if window.contains_rz {
             return Ok(false);
         }
         let Some(cached) = store.lookup(
             circuit,
             gate_indices,
             qubits,
-            window.compact_key,
+            window.compact_key.as_deref(),
             self.synthesis_table.as_deref(),
         )?
         else {
@@ -577,6 +589,9 @@ fn expand_component_closure(
                 continue;
             };
             window.gate_indices.insert(position, gate_index);
+            if matches!(circuit.gates[gate_index], Gate::rz(..)) {
+                window.contains_rz = true;
+            }
             if window.gate_indices.len() > max_gates {
                 return (false, added);
             }

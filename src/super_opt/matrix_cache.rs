@@ -83,11 +83,11 @@ impl MatrixStore {
         circuit: &Circuit,
         gate_indices: &[usize],
         qubits: &[Qubit],
-        compact_key: Option<CompactKey>,
+        compact_key: Option<&CompactKey>,
         table: Option<&UnitaryCircuitTable>,
     ) -> Result<Option<&CachedMatrix>, SuperOptError> {
         if let Some(key) = compact_key {
-            if let Some(&entry_index) = self.compact_cache.get(&key) {
+            if let Some(&entry_index) = self.compact_cache.get(key) {
                 self.hits += 1;
                 return Ok(Some(&self.entries[entry_index]));
             }
@@ -116,7 +116,7 @@ impl MatrixStore {
             matrix: Arc::new(matrix),
         });
         if let Some(key) = compact_key {
-            self.compact_cache.insert(key, entry_index);
+            self.compact_cache.insert(*key, entry_index);
         } else {
             self.cache
                 .insert(self.scratch.as_slice().into(), entry_index);
@@ -168,6 +168,23 @@ impl CompactKey {
     fn as_slice(&self) -> &[u16] {
         &self.gates[..usize::from(self.len)]
     }
+
+    /// Append one gate's code in place. Returns `false` (leaving `self`
+    /// unchanged) if the window would exceed `COMPACT_KEY_MAX_GATES` gates or
+    /// the gate/support isn't compactly encodable; the caller then falls back
+    /// to the general key.
+    fn try_push(&mut self, gate: &Gate, support: &[Qubit]) -> bool {
+        let len = usize::from(self.len);
+        if len >= COMPACT_KEY_MAX_GATES {
+            return false;
+        }
+        let Some(code) = compact_gate(gate, support) else {
+            return false;
+        };
+        self.gates[len] = code;
+        self.len = (len + 1) as u8;
+        true
+    }
 }
 
 impl PartialEq for CompactKey {
@@ -191,23 +208,27 @@ pub(super) fn compact_normalized_key(
 ) -> Option<CompactKey> {
     let mut key = CompactKey::EMPTY;
     for &gate_index in gate_indices {
-        key = append_compact_gate_key(key, &circuit.gates[gate_index], support)?;
+        if !key.try_push(&circuit.gates[gate_index], support) {
+            return None;
+        }
     }
     Some(key)
 }
 
+/// Append one gate to `key` in place — no `CompactKey` is ever copied, since
+/// growing an active window's key is the hot path (once per live window per
+/// gate processed). Falls back to `None` (forcing the general key on the
+/// next lookup) exactly when [`CompactKey::try_push`] would have.
 pub(super) fn append_compact_gate_key(
-    mut key: CompactKey,
+    key: &mut Option<Box<CompactKey>>,
     gate: &Gate,
     support: &[Qubit],
-) -> Option<CompactKey> {
-    let len = usize::from(key.len);
-    if len >= COMPACT_KEY_MAX_GATES {
-        return None;
+) {
+    if let Some(inner) = key
+        && !inner.try_push(gate, support)
+    {
+        *key = None;
     }
-    key.gates[len] = compact_gate(gate, support)?;
-    key.len = (len + 1) as u8;
-    Some(key)
 }
 
 fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
