@@ -253,9 +253,11 @@ fn init_global_pool() {
 }
 
 /// Run one pass with timing and a result line, followed by a blank
-/// separator line — every "info" line that can precede a live progress box
-/// (this, [`read_circuit`], and the SuperOpt table-build message) owns its
-/// own trailing blank line, so the box itself never needs to print one.
+/// separator line — this and the SuperOpt table-build message each own a
+/// trailing blank line, so a live progress box that follows never needs to
+/// print one itself. [`read_circuit`] deliberately does *not* trail with a
+/// blank: it should stay flush with whatever comes right after it, whether
+/// that's this, the table message, or a box directly.
 fn run_logged(pass: &dyn Pass, circuit: &Circuit) -> Circuit {
     let start = Instant::now();
     let c = pass.run(circuit);
@@ -394,7 +396,6 @@ fn read_circuit(path: &str) -> Circuit {
         fmt_num(depth(&circuit)),
         parse_start.elapsed().as_secs_f64()
     );
-    eprintln!();
     circuit
 }
 
@@ -931,8 +932,17 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
     // this would otherwise print once per chunk. The caller instead does one
     // verbose warm-up call before fanning out, so the table build (and its
     // one-time cost message) is reported exactly once.
-    if verbose && !table_is_cached(table_config) {
-        eprintln!("  🔧 Generating semantic lookup table (one-time — cached for future use)...");
+    if verbose {
+        if table_is_cached(table_config) {
+            // Reading a large cached table off disk can itself take a
+            // moment, so say so before it starts rather than only reporting
+            // it after the fact.
+            eprintln!("  Loading minimal unitary representatives...");
+        } else {
+            eprintln!(
+                "  🔧 Generating semantic lookup table (one-time — cached for future use)..."
+            );
+        }
     }
     let start = Instant::now();
     let pass = SuperOpt::new(qubits, window_gates, table_config)
