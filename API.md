@@ -64,7 +64,7 @@ Every pass implements the `Pass` trait:
 ```rust,ignore
 use tzap::pass::Pass;
 
-pub trait Pass: Sync {
+pub trait Pass {
     fn name(&self) -> &str;
     fn run(&self, circuit: &Circuit) -> Circuit;
 }

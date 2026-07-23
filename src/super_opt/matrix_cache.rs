@@ -11,7 +11,8 @@
 //! case (at most ten gates on at most four qubits), and a general
 //! [`NormalizedGate`] sequence for wider or longer Clifford+T windows.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::cell::RefCell;
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
@@ -55,21 +56,21 @@ pub(super) struct MatrixStore {
 impl MatrixStore {
     /// Take the persistent store out of `slot` for one run, leaving the slot
     /// empty. The hit/miss counters describe a single run and are reset here.
-    pub(super) fn take_from(slot: &Mutex<MatrixStore>) -> MatrixStore {
-        let mut store = {
-            let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
-            std::mem::take(&mut *guard)
-        };
+    pub(super) fn take_from(slot: &RefCell<MatrixStore>) -> MatrixStore {
+        let mut store = std::mem::take(&mut *slot.borrow_mut());
         store.hits = 0;
         store.misses = 0;
         store
     }
 
-    /// Return the store to `slot` so the pass's next run starts warm. Parallel
-    /// chunked runs race for the slot; the store with the most interned
-    /// entries wins, and the losers are simply dropped.
-    pub(super) fn store_back(self, slot: &Mutex<MatrixStore>) {
-        let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    /// Return the store to `slot` so the pass's next run starts warm. If two
+    /// clones of the same pass instance (sharing this `Rc`) both ran and are
+    /// now returning their store, the one with more interned entries wins
+    /// and the other is simply dropped — clones only ever run one at a time
+    /// on the single thread they're confined to, so this is an ordering
+    /// choice, not a data race.
+    pub(super) fn store_back(self, slot: &RefCell<MatrixStore>) {
+        let mut guard = slot.borrow_mut();
         if guard.entries.len() < self.entries.len() {
             *guard = self;
         }

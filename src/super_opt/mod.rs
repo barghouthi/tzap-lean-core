@@ -57,7 +57,9 @@
 //!    changes; everything else was analyzed before and selected nothing
 //!    (`incremental.rs`).
 
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use smallvec::{SmallVec, smallvec};
 
@@ -150,11 +152,16 @@ pub struct SuperOpt {
     /// Matrix cache carried across runs of this pass instance (and its
     /// clones), so repeated fixpoint sweeps skip re-deriving recurring window
     /// shapes. Reuse returns exactly what a cold run would recompute; see
-    /// `MatrixStore`.
-    store: Arc<Mutex<MatrixStore>>,
+    /// `MatrixStore`. `Rc<RefCell<_>>`, not `Arc<Mutex<_>>`: a `SuperOpt`
+    /// instance (and any clones sharing this cache) is meant to stay on one
+    /// thread — parallel callers construct one fresh instance per worker
+    /// rather than sharing or cloning one across threads — so this is never
+    /// actually touched from more than one thread at a time; `Pass` doesn't
+    /// require `Sync` for exactly this reason.
+    store: Rc<RefCell<MatrixStore>>,
     /// The input the previous run saw, diffed against the next input to
     /// bound where new windows can anchor when `incremental` is set.
-    prev_input: Arc<Mutex<Option<Circuit>>>,
+    prev_input: Rc<RefCell<Option<Circuit>>>,
 }
 
 #[derive(Debug)]
@@ -186,8 +193,8 @@ impl SuperOpt {
             collect_subcircuits: true,
             incremental: false,
             synthesis_table: None,
-            store: Arc::default(),
-            prev_input: Arc::default(),
+            store: Rc::default(),
+            prev_input: Rc::default(),
         }
     }
 
@@ -390,10 +397,7 @@ impl SuperOpt {
         if !self.incremental {
             return None;
         }
-        let mut prev = self
-            .prev_input
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut prev = self.prev_input.borrow_mut();
         let frontier = incremental::anchor_frontier(circuit, prev.as_ref(), self.window_gates);
         *prev = Some(circuit.clone());
         frontier

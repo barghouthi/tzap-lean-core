@@ -1,7 +1,13 @@
 use crate::circuit::{Circuit, Gate, qubits_of};
 
 /// An optimization pass: takes a circuit, returns an equivalent one.
-pub trait Pass: Sync {
+///
+/// Implementors are not required to be `Sync`/`Send`: a pass may cache state
+/// behind interior mutability that isn't safe to share across threads (see
+/// `SuperOpt`'s `MatrixStore`, which uses `Rc<RefCell<_>>` since it's never
+/// actually accessed from more than one thread — each parallel worker
+/// constructs and owns its own pass instance).
+pub trait Pass {
     fn name(&self) -> &str;
     fn run(&self, circuit: &Circuit) -> Circuit;
 }
