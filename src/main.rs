@@ -352,16 +352,9 @@ fn print_result(
         let (rz_bar, rz_trailing) = row(in_rz, out_rz, RZ_BAR_COLOR);
         rows.insert(3, ("Rz", rz_bar, rz_trailing));
     }
-    // Time has no reduction fraction, so its "bar" is an all-dim empty
-    // track (fraction 0.0; the color argument is unused at that fraction) —
-    // reads as "not applicable" while keeping the box rectangular.
-    rows.push((
-        "Time",
-        render_bar(0.0, BAR_WIDTH, GATES_BAR_COLOR),
-        format!("{secs:.3}s"),
-    ));
 
-    for line in progress_box("Final result", &rows) {
+    let title = format!("Final result · {secs:.3}s");
+    for line in progress_box(&title, &rows) {
         eprintln!("{line}");
     }
 }
