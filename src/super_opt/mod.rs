@@ -105,13 +105,6 @@ pub fn table_cache_size_bytes(config: SuperOptTableConfig) -> Option<u64> {
     table::disk_cache_size_bytes(config)
 }
 
-/// Path to the on-disk synthesis-table cache file for `config`, whether or
-/// not it currently exists — a reporting aid alongside `table_is_cached`,
-/// never load-bearing for correctness.
-pub fn table_cache_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
-    table::cache_file_path(config)
-}
-
 /// Matrix and location information for one completed anchored window.
 #[derive(Clone, Debug)]
 pub struct SuperOptWindow {

@@ -14,9 +14,7 @@ use tzap::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use tzap::pass::{Pass, count_2q, count_rz, count_t, depth};
 use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
-use tzap::super_opt::{
-    SuperOpt, SuperOptTableConfig, table_cache_path, table_cache_size_bytes, table_is_cached,
-};
+use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_cache_size_bytes, table_is_cached};
 
 /// Map-reduce chunks per logical core. Deliberately more than one thread per
 /// core (see [`num_threads`]): chunks cost varies (some hit more SuperOpt
@@ -330,32 +328,39 @@ fn print_result(
     // Same box/bar rendering as the live progress boxes, but each row's
     // trailing text keeps both endpoints ("before → after") rather than just
     // the current count, since this box is printed once and never redrawn.
-    let row = |before: usize, after: usize, color: &str| {
-        let reduction = pct(before, after);
-        let before_str = fmt_num(before);
-        let after_str = fmt_num(after);
-        let width = before_str.chars().count().max(after_str.chars().count());
-        (
-            render_bar(reduction / 100.0, BAR_WIDTH, color),
-            format!("{before_str:>width$} → {after_str:>width$} (↓{reduction:.1}%)"),
-        )
-    };
-
-    let (gates_bar, gates_trailing) = row(in_gates, out_gates, GATES_BAR_COLOR);
-    let (two_q_bar, two_q_trailing) = row(in_2q, out_2q, TWO_QUBIT_BAR_COLOR);
-    let (t_bar, t_trailing) = row(in_t, out_t, T_BAR_COLOR);
-    let (depth_bar, depth_trailing) = row(in_depth, out_depth, DEPTH_BAR_COLOR);
-
-    let mut rows = vec![
-        ("Gates", gates_bar, gates_trailing),
-        ("2q gates", two_q_bar, two_q_trailing),
-        ("T/Tdg", t_bar, t_trailing),
-        ("Depth", depth_bar, depth_trailing),
+    let mut metrics = vec![
+        ("Gates", in_gates, out_gates, GATES_BAR_COLOR),
+        ("2q gates", in_2q, out_2q, TWO_QUBIT_BAR_COLOR),
+        ("T/Tdg", in_t, out_t, T_BAR_COLOR),
     ];
     if in_rz > 0 || out_rz > 0 {
-        let (rz_bar, rz_trailing) = row(in_rz, out_rz, RZ_BAR_COLOR);
-        rows.insert(3, ("Rz", rz_bar, rz_trailing));
+        metrics.push(("Rz", in_rz, out_rz, RZ_BAR_COLOR));
     }
+    metrics.push(("Depth", in_depth, out_depth, DEPTH_BAR_COLOR));
+
+    // One shared width across every row (not just each row's own before/after
+    // pair), so the "→" arrows line up regardless of how much smaller a
+    // metric like Rz's counts are than Gates' or Depth's.
+    let width = metrics
+        .iter()
+        .flat_map(|&(_, before, after, _)| [before, after])
+        .map(|n| fmt_num(n).chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let rows: Vec<_> = metrics
+        .into_iter()
+        .map(|(label, before, after, color)| {
+            let reduction = pct(before, after);
+            let before_str = fmt_num(before);
+            let after_str = fmt_num(after);
+            (
+                label,
+                render_bar(reduction / 100.0, BAR_WIDTH, color),
+                format!("↓{reduction:.1}% · {before_str:>width$} → {after_str:>width$}"),
+            )
+        })
+        .collect();
 
     let title = format!("Final result · {secs:.3}s");
     for line in progress_box(&title, &rows) {
@@ -982,9 +987,6 @@ fn initialize_superopt(opts: &Opts, level: OptimizationLevel, verbose: bool) -> 
             finish_inline(&message);
         } else {
             eprintln!("{message}");
-        }
-        if let Some(path) = table_cache_path(table_config) {
-            eprintln!("\t└─ {}", path.display());
         }
         eprintln!();
     }

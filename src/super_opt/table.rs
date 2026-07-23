@@ -477,7 +477,7 @@ fn cache_dir() -> Option<std::path::PathBuf> {
 /// bump of either can't collide with (and doesn't need to explicitly
 /// invalidate) old files — they're simply never looked up again and can be
 /// cleaned up manually.
-pub(super) fn cache_file_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
+fn cache_file_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
     let mut path = cache_dir()?;
     path.push(format!(
         "q{}_g{}_e{}.v{CACHE_FORMAT_VERSION}.tzap{CACHE_CRATE_VERSION}.bin",
