@@ -70,13 +70,13 @@ tzap output:
 
 ```text
 ⚡️ tzap  v0.4.3
-  Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.099s
+  Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.098s
 	└─ 20 qubits · 514,412 gates
-  Loaded minimal unitary representatives (7.9 MB) in 0.018s
+  Loaded superoptimizer table in 0.018s
 
-  Fixpoint reached after 6 iteration(s)
+  Converged after 6 rounds
 
-  ┌─ Final result · 2.213s ──────────────────────────────────────────────┐
+  ┌─ Final result · 2.164s ──────────────────────────────────────────────┐
   │ Gates    ━━━━━━━━━━━━━╸────────────────── ↓43.7% · 514,412 → 289,484 │
   │ 2q gates ━━━━━╸────────────────────────── ↓18.7% · 191,803 → 155,914 │
   │ T/Tdg    ━━━━━━━━━━━━━━━╸──────────────── ↓49.9% · 171,465 →  85,897 │

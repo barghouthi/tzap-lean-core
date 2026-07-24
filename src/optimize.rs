@@ -19,9 +19,7 @@ use crate::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use crate::pass::{Pass, count_2q, count_rz, count_t, depth};
 use crate::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use crate::phase_fold_rand::PhaseFoldRand;
-use crate::super_opt::{
-    SuperOpt, SuperOptError, SuperOptTableConfig, table_cache_size_bytes, table_is_cached,
-};
+use crate::super_opt::{SuperOpt, SuperOptError, SuperOptTableConfig, table_is_cached};
 
 /// Map-reduce chunks per logical core. Deliberately more than one thread per
 /// core (see [`num_threads`]): chunks cost varies (some hit more SuperOpt
@@ -295,15 +293,17 @@ pub trait Observer: Sync {
     }
 
     /// A whole-circuit pass (the eager ccx/ccz or cz decomposition) finished.
-    fn pass_done(&self, _name: &str, _result: &Circuit, _elapsed: Duration) {}
+    /// Both sides are reported: a decomposition *grows* the circuit, so a
+    /// renderer that only showed `result` would leave its counts looking
+    /// unexplained next to the input's.
+    fn pass_done(&self, _name: &str, _input: &Circuit, _result: &Circuit, _elapsed: Duration) {}
 
     /// The SuperOpt synthesis table is about to be loaded from disk
     /// (`cached`) or built from scratch.
     fn table_load_start(&self, _cached: bool) {}
 
-    /// The SuperOpt synthesis table is ready, and now occupies `size_bytes`
-    /// on disk.
-    fn table_load_done(&self, _cached: bool, _size_bytes: Option<u64>, _elapsed: Duration) {}
+    /// The SuperOpt synthesis table is ready.
+    fn table_load_done(&self, _cached: bool, _elapsed: Duration) {}
 
     /// A pass pipeline is starting, against `baseline`. Paired with
     /// [`Observer::progress_end`].
@@ -370,7 +370,7 @@ fn init_global_pool() {
 fn run_logged(pass: &dyn Pass, circuit: &Circuit, observer: &dyn Observer) -> Circuit {
     let start = Instant::now();
     let c = pass.run(circuit);
-    observer.pass_done(pass.name(), &c, start.elapsed());
+    observer.pass_done(pass.name(), circuit, &c, start.elapsed());
     c
 }
 
@@ -532,11 +532,7 @@ fn initialize_superopt(
     observer.table_load_start(cached);
     let start = Instant::now();
     let pass = SuperOpt::new(qubits, window_gates, table_config)?;
-    observer.table_load_done(
-        cached,
-        table_cache_size_bytes(table_config),
-        start.elapsed(),
-    );
+    observer.table_load_done(cached, start.elapsed());
     Ok(pass.without_subcircuits().incremental())
 }
 

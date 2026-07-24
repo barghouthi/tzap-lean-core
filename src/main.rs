@@ -11,7 +11,7 @@ mod progress;
 
 use cli::{Opts, arg_error, parse_args};
 use progress::{
-    box_lines, end_progress_block, finish_inline, fmt_num, print_result, start_inline,
+    box_lines, end_progress_block, finish_inline, fmt_num, fmt_size, print_result, start_inline,
     start_progress_block, update_chunk_progress, update_fixpoint_progress,
     update_reduction_progress,
 };
@@ -45,12 +45,17 @@ impl Observer for Terminal {
     /// print one itself. [`read_circuit`] deliberately does *not* trail with a
     /// blank: it should stay flush with whatever comes right after it, whether
     /// that's this, the table message, or a box directly.
-    fn pass_done(&self, name: &str, result: &Circuit, elapsed: Duration) {
+    fn pass_done(&self, name: &str, input: &Circuit, result: &Circuit, elapsed: Duration) {
         let metrics = Metrics::of(result);
         let rz_report = (metrics.rz > 0).then(|| format!(" · {} Rz", fmt_num(metrics.rz)));
+        // Gate count shows both sides: a decomposition grows the circuit, and
+        // the final result banner measures its reduction against *this* count,
+        // not the parsed one. Printing only the post-decomposition figure left
+        // readers to guess where it came from.
         eprintln!(
-            "  {}\n\t└─ {} gates · {} 2q gates · {} T{} · {} depth · {:.3}s",
+            "  {}\n\t└─ {} → {} gates · {} 2q gates · {} T/Tdg{} · {} depth · {:.3}s",
             name,
+            fmt_num(input.gates.len()),
             fmt_num(metrics.gates),
             fmt_num(metrics.two_qubit),
             fmt_num(metrics.t),
@@ -61,25 +66,23 @@ impl Observer for Terminal {
         eprintln!();
     }
 
+    /// One name for the table in every message — a cold run used to call it a
+    /// "semantic lookup table" and a warm run "minimal unitary
+    /// representatives", leaving no way to tell they were the same artifact.
     fn table_load_start(&self, cached: bool) {
         if cached {
             // Reading a large cached table off disk can itself take a
             // moment, so say so before it starts; overwritten in place with
             // the completed message below rather than left as its own line.
-            start_inline("  Loading minimal unitary representatives...");
+            start_inline("  Loading superoptimizer table...");
         } else {
-            eprintln!(
-                "  🔧 Generating semantic lookup table (one-time — cached for future use)..."
-            );
+            eprintln!("  🔧 Building superoptimizer table (one-time — cached for future use)...");
         }
     }
 
-    fn table_load_done(&self, cached: bool, size_bytes: Option<u64>, elapsed: Duration) {
-        let size = size_bytes
-            .map(|bytes| format!(" ({:.1} MB)", bytes as f64 / (1024.0 * 1024.0)))
-            .unwrap_or_default();
+    fn table_load_done(&self, cached: bool, elapsed: Duration) {
         let message = format!(
-            "  Loaded minimal unitary representatives{size} in {:.3}s",
+            "  Loaded superoptimizer table in {:.3}s",
             elapsed.as_secs_f64()
         );
         if cached {
@@ -132,7 +135,8 @@ impl Observer for Terminal {
 
     fn fixpoint_done(&self, rounds: usize, reached_fixpoint: bool) {
         if reached_fixpoint {
-            eprintln!("  Fixpoint reached after {rounds} iteration(s)");
+            let plural = if rounds == 1 { "round" } else { "rounds" };
+            eprintln!("  Converged after {rounds} {plural}");
             eprintln!();
         }
     }
@@ -180,10 +184,9 @@ fn write_output(output_path: &Option<String>, circuit: &Circuit) {
 /// error. Overwrites its own "Parsing..." line with "Parsed..." in place
 /// (see [`start_inline`]/[`finish_inline`]) once done.
 fn read_circuit(path: &str) -> Circuit {
-    let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let size_mb = file_size as f64 / (1024.0 * 1024.0);
+    let size = fmt_size(fs::metadata(path).map(|m| m.len()).unwrap_or(0));
     let parse_start = Instant::now();
-    start_inline(&format!("  Parsing {path} ({size_mb:.1} MB)"));
+    start_inline(&format!("  Parsing {path} ({size})"));
 
     let qasm = fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("\nError reading {path}: {e}");
@@ -194,7 +197,7 @@ fn read_circuit(path: &str) -> Circuit {
         process::exit(1);
     });
     finish_inline(&format!(
-        "  Parsed {path} ({size_mb:.1} MB) in {:.3}s",
+        "  Parsed {path} ({size}) in {:.3}s",
         parse_start.elapsed().as_secs_f64()
     ));
     eprintln!(

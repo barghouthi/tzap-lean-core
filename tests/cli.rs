@@ -146,6 +146,40 @@ fn toffoli_decomposition_increases_gate_count() {
     );
 }
 
+/// The decomposition line must show both sides of the gate count. The final
+/// result banner measures its reduction against the *decomposed* circuit, so
+/// printing only the post-decomposition figure left readers no way to see
+/// where it came from — a 3-gate input reported as "31 → 21 gates" with no
+/// mention of the 3.
+#[test]
+fn decomposition_line_shows_both_gate_counts() {
+    let out = tzap_run(&[TWO_CCX_QASM]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(stderr.contains("Toffoli decomposition"), "got: {stderr}");
+    assert!(
+        stderr.contains("3 → "),
+        "expected the decomposition line to show the input gate count (3) \
+         alongside the decomposed one:\n{stderr}"
+    );
+}
+
+/// A sub-megabyte input must not report its size as "0.0 MB", which reads as
+/// an empty file.
+#[test]
+fn small_input_size_is_not_reported_as_zero_megabytes() {
+    let out = tzap_run(&[TWO_CCX_QASM]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !stderr.contains("0.0 MB"),
+        "a tiny input should report bytes, not 0.0 MB:\n{stderr}"
+    );
+    assert!(stderr.contains(" B) in "), "got: {stderr}");
+}
+
 #[test]
 fn ccz_is_decomposed_by_default() {
     let (gates, _) = run_qasm(
@@ -749,11 +783,11 @@ fn o3_is_the_default_pipeline() {
         "expected a live reduction progress box:\n{stderr}"
     );
     assert!(
-        stderr.contains("Loaded minimal unitary representatives"),
+        stderr.contains("Loaded superoptimizer table"),
         "O3 uses SuperOpt, so it should build/load the synthesis table:\n{stderr}"
     );
     assert!(
-        stderr.contains("Fixpoint reached"),
+        stderr.contains("Converged after"),
         "O3 runs to a true fixpoint:\n{stderr}"
     );
 }
@@ -769,7 +803,7 @@ fn o2_uses_superopt_pass_capped_at_two_rounds() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Loaded minimal unitary representatives"),
+        stderr.contains("Loaded superoptimizer table"),
         "got: {stderr}"
     );
     assert!(stderr.contains("% reduction so far"), "got: {stderr}");
@@ -787,14 +821,14 @@ fn o2_uses_superopt_pass_capped_at_two_rounds() {
         "O2 should stop after 2 rounds, not reach iteration 3:\n{capped_stderr}"
     );
     assert!(
-        !capped_stderr.contains("Fixpoint reached"),
+        !capped_stderr.contains("Converged after"),
         "O2 stopped on the round cap, not a true fixpoint, so it shouldn't claim one:\n{capped_stderr}"
     );
 
     let uncapped = tzap_run(&[MOD5_4_QASM, "-O3"]);
     let uncapped_stderr = String::from_utf8_lossy(&uncapped.stderr);
     assert!(
-        uncapped_stderr.contains("Fixpoint reached after 3 iteration(s)"),
+        uncapped_stderr.contains("Converged after 3 rounds"),
         "expected -O3 to run past O2's 2-round cap to a true fixpoint:\n{uncapped_stderr}"
     );
 }
@@ -836,7 +870,7 @@ fn o3_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
             && !stderr.contains("Rz → Clifford+T decomposition"),
         "fixpoint progress should not print per-pass logs:\n{stderr}"
     );
-    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    assert!(stderr.contains("Converged after"), "got: {stderr}");
 
     let gates = gate_lines_from(&fs::read_to_string(output).unwrap());
     assert!(
@@ -1013,7 +1047,7 @@ fn passes_with_fixpoint_reaches_fixpoint() {
     assert_success(&out, "--passes with --fixpoint");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    assert!(stderr.contains("Converged after"), "got: {stderr}");
     assert_eq!(read_valid_qasm(&output), vec!["s q[0];"]);
 }
 
@@ -1076,7 +1110,7 @@ fn optimization_levels_run_with_parallel() {
         assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
         if level != "-O1" {
             assert!(
-                stderr.contains("Loaded minimal unitary representatives"),
+                stderr.contains("Loaded superoptimizer table"),
                 "got: {stderr}"
             );
         }
@@ -1106,7 +1140,7 @@ fn default_pipeline_with_fixpoint() {
     assert_success(&out, "default --fixpoint");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
+    assert!(stderr.contains("Converged after"), "got: {stderr}");
     read_valid_qasm(&output);
 }
 

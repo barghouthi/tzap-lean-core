@@ -23,6 +23,22 @@ pub(crate) fn fmt_num<N: std::fmt::Display>(n: N) -> String {
     result
 }
 
+/// Format a byte count with the largest unit that keeps it above 1 — a
+/// fixed `MB` rendered every small benchmark as a flat "0.0 MB", which reads
+/// like an empty file.
+pub(crate) fn fmt_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let size = bytes as f64;
+    if size >= MB {
+        format!("{:.1} MB", size / MB)
+    } else if size >= KB {
+        format!("{:.1} KB", size / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// Percentage reduction from `before` to `after` (0.0 when `before` is 0).
 fn pct(before: usize, after: usize) -> f64 {
     if before > 0 {
@@ -49,7 +65,7 @@ fn format_result_trailing(
 }
 
 /// Print the closing result banner. Assumes whatever ran just before it
-/// (a progress box's erasure, or an "info" line like "Fixpoint reached")
+/// (a progress box's erasure, or an "info" line like "Converged after N rounds")
 /// already left exactly one blank line behind — this prints no leading
 /// blank of its own.
 #[allow(clippy::too_many_arguments)]
@@ -447,6 +463,14 @@ pub(crate) fn update_chunk_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fmt_size_picks_a_unit_that_keeps_the_number_visible() {
+        assert_eq!(fmt_size(0), "0 B");
+        assert_eq!(fmt_size(871), "871 B");
+        assert_eq!(fmt_size(1024), "1.0 KB");
+        assert_eq!(fmt_size(5_817_556), "5.5 MB");
+    }
 
     #[test]
     fn progress_box_grows_for_large_counts() {
