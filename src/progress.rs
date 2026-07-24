@@ -48,6 +48,17 @@ fn pct(before: usize, after: usize) -> f64 {
     }
 }
 
+/// An arrow matching a reduction's direction, and its magnitude. A circuit
+/// that grew — `--decompose-rz` expanding a rotation into Clifford+T, say —
+/// used to render as "↓-5300.0%".
+fn arrow(reduction: f64) -> char {
+    if reduction < 0.0 { '↑' } else { '↓' }
+}
+
+fn magnitude(reduction: f64) -> String {
+    format!("{:.1}", reduction.abs())
+}
+
 fn format_result_trailing(
     reduction: f64,
     before: usize,
@@ -55,11 +66,12 @@ fn format_result_trailing(
     pct_width: usize,
     count_width: usize,
 ) -> String {
-    let reduction_str = format!("{reduction:.1}");
+    let arrow = arrow(reduction);
+    let reduction_str = magnitude(reduction);
     let before_str = fmt_num(before);
     let after_str = fmt_num(after);
     format!(
-        "↓{reduction_str:>pct_width$}% · \
+        "{arrow}{reduction_str:>pct_width$}% · \
          {before_str:>count_width$} → {after_str:>count_width$}"
     )
 }
@@ -106,7 +118,7 @@ pub(crate) fn print_result(
         .unwrap_or(0);
     let pct_width = metrics
         .iter()
-        .map(|&(_, before, after, _)| format!("{:.1}", pct(before, after)).chars().count())
+        .map(|&(_, before, after, _)| magnitude(pct(before, after)).chars().count())
         .max()
         .unwrap_or(0);
 
@@ -122,7 +134,20 @@ pub(crate) fn print_result(
         })
         .collect();
 
-    let title = format!("Final result · {secs:.3}s");
+    // Lead with the headline number, so the one figure most readers want is in
+    // the title rather than only in the Gates row. Spelled out in words rather
+    // than as the rows' ↓ arrow: "fewer"/"more" carries the direction, and a
+    // circuit can grow (`--decompose-rz` expanding rotations into Clifford+T).
+    let gates_reduction = pct(in_gates, out_gates);
+    let direction = if gates_reduction < 0.0 {
+        "more"
+    } else {
+        "fewer"
+    };
+    let title = format!(
+        "Final result · {}% {direction} gates · {secs:.3}s",
+        magnitude(gates_reduction)
+    );
     for line in progress_box(&title, &rows) {
         eprintln!("{line}");
     }
@@ -463,6 +488,18 @@ pub(crate) fn update_chunk_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A circuit that grew flips the arrow rather than negating the number —
+    /// "↓-5300.0%" was previously rendered for a 3 → 162 gate expansion.
+    #[test]
+    fn growth_flips_the_arrow_instead_of_negating_the_percentage() {
+        let trailing = format_result_trailing(pct(3, 162), 3, 162, 6, 3);
+        assert!(trailing.starts_with("↑5300.0%"), "got: {trailing}");
+        assert!(!trailing.contains('-'), "got: {trailing}");
+
+        let shrunk = format_result_trailing(pct(162, 3), 162, 3, 4, 3);
+        assert!(shrunk.starts_with("↓98.1%"), "got: {shrunk}");
+    }
 
     #[test]
     fn fmt_size_picks_a_unit_that_keeps_the_number_visible() {

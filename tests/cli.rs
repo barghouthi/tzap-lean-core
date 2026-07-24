@@ -165,6 +165,21 @@ fn decomposition_line_shows_both_gate_counts() {
     );
 }
 
+/// The result banner's heading carries the headline gate reduction, so the
+/// number most readers want is visible without reading the rows.
+#[test]
+fn final_result_heading_leads_with_the_gate_reduction() {
+    let out = tzap_run(&[MOD5_4_QASM]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        stderr.contains("Final result · 30.4% fewer gates · "),
+        "expected the heading to lead with the gate reduction, ahead of the \
+         elapsed time:\n{stderr}"
+    );
+}
+
 /// A sub-megabyte input must not report its size as "0.0 MB", which reads as
 /// an empty file.
 #[test]
