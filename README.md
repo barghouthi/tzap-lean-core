@@ -13,7 +13,7 @@ A super fast, Rust-based optimizer for large Clifford+T circuits.
 - tzap implements a new and fast **superoptimization** pass.
 - The core optimization algorithms are **fully formalized in Lean** under [`formalization`](formalization/).
 
-tzap is **multiple orders of mangitude** faster than other optimizers&mdash;and **linearly** **scales** to **millions** of gates!
+tzap is **multiple orders of magnitude** faster than other optimizers&mdash;and **linearly** **scales** to **millions** of gates!
 <img src="assets/comparison.png"
      alt="Runtime comparison of tzap, VOQC, and QuiZX on GF multipliers"
      style="width: 100%; height: auto;">
@@ -63,22 +63,26 @@ tzap input.qasm -o output.qasm
 For example, using a benchmark in this repo:
 
 ```bash
-tzap benchmarks/feynman/gf2^256_mult.qasm -o optimized.qasm
+tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 ```
 
 tzap output:
 
 ```text
-⚡️ tzap
-  Parsing benchmarks/feynman/gf2^256_mult.qasm (13.9 MB)
-	└─ 768 qubits · 1,115,899 gates · 393,981 2q gates · 458,752 T/Tdg · 10,711 depth · 1.530s
+⚡️ tzap  v0.4.3
+  Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.099s
+	└─ 20 qubits · 514,412 gates
+  Loaded minimal unitary representatives (7.9 MB) in 0.018s
 
-  Final result
-	├─ Gates    1,115,899 → 657,723 (↓41.1%)
-	├─ 2q gates   393,981 → 393,981 (↓0.0%)
-	├─ T/Tdg      458,752 → 262,400 (↓42.8%)
-	├─ Depth       10,711 →   8,162 (↓23.8%)
-	└─ Time        3.104s
+  Fixpoint reached after 6 iteration(s)
+
+  ┌─ Final result · 2.213s ──────────────────────────────────────────────┐
+  │ Gates    ━━━━━━━━━━━━━╸────────────────── ↓43.7% · 514,412 → 289,484 │
+  │ 2q gates ━━━━━╸────────────────────────── ↓18.7% · 191,803 → 155,914 │
+  │ T/Tdg    ━━━━━━━━━━━━━━━╸──────────────── ↓49.9% · 171,465 →  85,897 │
+  │ Depth    ━━━━━━━╸──────────────────────── ↓24.3% · 274,781 → 207,940 │
+  └──────────────────────────────────────────────────────────────────────┘
+  wrote optimized.qasm
 ```
 
 **Optimization levels**
@@ -91,7 +95,7 @@ tzap output:
 | `-Osuper` | Like `-O3`, but with more superoptimization power (slower on first use). |
 
 ```bash
-tzap benchmarks/feynman/gf2^256_mult.qasm -o optimized.qasm
+tzap benchmarks/feynman/hwb12.qasm -O1 -o optimized.qasm
 ```
 
 **Decompose Rz into Clifford+T**
