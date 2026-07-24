@@ -31,7 +31,20 @@ smallvec = "1"
 tempfile = "3"
 rand = "0.8"
 
+# One codegen unit for our own crate only (dependencies keep the default, so
+# clean-build times barely move — this costs ~3s on a crate rebuild). The hot
+# SuperOpt scan is sensitive to how rustc partitions this crate: with the
+# default 16 units, functionally irrelevant code motion — moving the
+# optimization driver from the binary into the library, say — swings
+# ols-ridge -O3 by ~3% in either direction. One unit both removes that noise
+# and is faster outright.
+[profile.release.package.tzap-opt]
+codegen-units = 1
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[profile.dist.package.tzap-opt]
+codegen-units = 1
