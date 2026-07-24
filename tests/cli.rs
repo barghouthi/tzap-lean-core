@@ -187,8 +187,8 @@ fn mod5_4_reduces_t_count() {
     );
     assert_eq!(
         gates.len(),
-        57,
-        "mod5_4 should optimize to 57 gates, got {}",
+        55,
+        "mod5_4 should optimize to 55 gates, got {}",
         gates.len()
     );
 }
@@ -653,6 +653,26 @@ fn passes_conflicts_with_decompose_rz() {
 }
 
 #[test]
+fn passes_conflicts_with_decompose_cz() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.qasm");
+    fs::write(&input, HHTT_QASM).unwrap();
+
+    let out = tzap_run(&[
+        input.to_str().unwrap(),
+        "--passes",
+        "CancelGates",
+        "--decompose-cz",
+    ]);
+    assert!(
+        !out.status.success(),
+        "should reject --passes with --decompose-cz"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot be combined"), "got: {stderr}");
+}
+
+#[test]
 fn passes_conflicts_with_expr() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("in.qasm");
@@ -709,32 +729,32 @@ fn superopt_pass_builds_table_behind_cli() {
 // --- optimization levels ---
 
 #[test]
-fn o1_is_the_default_pipeline() {
+fn o3_is_the_default_pipeline() {
     let dir = tempfile::tempdir().unwrap();
     let default_output = dir.path().join("default.qasm");
-    let o1_output = dir.path().join("o1.qasm");
+    let o3_output = dir.path().join("o3.qasm");
     let default = tzap_run(&[TEST_QASM, "-o", default_output.to_str().unwrap()]);
-    let o1 = tzap_run(&[TEST_QASM, "-o", o1_output.to_str().unwrap(), "-O1"]);
+    let o3 = tzap_run(&[TEST_QASM, "-o", o3_output.to_str().unwrap(), "-O3"]);
     assert!(default.status.success());
-    assert!(o1.status.success());
+    assert!(o3.status.success());
     assert_eq!(
         fs::read_to_string(default_output).unwrap(),
-        fs::read_to_string(o1_output).unwrap()
+        fs::read_to_string(o3_output).unwrap()
     );
 
-    let stderr = String::from_utf8_lossy(&o1.stderr);
+    let stderr = String::from_utf8_lossy(&o3.stderr);
     assert!(stderr.contains("% reduction so far"), "got: {stderr}");
     assert!(
         stderr.contains("Gates") && stderr.contains("T/Tdg"),
         "expected a live reduction progress box:\n{stderr}"
     );
     assert!(
-        !stderr.contains("Loaded minimal unitary representatives"),
-        "got: {stderr}"
+        stderr.contains("Loaded minimal unitary representatives"),
+        "O3 uses SuperOpt, so it should build/load the synthesis table:\n{stderr}"
     );
     assert!(
-        !stderr.contains("Iteration"),
-        "O1 doesn't run to fixpoint, so its progress box shouldn't show an iteration number:\n{stderr}"
+        stderr.contains("Fixpoint reached"),
+        "O3 runs to a true fixpoint:\n{stderr}"
     );
 }
 
@@ -1511,9 +1531,12 @@ fn decompose_cz_flag_decomposes_the_default_pipeline_input() {
         gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
         2
     );
+    // Both CZs decompose sandwiching q[1] in H...H; since the default
+    // pipeline (-O3) further cancels gates, the two separate H-CX-H
+    // sandwiches collapse to a single shared H...H around both CXs.
     assert_eq!(
         gates.iter().filter(|gate| gate.starts_with("h ")).count(),
-        4
+        2
     );
 }
 
@@ -1542,62 +1565,6 @@ t q[1];
     );
 
     assert_eq!(with_flag, without_flag);
-}
-
-#[test]
-fn decompose_cz_flag_does_not_duplicate_an_explicit_decompose_pass() {
-    let (gates, _) = run_qasm_with_args(
-        "\
-OPENQASM 2.0;
-include \"qelib1.inc\";
-qreg q[2];
-cz q[1],q[0];
-",
-        &["--passes", "DecomposeCz,CancelGates", "--decompose-cz"],
-    );
-
-    assert_eq!(
-        gates.iter().filter(|gate| gate.starts_with("cz ")).count(),
-        0
-    );
-    assert_eq!(
-        gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
-        1
-    );
-    assert_eq!(
-        gates.iter().filter(|gate| gate.starts_with("h ")).count(),
-        2
-    );
-}
-
-#[test]
-fn decompose_cz_flag_works_with_explicit_fixpoint() {
-    let (gates, stderr) = run_qasm_with_args(
-        CZ_CHAIN_QASM,
-        &["--passes", "CancelGates", "--decompose-cz", "--fixpoint"],
-    );
-
-    assert!(stderr.contains("Fixpoint reached"), "got: {stderr}");
-    assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
-    assert_eq!(
-        gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
-        2
-    );
-}
-
-#[test]
-fn decompose_cz_flag_works_with_explicit_parallel_pipeline() {
-    let (gates, stderr) = run_qasm_with_args(
-        CZ_CHAIN_QASM,
-        &["--passes", "CancelGates", "--decompose-cz", "--parallel"],
-    );
-
-    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
-    assert!(!gates.iter().any(|gate| gate.starts_with("cz ")));
-    assert_eq!(
-        gates.iter().filter(|gate| gate.starts_with("cx ")).count(),
-        2
-    );
 }
 
 #[test]
@@ -1656,38 +1623,4 @@ cz q[1],q[0];
         .filter(|line| line.starts_with("h ") || line.starts_with("cx "))
         .collect();
     assert_eq!(gates, vec!["h q[0];", "cx q[1],q[0];", "h q[0];"]);
-}
-
-#[test]
-fn decompose_cz_flag_is_prepended_to_explicit_passes() {
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join("cz.qasm");
-    let output = dir.path().join("out.qasm");
-    fs::write(
-        &input,
-        "\
-OPENQASM 2.0;
-include \"qelib1.inc\";
-qreg q[2];
-cz q[1],q[0];
-",
-    )
-    .unwrap();
-
-    let out = tzap_run(&[
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-        "--passes",
-        "CancelGates",
-        "--decompose-cz",
-    ]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let content = fs::read_to_string(output).unwrap();
-    assert!(!content.lines().any(|line| line.starts_with("cz ")));
-    assert!(content.lines().any(|line| line.starts_with("cx ")));
 }

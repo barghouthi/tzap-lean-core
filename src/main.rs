@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::io::{self, Write};
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,116 +15,25 @@ use tzap::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use tzap::phase_fold_rand::PhaseFoldRand;
 use tzap::super_opt::{SuperOpt, SuperOptTableConfig, table_cache_size_bytes, table_is_cached};
 
+mod cli;
+mod progress;
+
+use cli::{OptimizationLevel, Opts, PassName, arg_error, parse_args};
+use progress::{
+    box_lines, end_progress_block, finish_inline, fmt_num, print_result, start_inline,
+    start_progress_block, update_chunk_progress, update_fixpoint_progress,
+    update_reduction_progress,
+};
+
 /// Map-reduce chunks per logical core. Deliberately more than one thread per
 /// core (see [`num_threads`]): chunks cost varies (some hit more SuperOpt
 /// rewrites than others), so more chunks than threads lets rayon's
 /// work-stealing load-balance that unevenness across a right-sized pool.
 const CHUNK_MULTIPLIER: usize = 2;
 
-/// A pass selectable by name via `--passes`.
-#[derive(Clone, Copy)]
-enum PassName {
-    DecomposeToffoli,
-    DecomposeCz,
-    DecomposeRz,
-    CancelGates,
-    SuperOpt,
-    PhaseFoldRand,
-    PhaseFoldGlobalExpr,
-}
-
-impl PassName {
-    /// All passes — `(name, variant, description)` — in the order shown by `--help`.
-    const ALL: [(&'static str, PassName, &'static str); 7] = [
-        (
-            "DecomposeToffoli",
-            PassName::DecomposeToffoli,
-            "Decompose ccx (Toffoli) and ccz gates into Clifford+T",
-        ),
-        (
-            "DecomposeCz",
-            PassName::DecomposeCz,
-            "Decompose cz gates into H+CX+H",
-        ),
-        (
-            "DecomposeRz",
-            PassName::DecomposeRz,
-            "Decompose Rz gates into Clifford+T (gridsynth; see --epsilon)",
-        ),
-        (
-            "CancelGates",
-            PassName::CancelGates,
-            "Cancel adjacent self-inverse gate pairs and reduce Hadamards",
-        ),
-        (
-            "SuperOpt",
-            PassName::SuperOpt,
-            "Replace small subcircuit windows using a synthesis table",
-        ),
-        (
-            "PhaseFoldRand",
-            PassName::PhaseFoldRand,
-            "Merge T/Rz rotations via randomized parity tracking",
-        ),
-        (
-            "PhaseFoldGlobalExpr",
-            PassName::PhaseFoldGlobalExpr,
-            "Merge T/Rz rotations via symbolic parity expressions",
-        ),
-    ];
-
-    fn parse(s: &str) -> Option<PassName> {
-        Self::ALL
-            .iter()
-            .find(|(n, _, _)| *n == s)
-            .map(|(_, p, _)| *p)
-    }
-
-    /// Comma-separated list of every valid name (for help / error messages).
-    fn all_names() -> String {
-        Self::ALL
-            .iter()
-            .map(|(n, _, _)| *n)
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-fn parse_pass_list(list: &str) -> Vec<PassName> {
-    let parsed = list
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|name| {
-            PassName::parse(name).unwrap_or_else(|| {
-                arg_error(format!(
-                    "Unknown pass '{name}'. Available passes: {}",
-                    PassName::all_names()
-                ))
-            })
-        })
-        .collect::<Vec<_>>();
-
-    if parsed.is_empty() {
-        arg_error(
-            "--passes requires at least one pass name \
-             (e.g. --passes CancelGates,PhaseFoldRand)",
-        );
-    }
-    parsed
-}
-
-fn looks_like_pass_list_fragment(token: &str) -> bool {
-    token
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .all(|name| PassName::parse(name).is_some())
-}
-
 /// Default SuperOpt window/table bounds, overridable by the hidden
-/// `--superopt-*` flags (see `parse_args`). Not exposed in `--help`: these
-/// exist for experimentation, not everyday use.
+/// `--superopt-*` flags (see `cli::parse_args`). Not exposed in `--help`:
+/// these exist for experimentation, not everyday use.
 ///
 /// The window and table share both a qubit bound (`--superopt-qubits`) and a
 /// gate-count bound (`--superopt-window-gates`): the `SuperOpt` library
@@ -162,71 +70,6 @@ const DEFAULT_SUPEROPT_TABLE_ENTRIES: usize = 200_000;
 const SUPER_SUPEROPT_QUBITS: usize = 5;
 const SUPER_SUPEROPT_WINDOW_GATES: usize = 40;
 const SUPER_SUPEROPT_TABLE_ENTRIES: usize = 5_000_000;
-
-/// Parsed command-line options.
-struct Opts {
-    input_path: String,
-    output_path: Option<String>,
-    expr: bool,
-    decompose_rz: bool,
-    decompose_cz: bool,
-    rz_epsilon: f64,
-    parallel: bool,
-    /// Explicit pass pipeline from `--passes` (overrides the default pipeline).
-    passes: Option<Vec<PassName>>,
-    /// Re-run the optimization pipeline until gate count stops decreasing.
-    fixpoint: bool,
-    /// Explicit optimization level. Absence also uses O1, but keeps custom
-    /// `--passes` and `--fixpoint` available.
-    optimization_level: Option<OptimizationLevel>,
-    /// SuperOpt window/table bounds. Hidden (undocumented in `--help`);
-    /// `None` means "use whichever preset the optimization level implies"
-    /// (`DEFAULT_SUPEROPT_*`, or `SUPER_SUPEROPT_*` under `-Osuper`) — an
-    /// explicit flag always overrides the preset.
-    superopt_qubits: Option<usize>,
-    superopt_window_gates: Option<usize>,
-    superopt_table_entries: Option<usize>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OptimizationLevel {
-    O1,
-    /// Adds a SuperOpt pass to O1, capped at 2 rounds rather than run to a
-    /// true fixpoint — see `optimize_default`'s `max_rounds`.
-    O2,
-    /// Like O2, but run to a true fixpoint instead of capped at 2 rounds.
-    O3,
-    /// Like O3 (SuperOpt run to fixpoint), but with `SUPER_SUPEROPT_*` bounds.
-    Osuper,
-}
-
-fn fmt_num<N: std::fmt::Display>(n: N) -> String {
-    let s = n.to_string();
-    let is_negative = s.starts_with('-');
-    let num_part = if is_negative { &s[1..] } else { &s[..] };
-    let mut result = String::with_capacity(s.len() + s.len() / 3);
-    if is_negative {
-        result.push('-');
-    }
-
-    let rem = num_part.len() % 3;
-    for (i, c) in num_part.chars().enumerate() {
-        if i > 0 && i % 3 == rem {
-            result.push(',');
-        }
-        result.push(c);
-    }
-    result
-}
-
-/// Percentage reduction from `before` to `after` (0.0 when `before` is 0).
-fn pct(before: usize, after: usize) -> f64 {
-    if before > 0 {
-        (before as f64 - after as f64) / before as f64 * 100.0
-    } else {
-        0.0
-    }
-}
 
 /// Number of logical cores, for sizing the rayon thread pool. CPU-bound work
 /// like ours gets no benefit from oversubscribing OS threads beyond the core
@@ -306,66 +149,6 @@ fn stitch(num_qubits: usize, num_cbits: usize, chunks: &[Circuit]) -> Circuit {
         }
     }
     out
-}
-
-/// Print the closing result banner. Assumes whatever ran just before it
-/// (a progress box's erasure, or an "info" line like "Fixpoint reached")
-/// already left exactly one blank line behind — this prints no leading
-/// blank of its own.
-fn print_result(
-    in_gates: usize,
-    out_gates: usize,
-    in_2q: usize,
-    out_2q: usize,
-    in_depth: usize,
-    out_depth: usize,
-    in_t: usize,
-    out_t: usize,
-    in_rz: usize,
-    out_rz: usize,
-    secs: f64,
-) {
-    // Same box/bar rendering as the live progress boxes, but each row's
-    // trailing text keeps both endpoints ("before → after") rather than just
-    // the current count, since this box is printed once and never redrawn.
-    let mut metrics = vec![
-        ("Gates", in_gates, out_gates, GATES_BAR_COLOR),
-        ("2q gates", in_2q, out_2q, TWO_QUBIT_BAR_COLOR),
-        ("T/Tdg", in_t, out_t, T_BAR_COLOR),
-    ];
-    if in_rz > 0 || out_rz > 0 {
-        metrics.push(("Rz", in_rz, out_rz, RZ_BAR_COLOR));
-    }
-    metrics.push(("Depth", in_depth, out_depth, DEPTH_BAR_COLOR));
-
-    // One shared width across every row (not just each row's own before/after
-    // pair), so the "→" arrows line up regardless of how much smaller a
-    // metric like Rz's counts are than Gates' or Depth's.
-    let width = metrics
-        .iter()
-        .flat_map(|&(_, before, after, _)| [before, after])
-        .map(|n| fmt_num(n).chars().count())
-        .max()
-        .unwrap_or(0);
-
-    let rows: Vec<_> = metrics
-        .into_iter()
-        .map(|(label, before, after, color)| {
-            let reduction = pct(before, after);
-            let before_str = fmt_num(before);
-            let after_str = fmt_num(after);
-            (
-                label,
-                render_bar(reduction / 100.0, BAR_WIDTH, color),
-                format!("↓{reduction:.1}% · {before_str:>width$} → {after_str:>width$}"),
-            )
-        })
-        .collect();
-
-    let title = format!("Final result · {secs:.3}s");
-    for line in progress_box(&title, &rows) {
-        eprintln!("{line}");
-    }
 }
 
 /// Write a circuit to the output path (if any), exiting on error.
@@ -462,337 +245,9 @@ fn run_pipeline(circuit: &Circuit, passes: &[&dyn Pass], verbose: bool) -> Circu
     c
 }
 
-/// Width, in characters, of a progress bar's fill/track region.
-const BAR_WIDTH: usize = 32;
-/// Width of a progress box row's label field, with one column of padding after
-/// the longest label ("2q gates").
-const LABEL_WIDTH: usize = 9;
-
-/// Green fill, used for the map-reduce chunk-completion bar.
-const CHUNK_BAR_COLOR: &str = "\x1b[32m";
-/// Cyan fill, used for the gate-count reduction bar.
-const GATES_BAR_COLOR: &str = "\x1b[36m";
-/// Yellow fill, used for the two-qubit-gate reduction bar.
-const TWO_QUBIT_BAR_COLOR: &str = "\x1b[33m";
-/// Magenta fill, used for the T-count reduction bar.
-const T_BAR_COLOR: &str = "\x1b[35m";
-/// Red fill, used for the Rz-count reduction bar.
-const RZ_BAR_COLOR: &str = "\x1b[31m";
-/// Blue fill, used for the depth reduction bar.
-const DEPTH_BAR_COLOR: &str = "\x1b[34m";
-
-/// Render a thin bar — heavy `color` fill, a partial tip glyph at the exact
-/// boundary, dim light-line track for the remainder — in the style of
-/// indicatif's `{bar:.color/dim}` with `━╸─` progress chars. `fraction` is
-/// clamped to `[0, 1]`.
-fn render_bar(fraction: f64, width: usize, color: &str) -> String {
-    let fraction = fraction.clamp(0.0, 1.0);
-    let exact = fraction * width as f64;
-    let full = (exact.floor() as usize).min(width);
-    let has_tip = full < width && exact > full as f64;
-    let empty = width - full - usize::from(has_tip);
-
-    let mut bar = String::with_capacity(width + 16);
-    bar.push_str(color);
-    for _ in 0..full {
-        bar.push('━');
-    }
-    if has_tip {
-        bar.push('╸');
-    }
-    bar.push_str("\x1b[0m\x1b[2m");
-    for _ in 0..empty {
-        bar.push('─');
-    }
-    bar.push_str("\x1b[0m");
-    bar
-}
-
-/// Number of lines a progress box with `num_rows` bar rows occupies (a top
-/// and bottom border, plus one line per row).
-fn box_lines(num_rows: usize) -> usize {
-    num_rows + 2
-}
-
-/// Build the lines of a live progress box: a top border with `title`
-/// embedded, one line per `(label, colored_bar, trailing)` row, and a bottom
-/// border. Every line is padded to equal *visible* width — the ANSI escapes
-/// inside `bar` don't count — so the box grows to fit large counts and stays
-/// rectangular as values change. Indented two spaces to
-/// line up with the rest of tzap's output (e.g. "  Parsing ...").
-fn progress_box(title: &str, rows: &[(&str, String, String)]) -> Vec<String> {
-    let row_width = |trailing: &str| LABEL_WIDTH + BAR_WIDTH + 1 + trailing.chars().count();
-    let title_segment = format!("─ {title} ");
-    let content_width = rows
-        .iter()
-        .map(|(_, _, trailing)| row_width(trailing))
-        .max()
-        .unwrap_or(0)
-        .max(title_segment.chars().count());
-    let inner_width = content_width + 2;
-
-    let dashes = inner_width.saturating_sub(title_segment.chars().count());
-    let mut lines = vec![format!("  ┌{title_segment}{}┐", "─".repeat(dashes))];
-    for (label, bar, trailing) in rows {
-        let pad = inner_width - (row_width(trailing) + 2);
-        lines.push(format!(
-            "  │ {label:<LABEL_WIDTH$}{bar} {trailing}{} │",
-            " ".repeat(pad)
-        ));
-    }
-    lines.push(format!("  └{}┘", "─".repeat(inner_width)));
-    lines
-}
-
-/// Print `text` with no trailing newline (flushed immediately), so a later
-/// [`finish_inline`] call can overwrite it in place once the operation it
-/// describes completes. Shared by the Parsing and table-load status lines —
-/// both start with an in-progress message and end by replacing it, rather
-/// than leaving both lines on screen.
-fn start_inline(text: &str) {
-    eprint!("{text}");
-    let _ = io::stderr().flush();
-}
-
-/// Overwrite an in-progress line started by [`start_inline`] with `text`.
-fn finish_inline(text: &str) {
-    eprintln!("\r\x1b[2K{text}");
-}
-
-/// Reserve `n` blank lines for a live-redrawn progress block and leave the
-/// cursor at its top-left. Pair with a later [`end_progress_block`] once the
-/// block's final frame has been drawn.
-fn start_progress_block(n: usize) {
-    eprint!("{}\x1b[{n}A", "\n".repeat(n));
-    let _ = io::stderr().flush();
-}
-
-/// Erase a live progress block of `n` lines entirely — every line cleared,
-/// cursor returned to the block's top-left — instead of leaving its last
-/// frame on screen. Called once optimization finishes, so the box
-/// disappears rather than lingering under the closing result banner.
-fn end_progress_block(n: usize) {
-    for i in 0..n {
-        eprint!("\x1b[2K");
-        if i + 1 < n {
-            eprint!("\n");
-        } else if n > 1 {
-            eprint!("\x1b[{}A", n - 1);
-        }
-    }
-    let _ = io::stderr().flush();
-}
-
-/// Redraw a live progress block in place: clear and reprint each of
-/// `lines`, then return the cursor to the block's top-left for the next
-/// redraw. Must be bracketed by [`start_progress_block`] / [`end_progress_block`]
-/// with a matching line count.
-fn redraw_progress_block(lines: &[String]) {
-    let mut out = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        out.push_str("\r\x1b[2K");
-        out.push_str(line);
-        if i + 1 < lines.len() {
-            out.push('\n');
-        }
-    }
-    if lines.len() > 1 {
-        out.push_str(&format!("\x1b[{}A\r", lines.len() - 1));
-    } else {
-        out.push('\r');
-    }
-    eprint!("{out}");
-    let _ = io::stderr().flush();
-}
-
-/// Redraw a live "% reduction so far" progress box under `title`: a
-/// gate, two-qubit, depth, and T-count reduction bars (reduction relative to
-/// the corresponding baselines at the start of this run), each in its own
-/// color. Shared by the fixpoint driver (title carries the
-/// iteration number) and the plain pipeline driver (no iteration — it
-/// doesn't loop). Must be bracketed by `start_progress_block(box_lines(4))`
-/// / `end_progress_block(box_lines(4))`.
-fn update_reduction_progress(
-    title: &str,
-    gates: usize,
-    two_qubit: usize,
-    circuit_depth: usize,
-    t_count: usize,
-    baseline_gates: usize,
-    baseline_two_qubit: usize,
-    baseline_depth: usize,
-    baseline_t: usize,
-    rz_count: usize,
-    baseline_rz: usize,
-) {
-    let gates_pct = pct(baseline_gates, gates);
-    let two_qubit_pct = pct(baseline_two_qubit, two_qubit);
-    let depth_pct = pct(baseline_depth, circuit_depth);
-    let t_pct = pct(baseline_t, t_count);
-    let gates_str = fmt_num(gates);
-    let gates_width = fmt_num(baseline_gates).chars().count();
-    let two_qubit_str = fmt_num(two_qubit);
-    let two_qubit_width = fmt_num(baseline_two_qubit).chars().count();
-    let depth_str = fmt_num(circuit_depth);
-    let depth_width = fmt_num(baseline_depth).chars().count();
-    let t_str = fmt_num(t_count);
-    let t_width = fmt_num(baseline_t).chars().count();
-    let mut rows = vec![
-        (
-            "Gates",
-            render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
-            format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
-        ),
-        (
-            "2q gates",
-            render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
-            format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
-        ),
-        (
-            "T/Tdg",
-            render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
-            format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
-        ),
-        (
-            "Depth",
-            render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
-            format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
-        ),
-    ];
-    if baseline_rz > 0 {
-        let rz_pct = pct(baseline_rz, rz_count);
-        let rz_str = fmt_num(rz_count);
-        let rz_width = fmt_num(baseline_rz).chars().count();
-        rows.insert(
-            3,
-            (
-                "Rz",
-                render_bar(rz_pct / 100.0, BAR_WIDTH, RZ_BAR_COLOR),
-                format!("{rz_pct:>5.1}% · {rz_str:<rz_width$}"),
-            ),
-        );
-    }
-    redraw_progress_block(&progress_box(title, &rows));
-}
-
-/// Redraw the live fixpoint progress box — [`update_reduction_progress`]
-/// with the current iteration number in the title.
-fn update_fixpoint_progress(
-    iteration: usize,
-    gates: usize,
-    two_qubit: usize,
-    circuit_depth: usize,
-    t_count: usize,
-    baseline_gates: usize,
-    baseline_two_qubit: usize,
-    baseline_depth: usize,
-    baseline_t: usize,
-    rz_count: usize,
-    baseline_rz: usize,
-) {
-    update_reduction_progress(
-        &format!("Iteration {iteration} — % reduction so far"),
-        gates,
-        two_qubit,
-        circuit_depth,
-        t_count,
-        baseline_gates,
-        baseline_two_qubit,
-        baseline_depth,
-        baseline_t,
-        rz_count,
-        baseline_rz,
-    );
-}
-
-/// Redraw the live parallel map-reduce progress box: how many chunks have
-/// finished, and the whole circuit's gate/T reduction achieved so far.
-/// Finished chunks contribute their optimized metrics while chunks still
-/// pending contribute their original metrics. Must be bracketed by
-/// `start_progress_block(box_lines(5))` / `end_progress_block(box_lines(5))`.
-fn update_chunk_progress(
-    done: usize,
-    total: usize,
-    baseline_gates: usize,
-    current_gates: usize,
-    baseline_2q: usize,
-    current_2q: usize,
-    baseline_depth: usize,
-    current_depth: usize,
-    baseline_t: usize,
-    current_t: usize,
-    baseline_rz: usize,
-    current_rz: usize,
-) {
-    let chunk_fraction = if total > 0 {
-        done as f64 / total as f64
-    } else {
-        1.0
-    };
-    let chunk_pct = chunk_fraction * 100.0;
-    let gates_pct = pct(baseline_gates, current_gates);
-    let two_qubit_pct = pct(baseline_2q, current_2q);
-    let depth_pct = pct(baseline_depth, current_depth);
-    let t_pct = pct(baseline_t, current_t);
-    let done_str = fmt_num(done);
-    let done_width = fmt_num(total).chars().count();
-    let total_str = fmt_num(total);
-    let gates_str = fmt_num(current_gates);
-    let gates_width = fmt_num(baseline_gates).chars().count();
-    let two_qubit_str = fmt_num(current_2q);
-    let two_qubit_width = fmt_num(baseline_2q).chars().count();
-    let depth_str = fmt_num(current_depth);
-    let depth_width = fmt_num(baseline_depth).chars().count();
-    let t_str = fmt_num(current_t);
-    let t_width = fmt_num(baseline_t).chars().count();
-    let mut rows = vec![
-        (
-            "Chunks",
-            render_bar(chunk_fraction, BAR_WIDTH, CHUNK_BAR_COLOR),
-            format!("{chunk_pct:>5.1}% · {done_str:<done_width$}/{total_str}"),
-        ),
-        (
-            "Gates",
-            render_bar(gates_pct / 100.0, BAR_WIDTH, GATES_BAR_COLOR),
-            format!("{gates_pct:>5.1}% · {gates_str:<gates_width$}"),
-        ),
-        (
-            "2q gates",
-            render_bar(two_qubit_pct / 100.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
-            format!("{two_qubit_pct:>5.1}% · {two_qubit_str:<two_qubit_width$}"),
-        ),
-        (
-            "T/Tdg",
-            render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
-            format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
-        ),
-        (
-            "Depth",
-            render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
-            format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
-        ),
-    ];
-    if baseline_rz > 0 {
-        let rz_pct = pct(baseline_rz, current_rz);
-        let rz_str = fmt_num(current_rz);
-        let rz_width = fmt_num(baseline_rz).chars().count();
-        rows.insert(
-            4,
-            (
-                "Rz",
-                render_bar(rz_pct / 100.0, BAR_WIDTH, RZ_BAR_COLOR),
-                format!("{rz_pct:>5.1}% · {rz_str:<rz_width$}"),
-            ),
-        );
-    }
-    redraw_progress_block(&progress_box(
-        "Parallel optimization — % reduction so far",
-        &rows,
-    ));
-}
-
 /// Run one fixpoint sweep over `circuit`. When `verbose`, redraws the live
 /// progress box with the most recent counts as each pass completes.
+#[allow(clippy::too_many_arguments)]
 fn run_fixpoint_sweep(
     circuit: &Circuit,
     passes: &[&dyn Pass],
@@ -1148,22 +603,10 @@ fn run_map_reduce(
 /// Run the explicit `--passes` pipeline on `circuit`, constructing a fresh
 /// `SuperOpt` if it's selected. Used as one map-reduce worker per chunk.
 fn optimize_explicit(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
-    let listed_names = opts
+    let names = opts
         .passes
         .as_ref()
         .expect("only called when --passes is set");
-    let names: Vec<PassName> = if opts.decompose_cz {
-        std::iter::once(PassName::DecomposeCz)
-            .chain(
-                listed_names
-                    .iter()
-                    .copied()
-                    .filter(|p| !matches!(p, PassName::DecomposeCz)),
-            )
-            .collect()
-    } else {
-        listed_names.clone()
-    };
     let decompose_toffoli = DecomposeToffoli;
     let decompose_cz = DecomposeCz;
     let rz_decompose = DecomposeRz {
@@ -1212,7 +655,7 @@ fn optimize_default(circuit: &Circuit, opts: &Opts, verbose: bool) -> Circuit {
     let global = PhaseFoldRand;
     let global_expr = PhaseFoldGlobalExpr;
 
-    let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
+    let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O3);
     if matches!(
         optimization_level,
         OptimizationLevel::O2 | OptimizationLevel::O3 | OptimizationLevel::Osuper
@@ -1294,7 +737,7 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
         circuit
     };
 
-    let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O1);
+    let optimization_level = opts.optimization_level.unwrap_or(OptimizationLevel::O3);
     let uses_superopt = matches!(
         optimization_level,
         OptimizationLevel::O2 | OptimizationLevel::O3 | OptimizationLevel::Osuper
@@ -1307,238 +750,6 @@ fn run_optimize(circuit: Circuit, opts: &Opts, start: Instant) {
         optimize_default(c, opts, verbose)
     });
     finish(&circuit, &result, opts, start);
-}
-
-fn print_help() {
-    println!();
-    println!(
-        "  \x1b[1m⚡\u{FE0F} tzap\x1b[0m  —  fast quantum circuit optimizer  \x1b[2mv{}\x1b[0m",
-        env!("CARGO_PKG_VERSION")
-    );
-    println!();
-    println!("  \x1b[1;33mUSAGE\x1b[0m");
-    println!("    tzap <input.qasm> [output.qasm] [options]");
-    println!();
-    println!("  Decomposes Toffoli (ccx) gates into Clifford+T by default.");
-    println!("  Pass --decompose-cz to decompose CZ gates into H+CX+H.");
-    println!("  Pass --decompose-rz to also decompose Rz gates via gridsynth.");
-    println!();
-    println!("  \x1b[1;33mARGS\x1b[0m");
-    println!("    \x1b[1m<input.qasm>\x1b[0m     Input OpenQASM 2.0 file");
-    println!("    \x1b[1m[output.qasm]\x1b[0m    Output file (no output if omitted)");
-    println!();
-    println!("  \x1b[1;33mOPTIONS\x1b[0m");
-    println!("    \x1b[1m-o\x1b[0m <file>        Write output to <file>");
-    println!("    \x1b[1m--decompose-rz\x1b[0m   Decompose Rz gates into Clifford+T (gridsynth)");
-    println!("    \x1b[1m--decompose-cz\x1b[0m   Decompose CZ gates into H+CX+H");
-    println!(
-        "    \x1b[1m--epsilon\x1b[0m <eps>  Approximation epsilon for --decompose-rz (default: 1e-10)"
-    );
-    println!("    \x1b[1m--parallel\x1b[0m       Enable parallel mode (off by default)");
-    println!(
-        "    \x1b[1m--passes\x1b[0m <list>  Run these passes in order, overriding the default pipeline"
-    );
-    println!("                     (see PASSES). --decompose-cz is prepended when set.");
-    println!("                     Excludes --decompose-rz; --epsilon still");
-    println!("                     configures DecomposeRz.");
-    println!(
-        "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
-    );
-    println!("    \x1b[1m-O1\x1b[0m              Default, fast optimization pass schedule");
-    println!("    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1 (2 rounds)");
-    println!("    \x1b[1m-O3\x1b[0m              Like -O2, run to a fixpoint instead of 2 rounds");
-    println!(
-        "    \x1b[1m-Osuper\x1b[0m          Like -O3, with a larger SuperOpt window/table (slower"
-    );
-    println!("                     first run; the table is cached to disk afterward)");
-    println!("    \x1b[1m-h, --help\x1b[0m       Print this help message");
-    println!("    \x1b[1m-v, --version\x1b[0m    Print the version");
-    println!();
-    println!("  \x1b[1;33mPASSES\x1b[0m (names for --passes)");
-    for (name, pass, desc) in PassName::ALL {
-        if matches!(pass, PassName::PhaseFoldGlobalExpr) {
-            continue;
-        }
-        println!("    \x1b[1m{name:<19}\x1b[0m  {desc}");
-    }
-    println!();
-}
-
-/// Print `Error: {msg}` and exit 1. The single entry point for every
-/// argument-parsing failure, so all CLI errors share one unmistakable
-/// prefix instead of some being phrased as errors and others not.
-fn arg_error(msg: impl std::fmt::Display) -> ! {
-    eprintln!("Error: {msg}");
-    process::exit(1);
-}
-
-/// Parse the next argument as a `usize`, exiting with `flag_name` in the
-/// error message on failure, if there is no next argument, or if it parses
-/// to 0 — every caller of this (the hidden `--superopt-*` bounds) feeds a
-/// count or width that must be at least 1, and the message already promises
-/// "positive integer", so 0 must be rejected too rather than silently
-/// accepted as a valid `usize`.
-fn parse_usize_arg(args: &[String], i: usize, flag_name: &str) -> usize {
-    let value = args
-        .get(i)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| arg_error(format!("{flag_name} requires a positive integer")));
-    if value == 0 {
-        arg_error(format!("{flag_name} requires a positive integer, got 0"));
-    }
-    value
-}
-
-fn parse_args(args: &[String]) -> Opts {
-    let mut input_path: Option<String> = None;
-    let mut output_path: Option<String> = None;
-    let mut expr = false;
-    let mut decompose_rz = false;
-    let mut decompose_cz = false;
-    let mut rz_epsilon: f64 = 1e-10;
-    let mut parallel = false;
-    let mut passes: Option<Vec<PassName>> = None;
-    let mut fixpoint = false;
-    let mut optimization_level = None;
-    let mut superopt_qubits: Option<usize> = None;
-    let mut superopt_window_gates: Option<usize> = None;
-    let mut superopt_table_entries: Option<usize> = None;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--help" | "-h" => {
-                print_help();
-                process::exit(0);
-            }
-            "--version" | "-v" => {
-                println!("tzap {}", env!("CARGO_PKG_VERSION"));
-                process::exit(0);
-            }
-            "--expr" => expr = true,
-            "--decompose-rz" => decompose_rz = true,
-            "--decompose-cz" => decompose_cz = true,
-            "--epsilon" => {
-                i += 1;
-                let value: f64 = args
-                    .get(i)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or_else(|| arg_error("--epsilon requires a number (e.g. 1e-10)"));
-                if !(value.is_finite() && value > 0.0) {
-                    arg_error(format!(
-                        "--epsilon must be a positive, finite number, got {value} \
-                         (e.g. 1e-10) — zero or negative values make Rz synthesis undefined"
-                    ));
-                }
-                rz_epsilon = value;
-            }
-            "--passes" => {
-                i += 1;
-                let list = args.get(i).unwrap_or_else(|| {
-                    arg_error(
-                        "--passes requires a comma-separated list of pass names \
-                         (e.g. --passes CancelGates,PhaseFoldRand)",
-                    )
-                });
-                let mut list = list.clone();
-                while let Some(next) = args.get(i + 1) {
-                    if next.starts_with('-') || !looks_like_pass_list_fragment(next) {
-                        break;
-                    }
-                    list.push(',');
-                    list.push_str(next);
-                    i += 1;
-                }
-                passes = Some(parse_pass_list(&list));
-            }
-            "--parallel" => parallel = true,
-            "--fixpoint" => fixpoint = true,
-            "-O1" | "-O2" | "-O3" | "-Osuper" => {
-                if optimization_level.is_some() {
-                    arg_error("-O1, -O2, -O3, and -Osuper cannot be combined — pick exactly one");
-                }
-                optimization_level = Some(match args[i].as_str() {
-                    "-O1" => OptimizationLevel::O1,
-                    "-O2" => OptimizationLevel::O2,
-                    "-O3" => OptimizationLevel::O3,
-                    "-Osuper" => OptimizationLevel::Osuper,
-                    _ => unreachable!(),
-                });
-            }
-            "-o" => {
-                i += 1;
-                output_path = Some(
-                    args.get(i)
-                        .cloned()
-                        .unwrap_or_else(|| arg_error("-o requires an output file path")),
-                );
-            }
-            // Hidden: not listed in --help, for experimentation with SuperOpt's
-            // window/table bounds without a rebuild.
-            "--superopt-qubits" => {
-                i += 1;
-                superopt_qubits = Some(parse_usize_arg(args, i, "--superopt-qubits"));
-            }
-            "--superopt-window-gates" => {
-                i += 1;
-                superopt_window_gates = Some(parse_usize_arg(args, i, "--superopt-window-gates"));
-            }
-            "--superopt-table-entries" => {
-                i += 1;
-                superopt_table_entries = Some(parse_usize_arg(args, i, "--superopt-table-entries"));
-            }
-            _ if args[i].starts_with('-') => {
-                arg_error(format!(
-                    "unknown flag '{}'. Run `tzap --help` for the list of valid options",
-                    args[i]
-                ));
-            }
-            _ => {
-                if input_path.is_none() {
-                    input_path = Some(args[i].clone());
-                } else if output_path.is_none() {
-                    output_path = Some(args[i].clone());
-                } else {
-                    arg_error(format!(
-                        "unexpected extra argument '{}' — tzap takes at most \
-                         <input.qasm> and [output.qasm]",
-                        args[i]
-                    ));
-                }
-            }
-        }
-        i += 1;
-    }
-
-    let Some(input_path) = input_path else {
-        arg_error(
-            "missing required <input.qasm> argument\n\n  \
-             Usage: tzap <input.qasm> [-o output.qasm] [-O1|-O2|-O3|-Osuper] \
-             [--decompose-cz] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]\n  \
-             Run `tzap --help` for the full option list.",
-        );
-    };
-
-    if optimization_level.is_some() && (passes.is_some() || fixpoint) {
-        arg_error("-O1, -O2, -O3, and -Osuper cannot be combined with --passes or --fixpoint");
-    }
-    if passes.is_some() && (expr || decompose_rz) {
-        arg_error("--passes cannot be combined with --decompose-rz or --expr");
-    }
-    Opts {
-        input_path,
-        output_path,
-        expr,
-        decompose_rz,
-        decompose_cz,
-        rz_epsilon,
-        parallel,
-        passes,
-        fixpoint,
-        optimization_level,
-        superopt_qubits,
-        superopt_window_gates,
-        superopt_table_entries,
-    }
 }
 
 fn main() {
@@ -1559,25 +770,6 @@ fn main() {
 mod tests {
     use super::*;
     use tzap::qasm;
-
-    #[test]
-    fn progress_box_grows_for_large_counts() {
-        let rows = [(
-            "2q gates",
-            render_bar(1.0, BAR_WIDTH, TWO_QUBIT_BAR_COLOR),
-            "↓0.0% · 1,234,567,890,123".to_string(),
-        )];
-        let lines = progress_box("Large counts", &rows);
-        let width = lines[0].chars().count();
-        let visible_row = lines[1]
-            .replace("\x1b[33m", "")
-            .replace("\x1b[0m\x1b[2m", "")
-            .replace("\x1b[0m", "");
-
-        assert_eq!(lines[2].chars().count(), width);
-        assert!(width > 60);
-        assert!(visible_row.contains("1,234,567,890,123"));
-    }
 
     /// Parallel (map-reduce) optimization of a measured circuit must
     /// round-trip to valid QASM. Regression guard: the stitched

@@ -85,13 +85,13 @@ tzap output:
 
 | Level | Description |
 |---|---|
-| `-O1` | Randomized phase folding + basic gate cancellation. Default. |
+| `-O1` | Randomized phase folding + basic gate cancellation. Fastest; already captures most of the T-gate reduction. |
 | `-O2` | Adds superoptimization to `-O1`. |
-| `-O3` | Repeats `-O2` until reaching a fixpoint. |
+| `-O3` | Repeats `-O2` until reaching a fixpoint. **Default.** |
 | `-Osuper` | Like `-O3`, but with more superoptimization power (slower on first use). |
 
 ```bash
-tzap -O3 benchmarks/feynman/gf2^256_mult.qasm -o optimized.qasm
+tzap benchmarks/feynman/gf2^256_mult.qasm -o optimized.qasm
 ```
 
 **Decompose Rz into Clifford+T**
@@ -103,14 +103,17 @@ tzap input.qasm -o output.qasm --decompose-rz --epsilon 1e-6
 ```
 
 Use `--decompose-cz` to decompose CZ gates into `H`+`CX`+`H` before the
-optimization pipeline. With `--passes`, it is prepended to the listed passes.
+optimization pipeline.
 
 **Custom pipeline**
 
-`--passes` runs an explicit, ordered sequence of passes in place of the default pipeline.
+`--passes` runs an explicit, ordered sequence of passes in place of the default pipeline. It
+cannot be combined with `--decompose-rz` or `--decompose-cz` — list `DecomposeRz`/`DecomposeCz`
+as pass names instead.
 
 ```bash
 tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
+tzap input.qasm -o output.qasm --passes DecomposeCz,CancelGates,PhaseFoldRand
 ```
 
 ## Circuit support
