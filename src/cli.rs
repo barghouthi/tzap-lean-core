@@ -1,76 +1,11 @@
-//! Command-line argument parsing, `Opts`, the pass/optimization-level enums
-//! selectable from the CLI, and `--help` text.
+//! Command-line argument parsing, `Opts`, and `--help` text. The pass and
+//! optimization-level enums, and everything they select, live in
+//! `tzap::optimize` — this module only maps flags onto an
+//! [`Options`](tzap::optimize::Options).
 
 use std::process;
 
-/// A pass selectable by name via `--passes`.
-#[derive(Clone, Copy)]
-pub(crate) enum PassName {
-    DecomposeToffoli,
-    DecomposeCz,
-    DecomposeRz,
-    CancelGates,
-    SuperOpt,
-    PhaseFoldRand,
-    PhaseFoldGlobalExpr,
-}
-
-impl PassName {
-    /// All passes — `(name, variant, description)` — in the order shown by `--help`.
-    const ALL: [(&'static str, PassName, &'static str); 7] = [
-        (
-            "DecomposeToffoli",
-            PassName::DecomposeToffoli,
-            "Decompose ccx (Toffoli) and ccz gates into Clifford+T",
-        ),
-        (
-            "DecomposeCz",
-            PassName::DecomposeCz,
-            "Decompose cz gates into H+CX+H",
-        ),
-        (
-            "DecomposeRz",
-            PassName::DecomposeRz,
-            "Decompose Rz gates into Clifford+T (gridsynth; see --epsilon)",
-        ),
-        (
-            "CancelGates",
-            PassName::CancelGates,
-            "Cancel adjacent self-inverse gate pairs and reduce Hadamards",
-        ),
-        (
-            "SuperOpt",
-            PassName::SuperOpt,
-            "Replace small subcircuit windows using a synthesis table",
-        ),
-        (
-            "PhaseFoldRand",
-            PassName::PhaseFoldRand,
-            "Merge T/Rz rotations via randomized parity tracking",
-        ),
-        (
-            "PhaseFoldGlobalExpr",
-            PassName::PhaseFoldGlobalExpr,
-            "Merge T/Rz rotations via symbolic parity expressions",
-        ),
-    ];
-
-    fn parse(s: &str) -> Option<PassName> {
-        Self::ALL
-            .iter()
-            .find(|(n, _, _)| *n == s)
-            .map(|(_, p, _)| *p)
-    }
-
-    /// Comma-separated list of every valid name (for help / error messages).
-    fn all_names() -> String {
-        Self::ALL
-            .iter()
-            .map(|(n, _, _)| *n)
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
+use tzap::optimize::{DEFAULT_RZ_EPSILON, Level, Options, PassName, SuperOptBounds};
 
 fn parse_pass_list(list: &str) -> Vec<PassName> {
     let parsed = list
@@ -104,41 +39,12 @@ fn looks_like_pass_list_fragment(token: &str) -> bool {
         .all(|name| PassName::parse(name).is_some())
 }
 
-/// Parsed command-line options.
+/// Parsed command-line options: the file paths the CLI itself owns, plus the
+/// optimizer configuration to hand to `tzap::optimize`.
 pub(crate) struct Opts {
     pub(crate) input_path: String,
     pub(crate) output_path: Option<String>,
-    pub(crate) expr: bool,
-    pub(crate) decompose_rz: bool,
-    pub(crate) decompose_cz: bool,
-    pub(crate) rz_epsilon: f64,
-    pub(crate) parallel: bool,
-    /// Explicit pass pipeline from `--passes` (overrides the default pipeline).
-    pub(crate) passes: Option<Vec<PassName>>,
-    /// Re-run the optimization pipeline until gate count stops decreasing.
-    pub(crate) fixpoint: bool,
-    /// Explicit optimization level. Absence also uses O3, but keeps custom
-    /// `--passes` and `--fixpoint` available.
-    pub(crate) optimization_level: Option<OptimizationLevel>,
-    /// SuperOpt window/table bounds. Hidden (undocumented in `--help`);
-    /// `None` means "use whichever preset the optimization level implies"
-    /// (`DEFAULT_SUPEROPT_*`, or `SUPER_SUPEROPT_*` under `-Osuper`) — an
-    /// explicit flag always overrides the preset.
-    pub(crate) superopt_qubits: Option<usize>,
-    pub(crate) superopt_window_gates: Option<usize>,
-    pub(crate) superopt_table_entries: Option<usize>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OptimizationLevel {
-    O1,
-    /// Adds a SuperOpt pass to O1, capped at 2 rounds rather than run to a
-    /// true fixpoint — see `optimize_default`'s `max_rounds`.
-    O2,
-    /// Like O2, but run to a true fixpoint instead of capped at 2 rounds.
-    O3,
-    /// Like O3 (SuperOpt run to fixpoint), but with `SUPER_SUPEROPT_*` bounds.
-    Osuper,
+    pub(crate) options: Options,
 }
 
 /// Print `Error: {msg}` and exit 1. The single entry point for every
@@ -172,7 +78,7 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
     let mut expr = false;
     let mut decompose_rz = false;
     let mut decompose_cz = false;
-    let mut rz_epsilon: f64 = 1e-10;
+    let mut rz_epsilon: f64 = DEFAULT_RZ_EPSILON;
     let mut parallel = false;
     let mut passes: Option<Vec<PassName>> = None;
     let mut fixpoint = false;
@@ -234,10 +140,10 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
                     arg_error("-O1, -O2, -O3, and -Osuper cannot be combined — pick exactly one");
                 }
                 optimization_level = Some(match args[i].as_str() {
-                    "-O1" => OptimizationLevel::O1,
-                    "-O2" => OptimizationLevel::O2,
-                    "-O3" => OptimizationLevel::O3,
-                    "-Osuper" => OptimizationLevel::Osuper,
+                    "-O1" => Level::O1,
+                    "-O2" => Level::O2,
+                    "-O3" => Level::O3,
+                    "-Osuper" => Level::Osuper,
                     _ => unreachable!(),
                 });
             }
@@ -307,17 +213,25 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
     Opts {
         input_path,
         output_path,
-        expr,
-        decompose_rz,
-        decompose_cz,
-        rz_epsilon,
-        parallel,
-        passes,
-        fixpoint,
-        optimization_level,
-        superopt_qubits,
-        superopt_window_gates,
-        superopt_table_entries,
+        // An absent `-O` flag means O3 too; the distinction only ever mattered
+        // for the validation above, which has already run.
+        options: Options {
+            level: optimization_level.unwrap_or(Level::O3),
+            passes,
+            fixpoint,
+            decompose_rz,
+            decompose_cz,
+            rz_epsilon,
+            expr,
+            parallel,
+            // Hidden (undocumented in `--help`) bounds overrides; `None` means
+            // "use whichever preset the optimization level implies".
+            superopt: SuperOptBounds {
+                qubits: superopt_qubits,
+                window_gates: superopt_window_gates,
+                table_entries: superopt_table_entries,
+            },
+        },
     }
 }
 

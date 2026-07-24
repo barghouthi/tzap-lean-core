@@ -57,7 +57,82 @@ let qasm_string = circuit.to_qasm();
 The QASM parser accepts `ccz` as a native circuit gate. `DecomposeToffoli`
 lowers both `ccx` and `ccz` to Clifford+T.
 
+## Optimizing
+
+`tzap::optimize` runs the same pipelines the `tzap` CLI does — including
+`-O3`'s decompose → cancel → superoptimize → phase-fold fixpoint loop — so
+there is no need to assemble one pass at a time to get the CLI's results.
+
+```rust,ignore
+use tzap::circuit::Circuit;
+use tzap::optimize::{Options, optimize};
+
+let circuit = Circuit::from_qasm(qasm)?;
+let (optimized, report) = optimize(&circuit, &Options::default())?;
+
+println!(
+    "{} → {} gates, {} → {} T",
+    report.baseline.gates, report.output.gates,
+    report.baseline.t, report.output.t,
+);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`Options::default()` is the CLI's default: `-O3`, sequential, no Rz or CZ
+decomposition.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `level` | `Level::O3` | `O1` (cancel + phase-fold), `O2` (adds SuperOpt, 2 rounds), `O3` (same, to a fixpoint), `Osuper` (`O3` with the bigger SuperOpt bounds) |
+| `passes` | `None` | An explicit `Vec<PassName>` pipeline, replacing `level`'s |
+| `fixpoint` | `false` | Repeat until the gate count stops falling. Only consulted for pipelines that aren't already fixpoint loops (`passes`, or `O1`) |
+| `decompose_rz` | `false` | Decompose Rz into Clifford+T via gridsynth |
+| `decompose_cz` | `false` | Decompose CZ into H+CX+H before optimizing |
+| `rz_epsilon` | `1e-10` | Approximation epsilon for `decompose_rz` |
+| `expr` | `false` | Use the symbolic phase-folding pass. Only consulted under `O1` |
+| `parallel` | `false` | Optimize gate-contiguous chunks concurrently, then concatenate |
+| `superopt` | all `None` | Per-run overrides for the SuperOpt window/table bounds |
+
+`Report` carries three sets of `Metrics` (`gates`, `two_qubit`, `depth`, `t`,
+`rz`): `input` as handed in, `baseline` after the eager ccx/ccz (and
+optionally cz) decomposition that precedes optimization, and `output`.
+`baseline` is the honest comparison point for a reduction percentage — it's
+what the optimization passes actually worked against — and equals `input` when
+nothing needed decomposing.
+
+### Reporting progress
+
+`optimize` is silent. To report progress, implement `Observer` (every method
+defaults to doing nothing) and call `optimize_with`:
+
+```rust,ignore
+use tzap::circuit::Circuit;
+use tzap::optimize::{Metrics, Observer, Options, optimize_with};
+
+struct Log;
+
+impl Observer for Log {
+    fn progress_update(&self, round: Option<usize>, current: &Circuit, baseline: Metrics) {
+        eprintln!("round {round:?}: {} → {} gates", baseline.gates, current.gates.len());
+    }
+}
+
+let (optimized, _) = optimize_with(&circuit, &Options::default(), &Log)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Events fire from whichever thread reaches them, so an `Observer` must be
+`Sync`; under `parallel`, `chunk_done` is called concurrently from rayon
+workers. The chunk workers' own pipelines are always observed by `Silent`,
+since their events would otherwise interleave. Set `tracks_chunks` to `true`
+to receive the `chunks_start`/`chunk_done`/`chunks_end` events — they're
+skipped by default, along with the whole-circuit stitch needed to compute
+their metrics.
+
 ## Passes
+
+The passes below are the building blocks `tzap::optimize` composes. Reach for
+them directly to build a pipeline it doesn't offer.
 
 Every pass implements the `Pass` trait:
 
@@ -78,7 +153,7 @@ A custom pass only needs to supply `name` and `run`.
 |------|--------|-------------|
 | `DecomposeToffoli` | `tzap::decompose` | Breaks CCX and CCZ gates into Clifford+T |
 | `DecomposeCz` | `tzap::decompose` | Explicitly lowers CZ gates to H+CX+H |
-| `DecomposeRz` | `tzap::decompose_rz` | Decomposes Rz gates into Clifford+T via gridsynth |
+| `DecomposeRz` | `tzap::decompose` | Decomposes Rz gates into Clifford+T via gridsynth |
 | `CancelGates` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |
 | `SuperOpt` | `tzap::super_opt` | Replaces small windows using its shared unitary-to-circuit table |
 | `PhaseFoldRand` | `tzap::phase_fold_rand` | Merges T/Rz gates across the circuit via randomized parity tracking |
@@ -195,7 +270,7 @@ chunks, so don't share an incremental instance across parallel workers.
 Control the approximation precision with the `epsilon` field (default `1e-10`):
 
 ```rust,ignore
-use tzap::decompose_rz::DecomposeRz;
+use tzap::decompose::DecomposeRz;
 
 let pass = DecomposeRz { epsilon: 1e-6 };
 let cliffordt = pass.run(&circuit);
