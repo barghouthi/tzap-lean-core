@@ -4,6 +4,12 @@ Cargo.lock
 # Local experiments / scratch work
 /experiments/
 /tmp/
+# Circuits dropped at the repo root are optimizer output and one-off inputs.
+# Anchored, so the tracked benchmarks/ and tests/fixtures/ circuits still count.
+/*.qasm
+
+# macOS
+.DS_Store
 
 # Python
 __pycache__/
