@@ -3,6 +3,7 @@ import TZap.Circuit
 import TZap.Semantics
 import TZap.Unitary
 import TZap.SuperOpt
+import TZap.Cyclotomic
 import TZap.Symbolic
 import TZap.Soundness
 import TZap.Affine
