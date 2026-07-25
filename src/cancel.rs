@@ -4,6 +4,97 @@ use crate::circuit::{Circuit, Gate, Qubit, qubit_operands};
 use crate::pass::Pass;
 use crate::phase_fold_rand::classify_quarter_pi;
 
+/// Working buffers shared by every sweep of one [`CancelGates::run`].
+///
+/// The three sweep kinds each want a per-qubit index of gate positions, a
+/// circuit-sized deletion mark, and (for Hadamard reduction) a circuit-sized
+/// replacement table. Allocating those per sweep was the pass's dominant cost
+/// on large inputs: a fixpoint over `benchmarks/cobble/ols-ridge-d12.qasm`
+/// runs 76 self-inverse, 55 Hadamard, and 66 commuting-pair sweeps over 33M
+/// gate positions in total, and `Gate` is 32 bytes — so the replacement table
+/// alone was ~290 MB of freshly allocated, freshly zeroed, freshly
+/// page-faulted memory. Sizes only ever shrink within a run (every sweep
+/// deletes or rewrites in place, none grows the circuit), so one allocation
+/// at the input's size serves all of them.
+struct Scratch {
+    /// Per-qubit ordered list of positions of the gates touching that qubit.
+    tracks: Vec<Vec<usize>>,
+    /// Gate-list length `tracks` was built for, or `None` when they are stale.
+    /// The Hadamard and commuting-pair sweeps index gates the same way, and a
+    /// sweep that reaches its fixpoint returns the list it was given
+    /// unchanged — which is the common case — so the next sweep can very often
+    /// reuse the index instead of rebuilding it over millions of gates.
+    tracks_for: Option<usize>,
+    /// Per-qubit stack of live gate positions, for [`cancel_pairs`].
+    stacks: Vec<Vec<usize>>,
+    /// Deletion marks, held as sweep stamps rather than booleans so that
+    /// starting a sweep is a counter bump instead of clearing a
+    /// circuit-sized bitmap. `delete[i] == stamp` means "deleted this sweep".
+    delete: Vec<u32>,
+    stamp: u32,
+    /// Pending gate replacements, indexed by gate position. Every sweep that
+    /// writes one also `take`s it back out again while emitting its output
+    /// (replaced gates are never also deleted), so this returns to all-`None`
+    /// on its own and likewise never needs re-zeroing.
+    replace: Vec<Option<Gate>>,
+    /// The previous sweep's gate buffer, reused as the next sweep's output
+    /// instead of allocating and freeing one gate list per sweep.
+    spare: Vec<Gate>,
+}
+
+impl Scratch {
+    fn new(num_qubits: usize, gate_count: usize) -> Self {
+        Self {
+            tracks: vec![Vec::new(); num_qubits],
+            tracks_for: None,
+            stacks: vec![Vec::new(); num_qubits],
+            delete: vec![0; gate_count],
+            stamp: 0,
+            replace: vec![None; gate_count],
+            spare: Vec::new(),
+        }
+    }
+
+    /// Begin a sweep, returning the stamp that marks a gate deleted by it.
+    /// Starts at 1 so it never collides with the initial all-zero `delete`.
+    fn begin(&mut self) -> u32 {
+        self.stamp += 1;
+        self.stamp
+    }
+
+    /// Make the per-qubit position index describe `gates`, rebuilding it only
+    /// when a previous sweep invalidated it. Rebuilding keeps the capacity each
+    /// track reached on earlier sweeps.
+    fn ensure_tracks(&mut self, gates: &[Gate]) {
+        if self.tracks_for == Some(gates.len()) {
+            return;
+        }
+        for track in &mut self.tracks {
+            track.clear();
+        }
+        for (i, gate) in gates.iter().enumerate() {
+            let (n, qs) = qubit_operands(gate);
+            for &q in &qs[..n] {
+                self.tracks[q].push(i);
+            }
+        }
+        self.tracks_for = Some(gates.len());
+    }
+
+    /// Mark the position index stale, because a sweep is about to hand back a
+    /// gate list the index no longer describes.
+    fn invalidate_tracks(&mut self) {
+        self.tracks_for = None;
+    }
+
+    /// An empty gate buffer carrying a previous sweep's capacity.
+    fn out_buffer(&mut self) -> Vec<Gate> {
+        let mut out = std::mem::take(&mut self.spare);
+        out.clear();
+        out
+    }
+}
+
 /// Cancel adjacent self-inverse gate pairs (HH, XX, CNOT-CNOT) in O(n),
 /// allowing commutation past gates on non-overlapping qubits.
 /// Handles cascading: cancelling a pair may expose new adjacent pairs.
@@ -12,11 +103,12 @@ use crate::phase_fold_rand::classify_quarter_pi;
 /// scanning backward through the entire result list.
 /// Gates are tracked by index into the original slice — only surviving gates
 /// are cloned at the end.
-fn cancel_pairs(gates: &[Gate], num_qubits: usize) -> Vec<Gate> {
-    let len = gates.len();
-    let mut skip = vec![false; len];
-    // Per-qubit stack of gate indices — tracks the most recent gate on each qubit.
-    let mut qubit_stacks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
+fn cancel_pairs(gates: &[Gate], scratch: &mut Scratch) -> Vec<Gate> {
+    let stamp = scratch.begin();
+    let Scratch { stacks, delete, .. } = &mut *scratch;
+    for stack in stacks.iter_mut() {
+        stack.clear();
+    }
 
     for (i, gate) in gates.iter().enumerate() {
         if is_self_inverse(gate) {
@@ -24,7 +116,7 @@ fn cancel_pairs(gates: &[Gate], num_qubits: usize) -> Vec<Gate> {
             // The blocker is the latest gate touching any of this gate's qubits.
             let mut blocker: Option<usize> = None;
             for j in 0..n {
-                if let Some(&last) = qubit_stacks[qs[j]].last() {
+                if let Some(&last) = stacks[qs[j]].last() {
                     blocker = Some(match blocker {
                         Some(b) => b.max(last),
                         None => last,
@@ -35,11 +127,11 @@ fn cancel_pairs(gates: &[Gate], num_qubits: usize) -> Vec<Gate> {
                 && gates_equal(&gates[block_idx], gate)
             {
                 // Cancel both gates; pop the blocker from all relevant qubit stacks.
-                skip[block_idx] = true;
-                skip[i] = true;
+                delete[block_idx] = stamp;
+                delete[i] = stamp;
                 for j in 0..n {
-                    debug_assert_eq!(*qubit_stacks[qs[j]].last().unwrap(), block_idx);
-                    qubit_stacks[qs[j]].pop();
+                    debug_assert_eq!(*stacks[qs[j]].last().unwrap(), block_idx);
+                    stacks[qs[j]].pop();
                 }
                 continue;
             }
@@ -47,16 +139,21 @@ fn cancel_pairs(gates: &[Gate], num_qubits: usize) -> Vec<Gate> {
 
         let (n, qs) = qubit_operands(gate);
         for j in 0..n {
-            qubit_stacks[qs[j]].push(i);
+            stacks[qs[j]].push(i);
         }
     }
 
-    gates
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !skip[*i])
-        .map(|(_, g)| g.clone())
-        .collect()
+    scratch.invalidate_tracks();
+    let mut out = scratch.out_buffer();
+    let delete = &scratch.delete;
+    out.extend(
+        gates
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| delete[*i] != stamp)
+            .map(|(_, g)| g.clone()),
+    );
+    out
 }
 
 fn is_self_inverse(gate: &Gate) -> bool {
@@ -177,11 +274,13 @@ fn diagonal_k(g: &Gate, q: usize) -> Option<Option<u32>> {
 /// the pipeline (and `circuits_equiv`) ignores.
 ///
 /// Returns the rewritten gate list and whether any rewrite fired.
-fn reduce_hadamards(input: &[Gate], num_qubits: usize) -> (Vec<Gate>, bool) {
-    let mut gates = input.to_vec();
+/// Takes the gate list by value: it used to be cloned on entry purely to have
+/// something owned to iterate on, which cost a full copy of the circuit per
+/// call even on the (common) call that reaches the fixpoint immediately.
+fn reduce_hadamards(mut gates: Vec<Gate>, scratch: &mut Scratch) -> (Vec<Gate>, bool) {
     let mut changed = false;
-    while let Some(next) = reduce_hadamards_pass(&gates, num_qubits) {
-        gates = next;
+    while let Some(next) = reduce_hadamards_pass(&gates, scratch) {
+        scratch.spare = std::mem::replace(&mut gates, next);
         changed = true;
     }
     (gates, changed)
@@ -189,21 +288,18 @@ fn reduce_hadamards(input: &[Gate], num_qubits: usize) -> (Vec<Gate>, bool) {
 
 /// One sweep of [`reduce_hadamards`]. Returns the rewritten gate list when at
 /// least one rewrite fired, or `None` at the fixpoint.
-fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>> {
-    // Per-qubit ordered list of indices of gates touching that qubit.
-    let mut tracks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
-    for (i, g) in gates.iter().enumerate() {
-        let (n, qs) = qubit_operands(g);
-        for &q in &qs[..n] {
-            tracks[q].push(i);
-        }
-    }
-
+fn reduce_hadamards_pass(gates: &[Gate], scratch: &mut Scratch) -> Option<Vec<Gate>> {
+    let stamp = scratch.begin();
+    scratch.ensure_tracks(gates);
     // Per-index edit: a gate is dropped, replaced, or kept. Rewrites on
     // different qubits never share an index, and within a qubit the scan
     // skips past consumed indices, so the edits never conflict.
-    let mut delete = vec![false; gates.len()];
-    let mut replace: Vec<Option<Gate>> = vec![None; gates.len()];
+    let Scratch {
+        tracks,
+        delete,
+        replace,
+        ..
+    } = &mut *scratch;
     let mut changed = false;
 
     for (q, track) in tracks.iter().enumerate() {
@@ -217,9 +313,9 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
             // H·X·H = Z
             if p + 2 < track.len() && is_x(&gates[track[p + 1]], q) && is_h(&gates[track[p + 2]], q)
             {
-                delete[io] = true;
+                delete[io] = stamp;
                 replace[track[p + 1]] = Some(Gate::z(q));
-                delete[track[p + 2]] = true;
+                delete[track[p + 2]] = stamp;
                 changed = true;
                 p += 3;
                 continue;
@@ -246,18 +342,18 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
                 let run = &track[p + 1..j];
                 match k {
                     0 => {
-                        delete[io] = true;
-                        delete[ic] = true;
+                        delete[io] = stamp;
+                        delete[ic] = stamp;
                         for &r in run {
-                            delete[r] = true;
+                            delete[r] = stamp;
                         }
                     }
                     4 => {
-                        delete[io] = true;
-                        delete[ic] = true;
+                        delete[io] = stamp;
+                        delete[ic] = stamp;
                         replace[run[0]] = Some(Gate::x(q));
                         for &r in &run[1..] {
-                            delete[r] = true;
+                            delete[r] = stamp;
                         }
                     }
                     2 | 6 => {
@@ -266,7 +362,7 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
                         replace[ic] = Some(outer);
                         replace[run[0]] = Some(Gate::h(q));
                         for &r in &run[1..] {
-                            delete[r] = true;
+                            delete[r] = stamp;
                         }
                     }
                     _ => unreachable!(),
@@ -287,9 +383,14 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
     if !changed {
         return None;
     }
-    let mut out = Vec::with_capacity(gates.len());
+    scratch.invalidate_tracks();
+    let mut out = scratch.out_buffer();
+    let Scratch {
+        delete, replace, ..
+    } = &mut *scratch;
+    out.reserve(gates.len());
     for (i, g) in gates.iter().enumerate() {
-        if delete[i] {
+        if delete[i] == stamp {
             continue;
         }
         out.push(replace[i].take().unwrap_or_else(|| g.clone()));
@@ -339,11 +440,11 @@ impl CommutingPair {
 /// Cancels matching CNOT and CZ pairs across gates that commute with them.
 /// Directional CNOT matching, symmetric CZ matching, and their distinct
 /// commutation rules share one track build and lookahead walk.
-fn cancel_commuting_pairs(input: &[Gate], num_qubits: usize) -> (Vec<Gate>, bool) {
-    let mut gates = input.to_vec();
+/// Takes the gate list by value, for the reason given on [`reduce_hadamards`].
+fn cancel_commuting_pairs(mut gates: Vec<Gate>, scratch: &mut Scratch) -> (Vec<Gate>, bool) {
     let mut changed = false;
-    while let Some(next) = cancel_commuting_pairs_pass(&gates, num_qubits) {
-        gates = next;
+    while let Some(next) = cancel_commuting_pairs_pass(&gates, scratch) {
+        scratch.spare = std::mem::replace(&mut gates, next);
         changed = true;
     }
     (gates, changed)
@@ -351,20 +452,14 @@ fn cancel_commuting_pairs(input: &[Gate], num_qubits: usize) -> (Vec<Gate>, bool
 
 /// One sweep of two-qubit lookahead cancellation. Per-qubit tracks skip gates
 /// that cannot interact with either operand.
-fn cancel_commuting_pairs_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>> {
-    let mut tracks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
-    for (i, g) in gates.iter().enumerate() {
-        let (n, qs) = qubit_operands(g);
-        for &q in &qs[..n] {
-            tracks[q].push(i);
-        }
-    }
-
-    let mut delete = vec![false; gates.len()];
+fn cancel_commuting_pairs_pass(gates: &[Gate], scratch: &mut Scratch) -> Option<Vec<Gate>> {
+    let stamp = scratch.begin();
+    scratch.ensure_tracks(gates);
+    let Scratch { tracks, delete, .. } = &mut *scratch;
     let mut fired = false;
 
     for i in 0..gates.len() {
-        if delete[i] {
+        if delete[i] == stamp {
             continue;
         }
         let pair = match CommutingPair::from_gate(&gates[i]) {
@@ -385,10 +480,10 @@ fn cancel_commuting_pairs_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<
         let mut cancel_at: Option<usize> = None;
 
         loop {
-            while pa < tracks[a].len() && delete[tracks[a][pa]] {
+            while pa < tracks[a].len() && delete[tracks[a][pa]] == stamp {
                 pa += 1;
             }
-            while pb < tracks[b].len() && delete[tracks[b][pb]] {
+            while pb < tracks[b].len() && delete[tracks[b][pb]] == stamp {
                 pb += 1;
             }
             let na_idx = tracks[a].get(pa).copied();
@@ -416,8 +511,8 @@ fn cancel_commuting_pairs_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<
         }
 
         if let Some(j) = cancel_at {
-            delete[i] = true;
-            delete[j] = true;
+            delete[i] = stamp;
+            delete[j] = stamp;
             fired = true;
         }
     }
@@ -425,13 +520,18 @@ fn cancel_commuting_pairs_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<
     if !fired {
         return None;
     }
-    Some(
+    scratch.invalidate_tracks();
+    let mut out = scratch.out_buffer();
+    let delete = &scratch.delete;
+    out.reserve(gates.len());
+    out.extend(
         gates
             .iter()
             .enumerate()
-            .filter_map(|(i, g)| if delete[i] { None } else { Some(g.clone()) })
-            .collect(),
-    )
+            .filter(|(i, _)| delete[*i] != stamp)
+            .map(|(_, g)| g.clone()),
+    );
+    Some(out)
 }
 
 /// True if `g` commutes past `CNOT(c, t)` so that the CNOT can hop over
@@ -512,12 +612,15 @@ impl Pass for CancelGates {
         // gates between two H's or two CNOTs exposes new reducible runs,
         // and a rewrite that emits an X or Z exposes a new cancellable
         // pair.
-        let mut gates = cancel_pairs(&circuit.gates, n);
+        // One set of working buffers for every sweep below; see `Scratch`.
+        let mut scratch = Scratch::new(n, circuit.gates.len());
+        let mut gates = cancel_pairs(&circuit.gates, &mut scratch);
         loop {
-            let (reduced, reduce_changed) = reduce_hadamards(&gates, n);
-            let (pair_reduced, pair_changed) = cancel_commuting_pairs(&reduced, n);
+            let (reduced, reduce_changed) = reduce_hadamards(gates, &mut scratch);
+            let (pair_reduced, pair_changed) = cancel_commuting_pairs(reduced, &mut scratch);
             let before = pair_reduced.len();
-            gates = cancel_pairs(&pair_reduced, n);
+            gates = cancel_pairs(&pair_reduced, &mut scratch);
+            scratch.spare = pair_reduced;
             let cancel_changed = gates.len() != before;
             if !reduce_changed && !pair_changed && !cancel_changed {
                 break;
