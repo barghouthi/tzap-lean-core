@@ -78,7 +78,9 @@ pub enum Level {
     /// Randomized phase folding + gate cancellation. Fastest.
     O1,
     /// Adds a SuperOpt pass to [`Level::O1`], capped at 2 rounds rather than
-    /// run to a true fixpoint — see `optimize_default`'s `max_rounds`.
+    /// run to a true fixpoint — see `optimize_default`'s `max_rounds`. With
+    /// `decompose_rz` the cap allows one extra round, so Rz synthesis lands in
+    /// the same place it does at the uncapped levels (see [`run_to_fixpoint`]).
     O2,
     /// Like [`Level::O2`], but run to a true fixpoint instead of capped at 2
     /// rounds. The default.
@@ -439,11 +441,61 @@ fn run_fixpoint_sweep(
     c
 }
 
+/// Sweep `passes` until one fails to reduce the gate count, or until
+/// `max_rounds` sweeps have run, whichever comes first. Rounds are numbered
+/// from `first_round` so a caller running two phases (see [`run_to_fixpoint`])
+/// reports one continuous sequence to the observer. Returns the circuit, the
+/// last round number used, and whether it converged (as opposed to stopping on
+/// the cap).
+fn run_fixpoint_phase(
+    circuit: &Circuit,
+    passes: &[&dyn Pass],
+    observer: &dyn Observer,
+    baseline: Metrics,
+    first_round: usize,
+    max_rounds: Option<usize>,
+) -> (Circuit, usize, bool) {
+    let mut c = circuit.clone();
+    let mut round = first_round - 1;
+    let mut reduced;
+    let mut swept = 0;
+    loop {
+        round += 1;
+        swept += 1;
+        let before = c.gates.len();
+        c = run_fixpoint_sweep(&c, passes, round, observer, baseline);
+        reduced = c.gates.len() < before;
+        if !reduced || max_rounds.is_some_and(|m| swept >= m) {
+            break;
+        }
+    }
+    (c, round, !reduced)
+}
+
 /// Repeatedly run `passes` until a sweep fails to reduce the gate count, or
 /// (when `max_rounds` is given) until that many sweeps have run, whichever
-/// comes first. When `rz_decompose` is given, run it exactly once after the
-/// first sweep and force another sweep if there were Rz gates to decompose
-/// — this extra sweep isn't itself subject to the `max_rounds` cap.
+/// comes first.
+///
+/// When `rz_decompose` is given it runs exactly once, after the pre-synthesis
+/// sweeps have converged — identically at every SuperOpt level (O2, O3,
+/// Osuper), which all reach this through `optimize_default`.
+///
+/// That placement matters a lot: what gridsynth expands into is what
+/// `SuperOpt`'s greedy, non-backtracking window selection has to work with
+/// afterwards, and converging first can shrink that circuit by several-fold (on
+/// cobble's ols-ridge, 180k gates after one sweep vs 25k at the fixpoint).
+/// Synthesizing into the smaller circuit measured 2-22% fewer T across cobble,
+/// and *faster* despite running more rounds, since every post-synthesis round
+/// then sweeps far fewer gates.
+///
+/// Afterwards, if there were Rz gates to decompose, the sweeps resume on the
+/// synthesized circuit. `max_rounds` is a budget shared across both phases,
+/// except that the post-synthesis phase always gets at least one sweep —
+/// freshly synthesized Clifford+T sequences are never left unoptimized just
+/// because the pre-synthesis phase used up the cap. So O2, the one capped
+/// level, runs up to `max_rounds + 1` sweeps when synthesis intervenes; paying
+/// that extra sweep is what buys O2 the same Rz placement as the uncapped
+/// levels rather than silently degrading to synthesize-after-one-sweep.
 fn run_to_fixpoint(
     circuit: &Circuit,
     passes: &[&dyn Pass],
@@ -452,33 +504,25 @@ fn run_to_fixpoint(
     max_rounds: Option<usize>,
 ) -> Circuit {
     let baseline = Metrics::of(circuit);
-    let mut c = circuit.clone();
-    let mut round = 0;
-    let mut reduced;
     observer.progress_start(baseline);
-    loop {
-        round += 1;
-        let before = c.gates.len();
-        c = run_fixpoint_sweep(&c, passes, round, observer, baseline);
-        reduced = c.gates.len() < before;
 
-        if round == 1
-            && let Some(pass) = rz_decompose
-        {
-            let had_rz = c.gates.iter().any(|g| matches!(g, Gate::rz(..)));
-            c = pass.run(&c);
-            observer.progress_update(Some(round), &c, baseline);
-            if had_rz {
-                continue;
-            }
-        }
+    let (mut c, mut round, mut converged) =
+        run_fixpoint_phase(circuit, passes, observer, baseline, 1, max_rounds);
 
-        if !reduced || max_rounds.is_some_and(|m| round >= m) {
-            break;
+    if let Some(pass) = rz_decompose {
+        let had_rz = c.gates.iter().any(|g| matches!(g, Gate::rz(..)));
+        c = pass.run(&c);
+        observer.progress_update(Some(round), &c, baseline);
+        if had_rz {
+            let spent = round;
+            let post_cap = max_rounds.map(|m| m.saturating_sub(spent).max(1));
+            (c, round, converged) =
+                run_fixpoint_phase(&c, passes, observer, baseline, round + 1, post_cap);
         }
     }
+
     observer.progress_end(baseline);
-    observer.fixpoint_done(round, !reduced);
+    observer.fixpoint_done(round, converged);
     c
 }
 
@@ -923,6 +967,82 @@ mod tests {
         })
         .expect("the default SuperOpt table must build");
         assert!(out.gates.len() <= c.gates.len());
+    }
+
+    /// Rz synthesis must wait for the pre-synthesis sweeps to converge, so
+    /// gridsynth expands into the smallest circuit available. Regression
+    /// guard: a circuit whose Clifford+T body keeps shrinking for several
+    /// sweeps must reach synthesis already reduced, which is what makes the
+    /// default placement worth 2-22% T on cobble. Counted via the round at
+    /// which the Rz count drops to zero: synthesizing after the first sweep
+    /// would zero it in round 1, so holding it past round 1 is the observable
+    /// signature of the placement. Must hold at *every* SuperOpt level — O2's
+    /// round cap must not quietly degrade it back to synthesize-after-one-sweep.
+    #[test]
+    fn rz_synthesis_waits_for_the_presynthesis_fixpoint_at_every_level() {
+        /// Records the round in which the observed circuit first has no Rz.
+        struct RzRound(std::sync::Mutex<Option<usize>>);
+        impl Observer for RzRound {
+            fn progress_update(&self, iteration: Option<usize>, c: &Circuit, _: Metrics) {
+                let has_rz = c.gates.iter().any(|g| matches!(g, Gate::rz(..)));
+                let mut first = self.0.lock().unwrap();
+                if !has_rz && first.is_none() {
+                    *first = iteration;
+                }
+            }
+        }
+
+        // An H·H / CNOT·CNOT body (so sweep 1 finds real reduction and the
+        // pre-synthesis phase runs past round 1) plus a single non-π/4 Rz for
+        // gridsynth to synthesize.
+        let mut c = Circuit::new(3);
+        for _ in 0..12 {
+            c.apply(Gate::h(0));
+            c.apply(Gate::h(0));
+            c.apply(Gate::cnot {
+                control: 0,
+                target: 1,
+            });
+            c.apply(Gate::cnot {
+                control: 0,
+                target: 1,
+            });
+        }
+        c.apply(Gate::rz(0.37, 2));
+
+        for level in [Level::O2, Level::O3, Level::Osuper] {
+            let options = Options {
+                level,
+                decompose_rz: true,
+                // Osuper's real bounds (5 qubits, 5M entries) would spend
+                // minutes building a table; the placement logic is
+                // bound-independent, so shrink them to the default preset and
+                // exercise the *level* cheaply.
+                superopt: SuperOptBounds {
+                    qubits: Some(DEFAULT_SUPEROPT_QUBITS),
+                    window_gates: Some(DEFAULT_SUPEROPT_WINDOW_GATES),
+                    table_entries: Some(DEFAULT_SUPEROPT_TABLE_ENTRIES),
+                },
+                ..Options::default()
+            };
+            let observer = RzRound(std::sync::Mutex::new(None));
+            let out = optimize_default(&c, &options, &observer).expect("pipeline must run");
+
+            assert!(
+                !out.gates.iter().any(|g| matches!(g, Gate::rz(..))),
+                "{level:?}: decompose_rz must leave no Rz behind"
+            );
+            let round = observer
+                .0
+                .lock()
+                .unwrap()
+                .expect("Rz must reach zero at some round");
+            assert!(
+                round > 1,
+                "{level:?}: Rz synthesis must wait for the pre-synthesis sweeps \
+                 to converge, but Rz was gone by round {round}"
+            );
+        }
     }
 
     /// `optimize` must report the post-decomposition baseline, not the raw
