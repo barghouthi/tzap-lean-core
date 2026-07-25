@@ -13,6 +13,7 @@ correctness theorems.
 | Theorem | File | Statement (informal) |
 |---|---|---|
 | `SuperOpt.Algorithm.optimize_correct` | `TZap/SuperOpt/Algorithm.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics. |
+| `SuperOpt.GlobalPhase.canonicalize_eq_iff` | `TZap/SuperOpt/GlobalPhase.lean` | Dividing a matrix by the phase of its first nonzero entry decides equivalence up to global phase exactly: two nonzero matrices have equal canonical forms iff they differ by a unit-modulus scalar. |
 | `Unitary.unitary_agrees` | `TZap/Unitary.lean` | Dense unitary matrix semantics is exactly equal to the weighted-relation semantics after swapping the matrix indices. |
 | `RandomizedAlgorithm.randomized_fold_correct` | `TZap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
 | `RandomizedSoundness.randomized_analysis_sound` | `TZap/RandomizedSoundness.lean` | A semantically false equality reported by the randomized analysis with `k`-bit hashes has probability at most `2⁻ᵏ`. |
@@ -58,6 +59,20 @@ The modules, in dependency order:
   use the formalization's weighted-relation convention, including
   `Rz θ = diag(1, e^{iθ})`. `unitary_agrees` proves literal equality after
   swapping the matrix indices.
+
+- **`TZap/SuperOpt/GlobalPhase.lean`** — Table *construction*: the canonical
+  form under global phase. The table must give two circuits that differ only by
+  an unobservable phase `e^{iφ}` the same key, so it stores a canonical
+  representative — scan entries in a fixed order, take the first nonzero one
+  (`IsPivot`), and divide by its phase (`canonicalize`). The recipe is proved
+  total (`exists_isPivot`), well defined (`IsPivot.unique`), and — the crux —
+  invariant under rescaling (`IsPivot.smul`), so phase-equivalent matrices pivot
+  at the same position rather than being compared at unrelated entries.
+  `canonicalize_eq_iff` is soundness and completeness together;
+  `canonicalize_eq_iff_of_mem_unitaryGroup` drops the nonzero hypotheses for
+  genuine unitaries. The results hold for any fixed linear order on basis
+  states; `Basis.instLinearOrder` supplies the implementation's row-major one
+  (qubit `q` contributing `2^q`, matching `bit(q) = 1 << q`).
 
 - **`TZap/SuperOpt/Table.lean`** — The optimizer-specific abstract
   unitary-to-circuit synthesis table and its exact soundness contract.
