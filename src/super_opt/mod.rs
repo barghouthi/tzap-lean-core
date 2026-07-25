@@ -51,7 +51,9 @@
 //! 2. The matrix store (`MatrixStore`) interns each canonical window shape
 //!    with its matrix and synthesis outcome — including the negative one —
 //!    and is carried across runs of a pass instance, so later fixpoint
-//!    sweeps replay recurring shapes as hash hits.
+//!    sweeps replay recurring shapes as hash hits. It also caches shape
+//!    *transitions*, so extending a window by one gate usually resolves from
+//!    the pair (previous shape, appended gate) without a key being built.
 //! 3. Incremental mode ([`SuperOpt::incremental`]) diffs each input against
 //!    the instance's previous input and only anchors windows near the
 //!    changes; everything else was analyzed before and selected nothing
@@ -84,9 +86,9 @@ pub use config::SuperOptTableConfig;
 pub use error::SuperOptError;
 
 use matrix::UnitaryMatrix;
-use matrix_cache::{
-    CachedMatrix, CompactKey, MatrixStore, append_compact_gate_key, compact_normalized_key,
-};
+use matrix_cache::{CachedMatrix, GateCode, MatrixStore, gate_code};
+#[cfg(test)]
+use matrix_cache::compact_normalized_key;
 use table::{UnitaryCircuitTable, shared_synthesis_table};
 
 /// Whether a synthesis table matching `config` is already cached on disk —
@@ -170,22 +172,59 @@ pub struct SuperOpt {
 struct ActiveWindow {
     gate_indices: IndexVec,
     qubits: QubitVec,
-    // Boxed: `ActiveWindow` is moved in and out of `active` on every touched
-    // window for every gate processed (the hottest loop in `run`), so keeping
-    // `CompactKey`'s fixed-size array behind a pointer keeps that move O(1)
-    // instead of copying the whole array each time.
-    compact_key: Option<Box<CompactKey>>,
+    // Index of the store entry interned for this window's current canonical
+    // shape, which `MatrixStore::resolve` uses as the source state of a shape
+    // transition when the next gate extends the window without changing its
+    // support. `None` before the window has been resolved once, and after any
+    // extension whose result the store declined to intern. Replaced the
+    // window's own copy of its canonical key: with transitions, the key is
+    // only ever needed on the miss path, where it is rebuilt into one shared
+    // scratch buffer.
+    state: Option<u32>,
     // Tracked incrementally by `expand_component_closure` (the only place an
     // Rz gate can enter `gate_indices`, via a bridged-in qubit's history), so
     // `analyze_window` can reject an Rz window in O(1) instead of rescanning
     // the whole (monotonically growing) gate list on every touch.
     contains_rz: bool,
+    // How many of `gate_indices` were already found unclaimed, and the
+    // `RewriteSet` version that finding is valid at — see
+    // `RewriteSet::window_claims_any`.
+    checked_len: u32,
+    checked_version: u32,
     // Anchor order: the number of windows created before this one. Slot
-    // indices in `active` get recycled (see `WindowArena`), so a slot index is
+    // indices in `slots` get recycled (see `WindowArena`), so a slot index is
     // no longer a proxy for age — but rewrite selection is greedy in anchor
     // order, so the per-gate touched-window list must still be processed
     // oldest-first. This is the key it sorts by.
-    seq: u64,
+    //
+    // It doubles as the slot's liveness token: `WindowArena::DEAD` marks a
+    // retired slot, so a per-qubit registration naming this slot is stale
+    // exactly when the seq it recorded no longer matches (see
+    // `Registration`).
+    seq: u32,
+}
+
+/// One window's entry in a qubit's list of live windows: its anchor order in
+/// the high 32 bits, its arena slot in the low 32.
+///
+/// Packing the two serves three purposes at once. Ordering by anchor — what
+/// greedy rewrite selection consumes — is a plain `u64` comparison over a
+/// contiguous array, with no indirection into the arena and no key closure.
+/// The recorded seq validates the registration against the slot's *current*
+/// tenant, which is what lets a window be retired without touching the
+/// per-qubit lists at all. And a registration is 8 bytes rather than 16.
+type Registration = u64;
+
+fn register(seq: u32, slot: u32) -> Registration {
+    (u64::from(seq) << 32) | u64::from(slot)
+}
+
+fn registered_slot(entry: Registration) -> usize {
+    (entry & u64::from(u32::MAX)) as usize
+}
+
+fn registered_seq(entry: Registration) -> u32 {
+    (entry >> 32) as u32
 }
 
 /// Slot storage for the live windows of one scan.
@@ -194,87 +233,93 @@ struct ActiveWindow {
 /// `window_gates` gates of its anchor, so only a few dozen are ever live at
 /// once (measured on `benchmarks/cobble/ols-ridge.qasm` at `-O3`: 35–68 live,
 /// against 536k anchored). Indexing slots by a monotonically increasing
-/// counter therefore grew `active` to one 144-byte slot per gate — 77 MB,
+/// counter therefore grew `slots` to one slot per gate — tens of megabytes,
 /// reallocated and page-faulted on every fixpoint sweep — to hold a working
 /// set of a few kilobytes. Retiring a window returns its slot to `free`, so
 /// the arena instead stays at high-water-mark size.
 ///
 /// Slot indices are consequently *not* anchor order; `ActiveWindow::seq` is.
+///
+/// Windows live in their slots and are mutated in place. They used to be moved
+/// out and back on every touch — 136 bytes copied twice, tens of millions of
+/// times per scan — purely so that `retire` could take `&mut self`; retiring
+/// now needs nothing but the slot index.
 #[derive(Debug, Default)]
 struct WindowArena {
-    slots: Vec<Option<ActiveWindow>>,
-    free: Vec<usize>,
+    slots: Vec<ActiveWindow>,
+    free: Vec<u32>,
     /// Stamped with `gate_index + 1` when a slot is added to the per-gate
     /// touched list, to dedup it without sorting. 0 means "not yet touched".
     touch_stamp: Vec<usize>,
-    next_seq: u64,
+    next_seq: u32,
 }
 
 impl WindowArena {
-    /// Take the window out of `slot`, which must be live.
-    fn take(&mut self, slot: usize) -> ActiveWindow {
-        self.slots[slot]
-            .take()
-            .expect("qubit index only contains live windows")
+    /// The `seq` of a retired slot. Never a real anchor order, which is
+    /// bounded by the circuit's gate count, so a per-qubit registration for a
+    /// window that has since died can never validate against its old slot.
+    const DEAD: u32 = u32::MAX;
+
+    fn window(&mut self, slot: usize) -> &mut ActiveWindow {
+        &mut self.slots[slot]
     }
 
-    fn put_back(&mut self, slot: usize, window: ActiveWindow) {
-        self.slots[slot] = Some(window);
-    }
-
-    fn seq_of(&self, slot: usize) -> u64 {
-        self.slots[slot]
-            .as_ref()
-            .expect("qubit index only contains live windows")
-            .seq
-    }
-
-    /// The qubit support of the window in `slot`, which must be live.
-    fn qubits(&self, slot: usize) -> &[Qubit] {
-        &self.slots[slot]
-            .as_ref()
-            .expect("qubit index only contains live windows")
-            .qubits
-    }
-
-    /// The next anchor order value, consumed when building an `ActiveWindow`.
-    fn next_seq(&mut self) -> u64 {
+    /// Start a window anchored at `anchor` over `qubits`, returning its slot.
+    ///
+    /// A recycled slot is overwritten field by field rather than assigned a
+    /// whole new window, so the previous tenant's `gate_indices` allocation is
+    /// reused — `IndexVec` spills to the heap past eight gates, and
+    /// `window_gates` is 25 at `-O3`, so replacing the window wholesale freed
+    /// and reallocated that buffer once per anchored gate.
+    fn anchor(&mut self, anchor: usize, qubits: &[Qubit]) -> u32 {
+        let seq = self.next_seq;
+        debug_assert_ne!(seq, Self::DEAD, "anchor order exhausted");
         self.next_seq += 1;
-        self.next_seq - 1
-    }
-
-    /// Store `window` in a recycled slot when one is free, else in a new one.
-    fn insert(&mut self, window: ActiveWindow) -> usize {
         match self.free.pop() {
             Some(slot) => {
-                self.slots[slot] = Some(window);
+                let window = &mut self.slots[slot as usize];
+                window.gate_indices.clear();
+                window.gate_indices.push(anchor);
+                window.qubits.clear();
+                window.qubits.extend_from_slice(qubits);
+                window.state = None;
+                window.contains_rz = false;
+                window.checked_len = 0;
+                window.checked_version = 0;
+                window.seq = seq;
                 slot
             }
             None => {
-                self.slots.push(Some(window));
+                self.slots.push(ActiveWindow {
+                    gate_indices: smallvec![anchor],
+                    qubits: QubitVec::from_slice(qubits),
+                    state: None,
+                    contains_rz: false,
+                    checked_len: 0,
+                    checked_version: 0,
+                    seq,
+                });
                 self.touch_stamp.push(0);
-                self.slots.len() - 1
+                let slot = self.slots.len() - 1;
+                debug_assert!(slot < u32::MAX as usize, "window slots exhausted");
+                slot as u32
             }
         }
     }
 
-    /// Retire the window in `slot`: drop it from the per-qubit index (skipping
-    /// `exclude`, qubits a just-attempted expansion inserted but never
-    /// registered) and return the slot for reuse.
+    /// Retire the window in `slot` and return the slot for reuse.
     ///
-    /// The window must already have been `take`n out of the slot.
-    fn retire(
-        &mut self,
-        slot: usize,
-        qubits: &[Qubit],
-        exclude: &[Qubit],
-        windows_by_qubit: &mut [Vec<usize>],
-    ) {
-        unregister_window(slot, qubits, exclude, windows_by_qubit);
+    /// The per-qubit index is left alone: marking the slot dead invalidates
+    /// every registration naming it, and the next walk of each list drops what
+    /// it finds (see the collection loop in [`SuperOpt::run`]). Eagerly
+    /// unregistering meant a linear search of one list per window qubit on
+    /// every window death, and a window dies for nearly every gate.
+    fn retire(&mut self, slot: usize) {
+        self.slots[slot].seq = Self::DEAD;
         // Clear the stamp so a future tenant of this slot can never inherit a
         // touch recorded against the previous one.
         self.touch_stamp[slot] = 0;
-        self.free.push(slot);
+        self.free.push(slot as u32);
     }
 }
 
@@ -342,7 +387,7 @@ impl SuperOpt {
         if self.window_gates == 0 {
             return Err(SuperOptError::ZeroWindowGates);
         }
-        validate_circuit(circuit)?;
+        let gates_per_qubit = validate_circuit(circuit)?;
 
         let frontier = self.take_anchor_frontier(circuit);
 
@@ -351,8 +396,11 @@ impl SuperOpt {
         // touches without scanning them all; `gates_by_qubit` is the full
         // per-qubit gate history that window closure consults.
         let mut arena = WindowArena::default();
-        let mut windows_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
-        let mut gates_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
+        let mut windows_by_qubit: Vec<Vec<Registration>> = vec![Vec::new(); circuit.num_qubits];
+        let mut gates_by_qubit: Vec<Vec<usize>> = gates_per_qubit
+            .iter()
+            .map(|&count| Vec::with_capacity(count))
+            .collect();
         // Take the persistent store for the duration of this run; an early
         // error drops it, which only costs the next run a cold start.
         let mut store = MatrixStore::take_from(&self.store);
@@ -370,18 +418,34 @@ impl SuperOpt {
             touched_windows.clear();
             let stamp = gate_index + 1;
             for &qubit in &gate_qubits {
-                for &slot in &windows_by_qubit[qubit] {
+                // Walking a qubit's list also compacts it: a retired window is
+                // not unregistered when it dies, only marked dead, so the
+                // registrations to drop are exactly the ones whose recorded
+                // anchor order no longer matches their slot's tenant.
+                let live = &mut windows_by_qubit[qubit];
+                let mut kept = 0;
+                for index in 0..live.len() {
+                    let entry = live[index];
+                    let slot = registered_slot(entry);
+                    if arena.slots[slot].seq != registered_seq(entry) {
+                        continue;
+                    }
+                    live[kept] = entry;
+                    kept += 1;
+                    // A window registered on two of the gate's qubits appears
+                    // in both lists; stamping the slot dedups it.
                     if arena.touch_stamp[slot] != stamp {
                         arena.touch_stamp[slot] = stamp;
-                        touched_windows.push((arena.seq_of(slot), slot));
+                        touched_windows.push(entry);
                     }
                 }
+                live.truncate(kept);
                 gates_by_qubit[qubit].push(gate_index);
             }
-            // Sorting `(seq, slot)` pairs, rather than slots by a `seq_of` key
-            // closure: `sort_unstable_by_key` re-evaluates its key on every
-            // comparison, which would put a bounds-checked load and an
-            // `Option` unwrap inside the sort's inner loop.
+            // Registrations carry anchor order in their high bits, so this
+            // sorts into the order greedy rewrite selection consumes without a
+            // key closure — `sort_unstable_by_key` would re-evaluate its key
+            // on every comparison — and without reading the arena at all.
             touched_windows.sort_unstable();
 
             // Rz is outside the exact Clifford+T matrix domain; measurement
@@ -389,25 +453,29 @@ impl SuperOpt {
             // their qubit. Keep the gate in per-qubit history so a disjoint
             // window cannot later bridge across this barrier.
             if matches!(gate, Gate::rz(..) | Gate::measure { .. } | Gate::reset(_)) {
-                for &(_, window_id) in &touched_windows {
-                    let window = arena.take(window_id);
-                    arena.retire(window_id, &window.qubits, &[], &mut windows_by_qubit);
+                for &entry in &touched_windows {
+                    arena.retire(registered_slot(entry));
                 }
                 continue;
             }
 
-            for &(_, window_id) in &touched_windows {
-                let mut window = arena.take(window_id);
-                if rewrites.is_claimed(gate_index) || rewrites.claims_any(&window.gate_indices) {
-                    arena.retire(window_id, &window.qubits, &[], &mut windows_by_qubit);
+            // The gate's kind and operands, resolved once rather than once per
+            // window it touches; only the support-local operand positions
+            // differ per window. The barrier check above has already excluded
+            // the one gate kind `gate_code` cannot encode.
+            let gate_parts = gate_code(gate);
+
+            for &entry in &touched_windows {
+                let window_id = registered_slot(entry);
+                if rewrites.is_claimed(gate_index)
+                    || rewrites.window_claims_any(arena.window(window_id))
+                {
+                    arena.retire(window_id);
                     continue;
                 }
-                // `added_qubits` were inserted into `window.qubits` but never
-                // registered, so unregistration must skip them; the remaining
-                // qubits are exactly the set this window was registered on.
                 let (within_bounds, added_qubits) = expand_component_closure(
                     circuit,
-                    &mut window,
+                    arena.window(window_id),
                     gate_index,
                     &gate_qubits,
                     &gates_by_qubit,
@@ -415,47 +483,33 @@ impl SuperOpt {
                     self.window_gates,
                 );
                 if !within_bounds {
-                    arena.retire(
-                        window_id,
-                        &window.qubits,
-                        &added_qubits,
-                        &mut windows_by_qubit,
-                    );
+                    arena.retire(window_id);
                     continue;
                 }
 
-                // Keep the window's cache key current: appending one gate is
-                // O(1), but a bridged-in qubit renumbers the support-local
-                // encoding of every member, so the key must be rebuilt.
-                if added_qubits.is_empty() {
-                    append_compact_gate_key(&mut window.compact_key, gate, &window.qubits);
-                } else {
-                    window.compact_key =
-                        compact_normalized_key(circuit, &window.gate_indices, &window.qubits)
-                            .map(Box::new);
-                }
+                // An extension that added no qubit left every earlier member's
+                // support-local encoding intact, so the store can reach this
+                // window's new shape as a transition from its previous one. A
+                // bridged-in qubit renumbers the support, so it cannot.
+                let appended = added_qubits.is_empty().then_some(()).and(gate_parts);
 
-                let at_gate_limit = window.gate_indices.len() == self.window_gates;
+                let at_gate_limit =
+                    arena.window(window_id).gate_indices.len() == self.window_gates;
                 let selected = self.analyze_window(
                     circuit,
-                    &window,
+                    arena.window(window_id),
+                    appended,
                     &mut store,
                     &mut rewrites,
                     &mut subcircuits,
                 )?;
 
                 if at_gate_limit || selected {
-                    arena.retire(
-                        window_id,
-                        &window.qubits,
-                        &added_qubits,
-                        &mut windows_by_qubit,
-                    );
+                    arena.retire(window_id);
                 } else {
                     for &qubit in &added_qubits {
-                        windows_by_qubit[qubit].push(window_id);
+                        windows_by_qubit[qubit].push(entry);
                     }
-                    arena.put_back(window_id, window);
                 }
             }
 
@@ -464,23 +518,20 @@ impl SuperOpt {
                 && gate_qubits.len() <= self.max_qubits
                 && !rewrites.is_claimed(gate_index)
             {
-                let window = ActiveWindow {
-                    gate_indices: smallvec![gate_index],
-                    compact_key: compact_normalized_key(circuit, &[gate_index], &gate_qubits)
-                        .map(Box::new),
-                    qubits: gate_qubits,
-                    // The barrier check above already sent Rz/measure/reset
-                    // gates to `continue` before this anchor point is reached.
-                    contains_rz: false,
-                    seq: arena.next_seq(),
-                };
+                // The window is built in its slot: anchoring builds no
+                // canonical key at all now (the first touch resolves the
+                // window's shape, and every touch after that steps the
+                // transition cache from it), so there is nothing to compute
+                // before a slot is available.
+                let window_id = arena.anchor(gate_index, &gate_qubits);
                 // A single non-identity Clifford+T gate cannot be rewritten to
                 // the empty circuit. Analyze it only when diagnostics were
                 // requested; Rz windows are rejected inside `analyze_window`.
                 if self.collect_subcircuits {
                     self.analyze_window(
                         circuit,
-                        &window,
+                        arena.window(window_id as usize),
+                        None,
                         &mut store,
                         &mut rewrites,
                         &mut subcircuits,
@@ -488,10 +539,12 @@ impl SuperOpt {
                 }
 
                 if self.window_gates > 1 && !rewrites.is_claimed(gate_index) {
-                    let window_id = arena.insert(window);
-                    for &qubit in arena.qubits(window_id) {
-                        windows_by_qubit[qubit].push(window_id);
+                    let entry = register(arena.slots[window_id as usize].seq, window_id);
+                    for &qubit in &gate_qubits {
+                        windows_by_qubit[qubit].push(entry);
                     }
+                } else {
+                    arena.retire(window_id as usize);
                 }
             }
         }
@@ -526,17 +579,20 @@ impl SuperOpt {
     /// in the store, offer the outcome to the rewrite selection, and record
     /// the window when diagnostics are collected. Returns whether a rewrite
     /// was selected.
+    /// `appended` is the code parts of the single gate this extension added,
+    /// present when the extension left the window's support unchanged, which
+    /// lets the store step its shape transition cache instead of rebuilding a
+    /// canonical key; `None` forces a rebuild (a bridged-in qubit renumbered
+    /// the support, or the window has no resolved shape yet).
     fn analyze_window(
         &self,
         circuit: &Circuit,
-        window: &ActiveWindow,
+        window: &mut ActiveWindow,
+        appended: Option<GateCode>,
         store: &mut MatrixStore,
         rewrites: &mut RewriteSet,
         subcircuits: &mut Vec<SuperOptWindow>,
     ) -> Result<bool, SuperOptError> {
-        // Unspill the SmallVecs once; this runs per emitted window.
-        let gate_indices: &[usize] = &window.gate_indices;
-        let qubits: &[Qubit] = &window.qubits;
         // Exact SuperOpt matrices represent Clifford+T only. Never construct
         // a matrix or accept a rewrite for a window containing Rz; phase
         // folding/decomposition is responsible for those rotations.
@@ -546,18 +602,25 @@ impl SuperOpt {
         if window.contains_rz {
             return Ok(false);
         }
-        let Some(cached) = store.lookup(
+        let code = appended.and_then(|code| code.encode(&window.qubits));
+        let resolved = store.resolve(
+            window.state,
+            code,
             circuit,
-            gate_indices,
-            qubits,
-            window.compact_key.as_deref(),
+            &window.gate_indices,
+            &window.qubits,
             self.synthesis_table.as_deref(),
-        )?
-        else {
+        )?;
+        window.state = resolved;
+        let Some(entry_index) = resolved else {
             // The exact i8 numerator bound was exceeded. Leaving this window
             // untouched is conservative and preserves rewrite soundness.
             return Ok(false);
         };
+        // Unspill the SmallVecs once; this runs per emitted window.
+        let gate_indices: &[usize] = &window.gate_indices;
+        let qubits: &[Qubit] = &window.qubits;
+        let cached = store.entry(entry_index);
         let selected = rewrites.consider(cached, gate_indices, qubits);
         if self.collect_subcircuits {
             subcircuits.push(SuperOptWindow {
@@ -583,9 +646,17 @@ impl Pass for SuperOpt {
     }
 }
 
-/// Reject gates whose qubit operands fall outside the circuit, so the scan
-/// can index per-qubit state unchecked.
-fn validate_circuit(circuit: &Circuit) -> Result<(), SuperOptError> {
+/// Reject gates whose qubit operands fall outside the circuit, so the scan can
+/// index per-qubit state unchecked — and, from the same walk, count how many
+/// gates touch each qubit.
+///
+/// The counts size `gates_by_qubit` exactly. Growing those lists on demand
+/// reallocated and recopied them all the way up to one entry per gate operand
+/// on every sweep, which is the pass's largest remaining memory-traffic cost;
+/// this walk already visits every gate and every operand, so the counts are
+/// free.
+fn validate_circuit(circuit: &Circuit) -> Result<Vec<usize>, SuperOptError> {
+    let mut gates_per_qubit = vec![0usize; circuit.num_qubits];
     for (gate_index, gate) in circuit.gates.iter().enumerate() {
         for qubit in unique_qubits(gate) {
             if qubit >= circuit.num_qubits {
@@ -595,31 +666,10 @@ fn validate_circuit(circuit: &Circuit) -> Result<(), SuperOptError> {
                     num_qubits: circuit.num_qubits,
                 });
             }
+            gates_per_qubit[qubit] += 1;
         }
     }
-    Ok(())
-}
-
-/// Remove `window_id` from the per-qubit index for each of `qubits` that is not
-/// in `exclude`. The excluded qubits are ones a just-attempted expansion
-/// inserted into the window but never registered, so they must be skipped.
-fn unregister_window(
-    window_id: usize,
-    qubits: &[Qubit],
-    exclude: &[Qubit],
-    windows_by_qubit: &mut [Vec<usize>],
-) {
-    for &qubit in qubits {
-        if exclude.contains(&qubit) {
-            continue;
-        }
-        let live = &mut windows_by_qubit[qubit];
-        let position = live
-            .iter()
-            .position(|&live_id| live_id == window_id)
-            .expect("window is registered on each of its qubits");
-        live.swap_remove(position);
-    }
+    Ok(gates_per_qubit)
 }
 
 /// Extend `window` with `current_gate` and re-close it, scanning only the
@@ -694,6 +744,10 @@ fn expand_component_closure(
                 continue;
             };
             window.gate_indices.insert(position, gate_index);
+            // A bridged-in gate lands anywhere in the list, so the "first
+            // `checked_len` members are unclaimed" record no longer names a
+            // prefix of the members it was taken over.
+            window.checked_len = 0;
             if matches!(circuit.gates[gate_index], Gate::rz(..)) {
                 window.contains_rz = true;
             }
@@ -742,6 +796,36 @@ impl RewriteSet {
         gate_indices.iter().any(|&index| self.claimed[index])
     }
 
+    /// Whether any of `window`'s gates is already claimed, re-examining only
+    /// the members added since the last time this window was cleared.
+    ///
+    /// Claimed bits are only ever set by [`RewriteSet::consider`], which also
+    /// pushes to `selected` — so `selected.len()` is a version stamp for
+    /// `claimed`, and a window cleared at the current version can trust every
+    /// member it was cleared for. Selections are rare next to window touches,
+    /// so this turns a per-touch scan of the whole (growing) gate list, at
+    /// scattered indices into a circuit-sized bitmap, into a look at the one
+    /// gate the touch just added. `expand_component_closure` resets
+    /// `checked_len` when it inserts a bridged-in gate *before* the end, since
+    /// then a prefix length no longer names the members already checked.
+    fn window_claims_any(&self, window: &mut ActiveWindow) -> bool {
+        let version = self.selected.len() as u32;
+        let start = if window.checked_version == version {
+            window.checked_len as usize
+        } else {
+            0
+        };
+        if window.gate_indices[start..]
+            .iter()
+            .any(|&index| self.claimed[index])
+        {
+            return true;
+        }
+        window.checked_version = version;
+        window.checked_len = window.gate_indices.len() as u32;
+        false
+    }
+
     /// Claim this window's rewrite if it has a strictly smaller replacement
     /// and overlaps nothing already claimed. Returns whether it was selected.
     ///
@@ -754,13 +838,18 @@ impl RewriteSet {
         gate_indices: &[usize],
         qubits: &[Qubit],
     ) -> bool {
-        if self.claims_any(gate_indices) {
-            return false;
-        }
+        // Cheap rejections first. Most windows have no smaller equivalent at
+        // all, and `claims_any` is a scan of the window's gate list indexing a
+        // circuit-sized bitmap at scattered positions — running it before
+        // knowing there is anything to select paid that scan on every emitted
+        // window. It has no side effects, so the order is free to change.
         let Some(local) = cached.synthesized_replacement.as_ref() else {
             return false;
         };
         if local.len() >= gate_indices.len() {
+            return false;
+        }
+        if self.claims_any(gate_indices) {
             return false;
         }
 
@@ -802,8 +891,13 @@ impl RewriteSet {
 
 /// A gate's qubit operands, sorted and deduplicated — the window code relies
 /// on supports being sorted sets.
+/// Sorts and dedups per arity rather than running the generic
+/// `sort_unstable` + `dedup` over every arm: this is called once per gate of
+/// every scan, and the one- and two-operand arms — everything left after
+/// Toffoli decomposition — need no comparison sort at all, where the generic
+/// path reached `slice::sort`'s insertion-sort small-case each time.
 fn unique_qubits(gate: &Gate) -> QubitVec {
-    let mut qubits: QubitVec = match gate {
+    match gate {
         Gate::x(q)
         | Gate::h(q)
         | Gate::s(q)
@@ -813,8 +907,13 @@ fn unique_qubits(gate: &Gate) -> QubitVec {
         | Gate::tdg(q)
         | Gate::rz(_, q)
         | Gate::reset(q) => smallvec![*q],
+        Gate::measure { qubit, .. } => smallvec![*qubit],
         Gate::cnot { control, target } | Gate::cz { control, target } => {
-            smallvec![*control, *target]
+            match (*control).cmp(target) {
+                std::cmp::Ordering::Less => smallvec![*control, *target],
+                std::cmp::Ordering::Greater => smallvec![*target, *control],
+                std::cmp::Ordering::Equal => smallvec![*control],
+            }
         }
         Gate::ccx {
             control1,
@@ -825,12 +924,13 @@ fn unique_qubits(gate: &Gate) -> QubitVec {
             control1,
             control2,
             target,
-        } => smallvec![*control1, *control2, *target],
-        Gate::measure { qubit, .. } => smallvec![*qubit],
-    };
-    qubits.sort_unstable();
-    qubits.dedup();
-    qubits
+        } => {
+            let mut qubits: QubitVec = smallvec![*control1, *control2, *target];
+            qubits.sort_unstable();
+            qubits.dedup();
+            qubits
+        }
+    }
 }
 
 #[cfg(test)]

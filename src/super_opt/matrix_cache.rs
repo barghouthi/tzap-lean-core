@@ -33,9 +33,9 @@ pub(super) struct CachedMatrix {
     pub(super) synthesized_replacement: Option<Vec<Gate>>,
 }
 
-/// Interned canonical-window matrices. Lookups reuse one scratch key and
-/// return a borrowed entry, so the per-emission hot path never allocates on a
-/// cache hit.
+/// Interned canonical-window matrices. A lookup returns an entry *index* and
+/// builds its key, when it needs one at all, into a reused scratch buffer, so
+/// the per-emission hot path never allocates on a cache hit.
 ///
 /// Both key forms use support-local qubit indices and each entry is resolved
 /// against the pass instance's fixed synthesis table, so entries are valid for
@@ -48,9 +48,21 @@ pub(super) struct MatrixStore {
     // large circuits), and the keys are short gate sequences where SipHash's
     // per-lookup overhead dominates.
     cache: FxHashMap<Box<[NormalizedGate]>, usize>,
-    compact_cache: FxHashMap<CompactKey, usize>,
+    compact_cache: FxHashMap<CompactKey, u32>,
+    /// Successor cache over canonical shapes. A window that grows by appending
+    /// one gate *without* changing its support keeps every earlier member's
+    /// support-local encoding, so the grown window's canonical shape — and
+    /// hence its interned entry — is a function of the pair (shape before,
+    /// appended gate code) alone. Keying on `state << 16 | code` therefore
+    /// answers the common extension from a two-integer probe, instead of
+    /// rebuilding, rehashing, and `memcmp`ing a canonical key that is up to 64
+    /// gates long. Entries are interned per distinct key, so an entry index
+    /// names a shape uniquely, which is what makes the pair sufficient.
+    transitions: FxHashMap<u64, u32>,
     entries: Vec<CachedMatrix>,
     scratch: Vec<NormalizedGate>,
+    /// Reused buffer for the compact key built on a transition miss.
+    scratch_key: CompactKey,
     pub(super) hits: usize,
     pub(super) misses: usize,
 }
@@ -78,24 +90,73 @@ impl MatrixStore {
         }
     }
 
-    pub(super) fn lookup(
+    /// The interned entry for a window's canonical shape.
+    ///
+    /// `state` is the entry index for the window's shape *before* this
+    /// extension and `code` the appended gate's encoding, both present only
+    /// when the extension left the window's support unchanged; given the pair,
+    /// the answer comes from `transitions` without a key being built at all.
+    /// Otherwise the canonical key is rebuilt and interned as usual.
+    ///
+    /// Exactly one of `hits`/`misses` is counted per call, with the same
+    /// meaning as before the transition cache existed: a transition hit can
+    /// only have been recorded once the successor shape was interned, so it is
+    /// a shape the store had already seen.
+    pub(super) fn resolve(
+        &mut self,
+        state: Option<u32>,
+        code: Option<u16>,
+        circuit: &Circuit,
+        gate_indices: &[usize],
+        qubits: &[Qubit],
+        table: Option<&UnitaryCircuitTable>,
+    ) -> Result<Option<u32>, SuperOptError> {
+        let step = match (state, code) {
+            (Some(state), Some(code)) => Some((u64::from(state) << 16) | u64::from(code)),
+            _ => None,
+        };
+        if let Some(step) = step
+            && let Some(&next) = self.transitions.get(&step)
+        {
+            self.hits += 1;
+            return Ok(Some(next));
+        }
+
+        let resolved = self.intern(circuit, gate_indices, qubits, table)?;
+        if let (Some(step), Some(next)) = (step, resolved) {
+            self.transitions.insert(step, next);
+        }
+        Ok(resolved)
+    }
+
+    /// The cached matrix and synthesis outcome for an index from [`Self::resolve`].
+    pub(super) fn entry(&self, index: u32) -> &CachedMatrix {
+        &self.entries[index as usize]
+    }
+
+    /// Build the window's canonical key, returning the index of its interned
+    /// entry — or `None` when the exact matrix exceeded the representable
+    /// numerator range, which leaves the window conservatively un-rewritten
+    /// and un-interned.
+    fn intern(
         &mut self,
         circuit: &Circuit,
         gate_indices: &[usize],
         qubits: &[Qubit],
-        compact_key: Option<&CompactKey>,
         table: Option<&UnitaryCircuitTable>,
-    ) -> Result<Option<&CachedMatrix>, SuperOptError> {
-        if let Some(key) = compact_key {
-            if let Some(&entry_index) = self.compact_cache.get(key) {
+    ) -> Result<Option<u32>, SuperOptError> {
+        let compact =
+            compact_normalized_key_into(circuit, gate_indices, qubits, &mut self.scratch_key);
+        if compact {
+            if let Some(&entry_index) = self.compact_cache.get(&self.scratch_key) {
                 self.hits += 1;
-                return Ok(Some(&self.entries[entry_index]));
+                return Ok(Some(entry_index));
             }
         } else {
             normalized_gate_key(circuit, gate_indices, qubits, &mut self.scratch);
             if let Some(&entry_index) = self.cache.get(self.scratch.as_slice()) {
                 self.hits += 1;
-                return Ok(Some(&self.entries[entry_index]));
+                return Ok(Some(entry_index as u32));
             }
         }
 
@@ -115,13 +176,14 @@ impl MatrixStore {
             synthesized_replacement,
             matrix: Arc::new(matrix),
         });
-        if let Some(key) = compact_key {
-            self.compact_cache.insert(*key, entry_index);
+        if compact {
+            let key = self.scratch_key;
+            self.compact_cache.insert(key, entry_index as u32);
         } else {
             self.cache
                 .insert(self.scratch.as_slice().into(), entry_index);
         }
-        Ok(Some(&self.entries[entry_index]))
+        Ok(Some(entry_index as u32))
     }
 }
 
@@ -149,7 +211,7 @@ enum NormalizedGate {
 pub(super) const COMPACT_KEY_MAX_GATES: usize = 64;
 
 /// Exact non-allocating normalized key for the common Clifford+T window: one
-/// `u16` gate code (see `compact_gate`) per slot, with only the first `len`
+/// `u16` gate code (see [`GateCode`]) per slot, with only the first `len`
 /// slots meaningful. Hashing and equality look at just that prefix (see the
 /// trait impls below), so cost tracks the window's actual length rather than
 /// the array's fixed capacity.
@@ -157,6 +219,12 @@ pub(super) const COMPACT_KEY_MAX_GATES: usize = 64;
 pub(super) struct CompactKey {
     len: u8,
     gates: [u16; COMPACT_KEY_MAX_GATES],
+}
+
+impl Default for CompactKey {
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 impl CompactKey {
@@ -178,7 +246,7 @@ impl CompactKey {
         if len >= COMPACT_KEY_MAX_GATES {
             return false;
         }
-        let Some(code) = compact_gate(gate, support) else {
+        let Some(code) = gate_code(gate).and_then(|code| code.encode(support)) else {
             return false;
         };
         self.gates[len] = code;
@@ -201,75 +269,112 @@ impl Hash for CompactKey {
     }
 }
 
+/// Rebuild `out` as the canonical key of `gate_indices` over `support`,
+/// reporting whether the window is compactly encodable at all. Writes in
+/// place into a reused buffer, so a rebuild neither allocates nor zeroes the
+/// key's fixed-size tail — only the `len` prefix is ever meaningful.
+fn compact_normalized_key_into(
+    circuit: &Circuit,
+    gate_indices: &[usize],
+    support: &[Qubit],
+    out: &mut CompactKey,
+) -> bool {
+    out.len = 0;
+    for &gate_index in gate_indices {
+        if !out.try_push(&circuit.gates[gate_index], support) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Owned-return form of [`compact_normalized_key_into`], for tests that assert
+/// on encodability and key distinctness rather than running the scan.
+#[cfg(test)]
 pub(super) fn compact_normalized_key(
     circuit: &Circuit,
     gate_indices: &[usize],
     support: &[Qubit],
 ) -> Option<CompactKey> {
     let mut key = CompactKey::EMPTY;
-    for &gate_index in gate_indices {
-        if !key.try_push(&circuit.gates[gate_index], support) {
-            return None;
-        }
-    }
-    Some(key)
+    compact_normalized_key_into(circuit, gate_indices, support, &mut key).then_some(key)
 }
 
-/// Append one gate to `key` in place — no `CompactKey` is ever copied, since
-/// growing an active window's key is the hot path (once per live window per
-/// gate processed). Falls back to `None` (forcing the general key on the
-/// next lookup) exactly when [`CompactKey::try_push`] would have.
-pub(super) fn append_compact_gate_key(
-    key: &mut Option<Box<CompactKey>>,
-    gate: &Gate,
-    support: &[Qubit],
-) {
-    if let Some(inner) = key
-        && !inner.try_push(gate, support)
-    {
-        *key = None;
-    }
+/// A gate's compact encoding, split into the part that is the same for every
+/// window — its kind tag and its operands, in operand order — and the part
+/// that is not, each operand's position within the window's support.
+///
+/// The scan needs a gate's code once per live window the gate touches, a few
+/// dozen times per gate, and the kind dispatch answers identically every time.
+/// Resolving the kind once per gate leaves only the support-local positions on
+/// the per-window path.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct GateCode {
+    tag: u16,
+    operands: [Qubit; 3],
+    arity: u8,
 }
 
-fn compact_gate(gate: &Gate, support: &[Qubit]) -> Option<u16> {
-    // Operand positions use two bits each. Wider analyzer-only windows must use
-    // the general normalized key instead of silently aliasing local qubits.
-    if support.len() > 4 {
-        return None;
-    }
-    let local = |q| {
-        support
-            .binary_search(&q)
-            .expect("window qubit is in support") as u16
-    };
-    let encode = |tag: u16, first: u16, second: u16, third: u16| {
-        tag | (first << 4) | (second << 6) | (third << 8)
-    };
-    Some(match gate {
-        Gate::x(q) => encode(0, local(*q), 0, 0),
-        Gate::h(q) => encode(1, local(*q), 0, 0),
-        Gate::s(q) => encode(2, local(*q), 0, 0),
-        Gate::sdg(q) => encode(3, local(*q), 0, 0),
-        Gate::z(q) => encode(4, local(*q), 0, 0),
-        Gate::t(q) => encode(5, local(*q), 0, 0),
-        Gate::tdg(q) => encode(6, local(*q), 0, 0),
-        Gate::cnot { control, target } => encode(7, local(*control), local(*target), 0),
-        Gate::cz { control, target } => encode(8, local(*control), local(*target), 0),
+/// Split `gate` into its window-independent code parts. `None` for `rz`, which
+/// a compact key cannot express — an Rz gate can reach a window through a
+/// bridged-in qubit's history, so this is a real case, not an assertion.
+pub(super) fn gate_code(gate: &Gate) -> Option<GateCode> {
+    let (tag, operands, arity) = match gate {
+        Gate::x(q) => (0, [*q, 0, 0], 1),
+        Gate::h(q) => (1, [*q, 0, 0], 1),
+        Gate::s(q) => (2, [*q, 0, 0], 1),
+        Gate::sdg(q) => (3, [*q, 0, 0], 1),
+        Gate::z(q) => (4, [*q, 0, 0], 1),
+        Gate::t(q) => (5, [*q, 0, 0], 1),
+        Gate::tdg(q) => (6, [*q, 0, 0], 1),
+        Gate::cnot { control, target } => (7, [*control, *target, 0], 2),
+        Gate::cz { control, target } => (8, [*control, *target, 0], 2),
         Gate::ccx {
             control1,
             control2,
             target,
-        } => encode(9, local(*control1), local(*control2), local(*target)),
+        } => (9, [*control1, *control2, *target], 3),
         Gate::ccz {
             control1,
             control2,
             target,
-        } => encode(10, local(*control1), local(*control2), local(*target)),
+        } => (10, [*control1, *control2, *target], 3),
         Gate::rz(..) => return None,
         Gate::measure { .. } | Gate::reset(_) => {
             unreachable!("measurement and reset are window barriers")
         }
+    };
+    Some(GateCode {
+        tag,
+        operands,
+        arity,
     })
+}
+
+impl GateCode {
+    /// This gate's code over `support`. `None` when the support is wider than
+    /// the two-bit operand positions can address — wider analyzer-only windows
+    /// must use the general normalized key rather than silently alias local
+    /// qubits.
+    pub(super) fn encode(self, support: &[Qubit]) -> Option<u16> {
+        if support.len() > 4 {
+            return None;
+        }
+        let mut code = self.tag;
+        for index in 0..usize::from(self.arity) {
+            // `support` is sorted, so an operand's local position is just how
+            // many support qubits come before it: a count over at most four
+            // entries, with no branching and no panicking path, rather than a
+            // `binary_search(..).expect(..)`.
+            let operand = self.operands[index];
+            let mut position = 0u16;
+            for &qubit in support {
+                position += u16::from(qubit < operand);
+            }
+            code |= position << (4 + 2 * index);
+        }
+        Some(code)
+    }
 }
 
 /// Write the window's general canonical key into `key` (reused scratch, so
