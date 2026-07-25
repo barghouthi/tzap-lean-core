@@ -5,7 +5,39 @@
 //! (`if`), custom gate definitions (`gate`), barriers, and `include` files
 //! other than `qelib1.inc` (which is ignored) are not supported.
 
+use std::borrow::Cow;
+
+use smallvec::SmallVec;
+
 use crate::circuit::{Circuit, Gate};
+
+/// Qubit operands of one gate line. An arity above three only arises from
+/// malformed input, which `require_arity` rejects; `SmallVec` keeps the
+/// common case off the heap, where a `Vec` cost one allocation per gate
+/// parsed.
+type Operands = SmallVec<[usize; 3]>;
+
+/// Byte offsets of the `[` and `]` of a register subscript such as `q[12]`.
+///
+/// A single scan, rather than `str::find('[')` and `str::find(']')`: operands
+/// are a handful of bytes, so constructing two searchers costs more than the
+/// scan. Requiring `]` *after* `[` also drops a latent panic on input like
+/// `q]x[0`, where the two independent searches produced a reversed range.
+fn subscript(part: &str) -> Option<(usize, usize)> {
+    let bytes = part.as_bytes();
+    let open = bytes.iter().position(|&b| b == b'[')?;
+    let close = bytes[open + 1..].iter().position(|&b| b == b']')? + open + 1;
+    Some((open, close))
+}
+
+/// Offset of a `//` line comment. `str::find` on a two-byte needle builds a
+/// substring searcher for every line of the file.
+fn line_comment(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    (1..bytes.len())
+        .find(|&i| bytes[i] == b'/' && bytes[i - 1] == b'/')
+        .map(|i| i - 1)
+}
 
 /// Parse a circuit from OpenQASM 2.0 source. See the [module docs](self) for
 /// the supported subset. Unrecognized lines produce an `Err`.
@@ -25,19 +57,50 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
             .filter(|s| !s.is_empty())
         {
             // strip inline comments
-            let line = match line.find("//") {
+            let line = match line_comment(line) {
                 Some(pos) => line[..pos].trim(),
                 None => line,
             };
-            if line.is_empty()
-                || line.starts_with("//")
-                || line.starts_with("OPENQASM")
-                || line.starts_with("include")
-                || line.starts_with("barrier")
-            {
+            // Group the statement prefixes by first byte. Every supported
+            // statement is distinguished by its first byte, so a `t q[0];` line
+            // tests one prefix instead of walking fifteen failing
+            // `strip_prefix` calls to reach its arm — on a file whose every
+            // line is a gate, that chain was most of the dispatch cost. Order
+            // within each group is the original chain's order, which matters
+            // wherever one prefix is a prefix of another.
+            let Some(&first) = line.as_bytes().first() else {
                 continue;
-            }
-            if let Some(rest) = line.strip_prefix("qreg") {
+            };
+            let candidates: &[&str] = match first {
+                b'/' | b'O' | b'i' | b'b' => {
+                    if line.starts_with("//")
+                        || line.starts_with("OPENQASM")
+                        || line.starts_with("include")
+                        || line.starts_with("barrier")
+                    {
+                        continue;
+                    }
+                    &[]
+                }
+                b'q' => &["qreg"],
+                b'c' => &["creg", "cx ", "ccz ", "ccx ", "cz "],
+                b'm' => &["measure "],
+                b'r' => &["reset ", "rz("],
+                b'h' => &["h "],
+                b'x' => &["x "],
+                b's' => &["s ", "sdg "],
+                b't' => &["tdg ", "t "],
+                b'z' => &["z "],
+                _ => &[],
+            };
+            let Some((keyword, rest)) = candidates
+                .iter()
+                .find_map(|&keyword| line.strip_prefix(keyword).map(|rest| (keyword, rest)))
+            else {
+                return Err(format!("line {line_num}: unsupported: {line}"));
+            };
+            match keyword {
+                "qreg" => {
                 if seen_gate {
                     return Err(format!("line {line_num}: qreg declaration after gate"));
                 }
@@ -51,7 +114,8 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                     registers.push((name, num_qubits, size));
                     num_qubits += size;
                 }
-            } else if let Some(rest) = line.strip_prefix("creg") {
+                }
+                "creg" => {
                 if seen_gate {
                     return Err(format!("line {line_num}: creg declaration after gate"));
                 }
@@ -64,17 +128,20 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                     cregisters.push((name, num_cbits, size));
                     num_cbits += size;
                 }
-            } else if let Some(rest) = line.strip_prefix("measure ") {
+                }
+                "measure " => {
                 seen_gate = true;
                 for (qubit, cbit) in parse_measure(rest, &registers, &cregisters, line_num)? {
                     gates.push(Gate::measure { qubit, cbit });
                 }
-            } else if let Some(rest) = line.strip_prefix("reset ") {
+                }
+                "reset " => {
                 seen_gate = true;
                 for q in expand_qubit_operand(rest, &registers, line_num)? {
                     gates.push(Gate::reset(q));
                 }
-            } else if let Some(rest) = line.strip_prefix("cx ") {
+                }
+                "cx " => {
                 seen_gate = true;
                 let qubits = resolve_qubits(rest, &registers, line_num)?;
                 require_arity("cx", &qubits, 2, line_num)?;
@@ -82,7 +149,8 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                     control: qubits[0],
                     target: qubits[1],
                 });
-            } else if let Some(rest) = line.strip_prefix("ccz ") {
+                }
+                "ccz " => {
                 seen_gate = true;
                 let qubits = resolve_qubits(rest, &registers, line_num)?;
                 require_arity("ccz", &qubits, 3, line_num)?;
@@ -91,7 +159,8 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                     control2: qubits[1],
                     target: qubits[2],
                 });
-            } else if let Some(rest) = line.strip_prefix("ccx ") {
+                }
+                "ccx " => {
                 seen_gate = true;
                 let qubits = resolve_qubits(rest, &registers, line_num)?;
                 require_arity("ccx", &qubits, 3, line_num)?;
@@ -100,7 +169,8 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                     control2: qubits[1],
                     target: qubits[2],
                 });
-            } else if let Some(rest) = line.strip_prefix("cz ") {
+                }
+                "cz " => {
                 seen_gate = true;
                 let qubits = resolve_qubits(rest, &registers, line_num)?;
                 require_arity("cz", &qubits, 2, line_num)?;
@@ -108,42 +178,50 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                     control: qubits[0],
                     target: qubits[1],
                 });
-            } else if let Some(rest) = line.strip_prefix("h ") {
+                }
+                "h " => {
                 seen_gate = true;
                 gates.push(Gate::h(resolve_single_qubit(
                     "h", rest, &registers, line_num,
                 )?));
-            } else if let Some(rest) = line.strip_prefix("x ") {
+                }
+                "x " => {
                 seen_gate = true;
                 gates.push(Gate::x(resolve_single_qubit(
                     "x", rest, &registers, line_num,
                 )?));
-            } else if let Some(rest) = line.strip_prefix("s ") {
+                }
+                "s " => {
                 seen_gate = true;
                 gates.push(Gate::s(resolve_single_qubit(
                     "s", rest, &registers, line_num,
                 )?));
-            } else if let Some(rest) = line.strip_prefix("tdg ") {
+                }
+                "tdg " => {
                 seen_gate = true;
                 gates.push(Gate::tdg(resolve_single_qubit(
                     "tdg", rest, &registers, line_num,
                 )?));
-            } else if let Some(rest) = line.strip_prefix("z ") {
+                }
+                "z " => {
                 seen_gate = true;
                 gates.push(Gate::z(resolve_single_qubit(
                     "z", rest, &registers, line_num,
                 )?));
-            } else if let Some(rest) = line.strip_prefix("sdg ") {
+                }
+                "sdg " => {
                 seen_gate = true;
                 gates.push(Gate::sdg(resolve_single_qubit(
                     "sdg", rest, &registers, line_num,
                 )?));
-            } else if let Some(rest) = line.strip_prefix("t ") {
+                }
+                "t " => {
                 seen_gate = true;
                 gates.push(Gate::t(resolve_single_qubit(
                     "t", rest, &registers, line_num,
                 )?));
-            } else if let Some(rest) = line.strip_prefix("rz(") {
+                }
+                "rz(" => {
                 seen_gate = true;
                 let paren_end = find_matching_paren(rest)
                     .ok_or_else(|| format!("line {line_num}: rz missing closing ')': {line}"))?;
@@ -151,8 +229,8 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                 let qubit =
                     resolve_single_qubit("rz", &rest[paren_end + 1..], &registers, line_num)?;
                 gates.push(Gate::rz(theta, qubit));
-            } else {
-                return Err(format!("line {line_num}: unsupported: {line}"));
+                }
+                _ => unreachable!("keyword came from the candidate list"),
             }
         }
     }
@@ -244,7 +322,13 @@ fn resolve_single_qubit(
     Ok(qubits[0])
 }
 
-fn strip_block_comments(s: &str) -> String {
+/// Borrows when the source has no block comment at all — the overwhelmingly
+/// common case, where copying the whole file (tens of megabytes on the larger
+/// benchmarks) bought nothing.
+fn strip_block_comments(s: &str) -> Cow<'_, str> {
+    if !s.contains("/*") {
+        return Cow::Borrowed(s);
+    }
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find("/*") {
@@ -266,12 +350,12 @@ fn strip_block_comments(s: &str) -> String {
                         out.push('\n');
                     }
                 }
-                return out;
+                return Cow::Owned(out);
             }
         }
     }
     out.push_str(rest);
-    out
+    Cow::Owned(out)
 }
 
 /// Parse an angle expression with full arithmetic support.
@@ -502,7 +586,9 @@ fn expand_qubit_operand(
 ) -> Result<Vec<usize>, String> {
     let s = s.trim().trim_end_matches(';').trim();
     if s.contains('[') {
-        return resolve_qubits(s, registers, line_num);
+        // A bare register expands to arbitrarily many qubits, so this stays a
+        // `Vec`; only the per-gate subscript path is worth keeping inline.
+        return resolve_qubits(s, registers, line_num).map(Operands::into_vec);
     }
     let (_, offset, size) = registers
         .iter()
@@ -559,11 +645,11 @@ fn resolve_qubits(
     s: &str,
     registers: &[(String, usize, usize)],
     line_num: usize,
-) -> Result<Vec<usize>, String> {
-    let mut result = Vec::new();
+) -> Result<Operands, String> {
+    let mut result = Operands::new();
     for part in s.split(',') {
         let part = part.trim().trim_end_matches(';');
-        if let (Some(bracket), Some(end)) = (part.find('['), part.find(']')) {
+        if let Some((bracket, end)) = subscript(part) {
             let name = part[..bracket].trim();
             let idx: usize = part[bracket + 1..end]
                 .parse()
