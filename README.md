@@ -50,9 +50,9 @@ cargo install --path .
 curl -LsSf https://github.com/qqq-wisc/tzap/releases/latest/download/tzap-opt-installer.sh | sh
 ```
 
-## CLI Usage
+## Usage
 
-tzap also works as a Rust library; see the [Rust API documentation](API.md).
+tzap is a command line utility. It also works as a Rust library; see the [Rust API documentation](API.md).
 
 **Optimize a circuit**
 
