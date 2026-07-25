@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use crate::cancel::CancelGates;
-use crate::circuit::{Circuit, Gate};
+use crate::circuit::{Circuit, Gate, qubit_operands};
 use crate::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use crate::pass::{Pass, count_2q, count_rz, count_t, depth};
 use crate::phase_fold_global_expr::PhaseFoldGlobalExpr;
@@ -227,13 +227,46 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    /// Every counter from one walk of the gate list rather than four.
+    ///
+    /// This runs after every pass of every fixpoint round, purely to drive the
+    /// progress display, so on a multi-million-gate circuit the difference
+    /// between one traversal and four is a measurable share of total runtime.
+    /// `count_2q`/`count_t`/`count_rz`/`depth` remain as published, separately
+    /// callable API; this just doesn't route through them.
     pub fn of(circuit: &Circuit) -> Metrics {
+        let mut two_qubit = 0;
+        let mut t = 0;
+        let mut rz = 0;
+        // Depth, computed exactly as `pass::depth` does: a gate lands one layer
+        // past the deepest layer already occupied by any of its operands.
+        let mut next_layer = vec![0usize; circuit.num_qubits];
+        let mut depth = 0;
+        for gate in &circuit.gates {
+            match gate {
+                Gate::cnot { .. } | Gate::cz { .. } => two_qubit += 1,
+                Gate::t(_) | Gate::tdg(_) => t += 1,
+                Gate::rz(..) => rz += 1,
+                _ => {}
+            }
+            let (arity, operands) = qubit_operands(gate);
+            let layer = operands[..arity]
+                .iter()
+                .map(|&qubit| next_layer[qubit])
+                .max()
+                .unwrap_or(0)
+                + 1;
+            for &qubit in &operands[..arity] {
+                next_layer[qubit] = layer;
+            }
+            depth = depth.max(layer);
+        }
         Metrics {
             gates: circuit.gates.len(),
-            two_qubit: count_2q(circuit),
-            depth: depth(circuit),
-            t: count_t(circuit),
-            rz: count_rz(circuit),
+            two_qubit,
+            depth,
+            t,
+            rz,
         }
     }
 }
