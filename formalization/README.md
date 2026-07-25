@@ -14,6 +14,7 @@ correctness theorems.
 |---|---|---|
 | `SuperOpt.Algorithm.optimize_correct` | `TZap/SuperOpt/Algorithm.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics. |
 | `SuperOpt.GlobalPhase.canonicalize_eq_iff` | `TZap/SuperOpt/GlobalPhase.lean` | Dividing a matrix by the phase of its first nonzero entry decides equivalence up to global phase exactly: two nonzero matrices have equal canonical forms iff they differ by a unit-modulus scalar. |
+| `SuperOpt.build_minimal_of_library` | `TZap/SuperOpt/Search.lean` | The circuit the bounded length-ordered search files under a canonical key is a *shortest* circuit over the gate library realizing that key — so a table hit is the synthesis answer, with no search at lookup time. |
 | `Unitary.unitary_agrees` | `TZap/Unitary.lean` | Dense unitary matrix semantics is exactly equal to the weighted-relation semantics after swapping the matrix indices. |
 | `RandomizedAlgorithm.randomized_fold_correct` | `TZap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
 | `RandomizedSoundness.randomized_analysis_sound` | `TZap/RandomizedSoundness.lean` | A semantically false equality reported by the randomized analysis with `k`-bit hashes has probability at most `2⁻ᵏ`. |
@@ -73,6 +74,21 @@ The modules, in dependency order:
   genuine unitaries. The results hold for any fixed linear order on basis
   states; `Basis.instLinearOrder` supplies the implementation's row-major one
   (qubit `q` contributing `2^q`, matching `bit(q) = 1 << q`).
+
+- **`TZap/SuperOpt/Search.lean`** — Table construction proper: the bounded
+  enumeration and why first-wins insertion yields minimality. `level` is one
+  breadth-first layer (all library circuits of a given length), `searchOrder`
+  concatenates layers `0 … bound`, and `build` files under each canonical key
+  the first circuit reaching it. Minimality is isolated to the order and
+  nothing else: `find?_length_le_of_pairwise` shows a length-nondecreasing
+  traversal makes the first match a shortest match, and
+  `searchOrder_pairwise_length` discharges that side condition. Hence
+  `build_minimal`, strengthened by `build_minimal_of_library` to drop the bound
+  (a competitor exceeding `bound` is longer than the stored circuit for free)
+  and by `build_minimal_up_to_phase` to the phase-equivalence phrasing.
+  `find?_not_minimal_without_pairwise` records that the order hypothesis is
+  essential — a plain depth-first traversal reaches `[T, T]` before `[S]` and
+  would file a length-2 circuit under `S`'s key.
 
 - **`TZap/SuperOpt/Table.lean`** — The optimizer-specific abstract
   unitary-to-circuit synthesis table and its exact soundness contract.
