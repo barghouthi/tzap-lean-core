@@ -235,7 +235,7 @@ fn main() {
     let opts = parse_args(&args);
 
     eprintln!(
-        "\x1b[1m⚡\u{FE0F} tzap\x1b[0m  \x1b[2mv{}\x1b[0m",
+        "\x1b[1m⚡\u{FE0F} tzap\x1b[0m \x1b[2mv{}\x1b[0m",
         env!("CARGO_PKG_VERSION")
     );
 

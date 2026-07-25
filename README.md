@@ -69,7 +69,7 @@ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 tzap output:
 
 ```text
-⚡️ tzap  v0.4.3
+⚡️ tzap v0.4.3
   Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.098s
 	└─ 20 qubits · 514,412 gates
   Loaded superoptimizer table in 0.018s
