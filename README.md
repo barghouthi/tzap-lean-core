@@ -62,13 +62,8 @@ tzap input.qasm -o output.qasm
 
 For example, using a benchmark in this repo:
 
-```bash
-tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
-```
-
-tzap output:
-
-```text
+```console
+$ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 ⚡️ tzap v0.4.3
   Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.098s
 	└─ 20 qubits · 514,412 gates
