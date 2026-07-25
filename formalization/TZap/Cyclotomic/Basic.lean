@@ -21,11 +21,13 @@ matrix. `IsCyclotomic` below is exactly that predicate on a complex number, with
 window when a coefficient escapes it, which is a representability *restriction* on top of the
 mathematical statement proved here.
 
-The main results are the closure lemmas `IsCyclotomic.add`, `IsCyclotomic.mul`,
-`IsCyclotomic.sum` and friends, which package as the subring `cyclotomicSubring`. They are what
-`TZap/Cyclotomic/Semantics.lean` needs: circuit semantics is built from sums of products of gate
-entries, so a set containing every gate entry and closed under `+` and `*` contains every
-circuit amplitude.
+The main results are the closure lemmas `IsCyclotomic.add`, `IsCyclotomic.mul` and
+`IsCyclotomic.sum`. They are what `TZap/Cyclotomic/Semantics.lean` needs: circuit semantics is
+built from sums of products of gate entries, so a set containing every gate entry and closed
+under `+` and `*` contains every circuit amplitude.
+
+Only what the main theorem depends on is kept here; the representable numbers do also form a
+subring of `ℂ`, but nothing downstream needed that packaging.
 
 ## Correspondence with the Rust implementation
 
@@ -49,13 +51,10 @@ The exponent is written `I * ↑θ` to match `Semantics.phase`, so that an `Rz (
 literally a power of `ω`. -/
 def omega : ℂ := Complex.exp (Complex.I * ((Real.pi / 4 : ℝ) : ℂ))
 
-/-- `√2`, coerced into `ℂ`; the denominator base of the representation. -/
+/-- `(√2)² = 2` in `ℂ`; used to put `ω` in Cartesian form. -/
 theorem ofReal_sqrt_two_sq : ((Real.sqrt 2 : ℝ) : ℂ) ^ 2 = 2 := by
   rw [← Complex.ofReal_pow, Real.sq_sqrt (by norm_num : (0:ℝ) ≤ 2)]
   norm_num
-
-theorem sqrt_two_ne_zero : ((Real.sqrt 2 : ℝ) : ℂ) ≠ 0 := by
-  simp
 
 /-- Cartesian form of `ω`: `(√2/2)(1 + i)`. -/
 theorem omega_eq : omega = ((Real.sqrt 2 / 2 : ℝ) : ℂ) * (1 + Complex.I) := by
@@ -76,12 +75,6 @@ coefficient array. -/
 theorem omega_pow_four : omega ^ 4 = -1 := by
   have h : omega ^ 4 = (omega ^ 2) ^ 2 := by ring
   rw [h, omega_sq, Complex.I_sq]
-
-/-- `ω` is an eighth root of unity. -/
-theorem omega_pow_eight : omega ^ 8 = 1 := by
-  have h : omega ^ 8 = (omega ^ 4) ^ 2 := by ring
-  rw [h, omega_pow_four]
-  norm_num
 
 /-- `√2 = ω - ω³`. This is why a `√2` denominator can always be cleared into the numerator, and
 it is the identity underlying Rust's exact `divide_by_sqrt_2`. -/
@@ -106,16 +99,10 @@ theorem one : IsCycInt 1 := ⟨1, 0, 0, 0, by norm_num⟩
 
 theorem omega_mem : IsCycInt omega := ⟨0, 1, 0, 0, by norm_num⟩
 
-theorem intCast (m : ℤ) : IsCycInt (m : ℂ) := ⟨m, 0, 0, 0, by norm_num⟩
-
 theorem add {x y : ℂ} (hx : IsCycInt x) (hy : IsCycInt y) : IsCycInt (x + y) := by
   obtain ⟨a, b, c, d, rfl⟩ := hx
   obtain ⟨a', b', c', d', rfl⟩ := hy
   exact ⟨a + a', b + b', c + c', d + d', by push_cast; ring⟩
-
-theorem neg {x : ℂ} (hx : IsCycInt x) : IsCycInt (-x) := by
-  obtain ⟨a, b, c, d, rfl⟩ := hx
-  exact ⟨-a, -b, -c, -d, by push_cast; ring⟩
 
 /-- Scaling by an integer. -/
 theorem intCast_mul {x : ℂ} (hx : IsCycInt x) (m : ℤ) : IsCycInt ((m : ℂ) * x) := by
@@ -192,20 +179,11 @@ theorem one : IsCyclotomic 1 := of_isCycInt IsCycInt.one
 
 theorem omega_mem : IsCyclotomic omega := of_isCycInt IsCycInt.omega_mem
 
-/-- `1/√2`, the Hadamard coefficient, is representable with `k = 1`. -/
-theorem inv_sqrt_two : IsCyclotomic (((Real.sqrt 2 : ℝ) : ℂ))⁻¹ :=
-  ⟨1, 0, 0, 0, 1, by push_cast; ring⟩
-
-theorem neg {x : ℂ} (hx : IsCyclotomic x) : IsCyclotomic (-x) := by
-  obtain ⟨N, k, hN, rfl⟩ := isCyclotomic_iff.1 hx
-  exact isCyclotomic_iff.2 ⟨-N, k, hN.neg, by ring⟩
-
 /-- Closure under addition: put both entries over the larger denominator by pushing the
 difference of exponents into the numerator, which stays in `ℤ[ω]` because `√2` does. -/
 theorem add {x y : ℂ} (hx : IsCyclotomic x) (hy : IsCyclotomic y) : IsCyclotomic (x + y) := by
   obtain ⟨M, k, hM, rfl⟩ := isCyclotomic_iff.1 hx
   obtain ⟨N, l, hN, rfl⟩ := isCyclotomic_iff.1 hy
-  have hs : ((Real.sqrt 2 : ℝ) : ℂ) ≠ 0 := sqrt_two_ne_zero
   rcases le_total k l with h | h
   · refine isCyclotomic_iff.2
       ⟨M * ((Real.sqrt 2 : ℝ) : ℂ) ^ (l - k) + N, l,
@@ -251,18 +229,6 @@ theorem sum {ι : Type*} (s : Finset ι) (f : ι → ℂ) (h : ∀ i ∈ s, IsCy
         (ih fun j hj => h j (Finset.mem_insert_of_mem hj))
 
 end IsCyclotomic
-
-/-- The representable numbers form a subring of `ℂ` — the ring `ℤ[ω][1/√2]`. -/
-def cyclotomicSubring : Subring ℂ where
-  carrier := {z | IsCyclotomic z}
-  zero_mem' := IsCyclotomic.zero
-  one_mem' := IsCyclotomic.one
-  add_mem' := IsCyclotomic.add
-  neg_mem' := IsCyclotomic.neg
-  mul_mem' := IsCyclotomic.mul
-
-@[simp] theorem mem_cyclotomicSubring {z : ℂ} : z ∈ cyclotomicSubring ↔ IsCyclotomic z :=
-  Iff.rfl
 
 end
 end TZap.Cyclotomic

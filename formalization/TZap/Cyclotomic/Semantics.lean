@@ -1,6 +1,5 @@
 import TZap.Cyclotomic.Basic
 import TZap.Semantics
-import TZap.Unitary
 
 /-!
 # Clifford+T Amplitudes Are Cyclotomic
@@ -24,8 +23,7 @@ The proof is three steps:
 * `isCyclotomic_circuit` — induction along the gate list. Composition is a finite sum of
   products, so this is exactly the closure package proved in `Basic.lean`.
 * `exists_cyclotomic_representation` — the same statement spelled out as the explicit
-  `∃ a b c d k` normal form, and `Unitary.isCyclotomic_unitary` for the dense-matrix semantics
-  that `TZap/SuperOpt` and `src/super_opt/matrix.rs` actually manipulate.
+  `∃ a b c d k` normal form that `src/super_opt/matrix.rs` stores.
 -/
 
 namespace TZap.Cyclotomic
@@ -146,46 +144,6 @@ theorem exists_cyclotomic_representation {n : Nat} (C : Circuit n)
         = ((a : ℂ) + b * omega + c * omega ^ 2 + d * omega ^ 3)
             / ((Real.sqrt 2 : ℝ) : ℂ) ^ k :=
   isCyclotomic_circuit C hC x y
-
-/-- The amplitudes live in the subring `ℤ[ω][1/√2]` of `ℂ`. -/
-theorem circuit_mem_cyclotomicSubring {n : Nat} (C : Circuit n)
-    (hC : ∀ g ∈ C, IsCliffordT g) (x y : Basis n) :
-    Semantics.circuit C x y ∈ cyclotomicSubring :=
-  isCyclotomic_circuit C hC x y
-
-/-- The same conclusion for the dense unitary semantics of `TZap/Unitary.lean` — the
-row-output/column-input matrix that `TZap/SuperOpt` and `src/super_opt/matrix.rs` manipulate. -/
-theorem isCyclotomic_unitary {n : Nat} (C : Circuit n)
-    (hC : ∀ g ∈ C, IsCliffordT g) (output input : Basis n) :
-    IsCyclotomic (Unitary.unitary C output input) := by
-  rw [Unitary.unitary_apply_eq_semantics]
-  exact isCyclotomic_circuit C hC input output
-
-/-! ## Worked example
-
-A guard against a vacuous hypothesis: `IsCliffordT` is satisfiable, so
-`isCyclotomic_circuit` really does say something about real circuits. -/
-
-section Example
-
-/-- `H · T · CNOT` on two qubits — a genuine Clifford+T circuit. -/
-def exampleCircuit : Circuit 2 :=
-  [Gate.hadamard 0, Gate.rz (Real.pi / 4) 0, Gate.cnot 0 1]
-
-theorem exampleCircuit_isCliffordT : ∀ g ∈ exampleCircuit, IsCliffordT g := by
-  intro g hg
-  simp only [exampleCircuit, List.mem_cons, List.not_mem_nil, or_false] at hg
-  rcases hg with rfl | rfl | rfl
-  · exact IsCliffordT.hadamard 0
-  · exact IsCliffordT.t 0
-  · exact IsCliffordT.cnot 0 1
-
-/-- Every amplitude of that circuit is cyclotomic. -/
-theorem exampleCircuit_isCyclotomic (x y : Basis 2) :
-    IsCyclotomic (Semantics.circuit exampleCircuit x y) :=
-  isCyclotomic_circuit _ exampleCircuit_isCliffordT x y
-
-end Example
 
 end
 end TZap.Cyclotomic
