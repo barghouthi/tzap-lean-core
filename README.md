@@ -106,9 +106,7 @@ optimization pipeline.
 
 **Custom pipeline**
 
-`--passes` runs an explicit, ordered sequence of passes in place of the default pipeline. It
-cannot be combined with `--decompose-rz` or `--decompose-cz` — list `DecomposeRz`/`DecomposeCz`
-as pass names instead.
+`--passes` runs an explicit, ordered sequence of passes in place of the default pipeline.
 
 ```bash
 tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
