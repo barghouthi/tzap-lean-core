@@ -1,4 +1,4 @@
-use crate::circuit::{Circuit, Gate, qubits_of};
+use crate::circuit::{Circuit, Gate, qubit_operands};
 
 /// An optimization pass: takes a circuit, returns an equivalent one.
 ///
@@ -65,9 +65,9 @@ pub fn count_2q(c: &Circuit) -> usize {
 pub fn depth(c: &Circuit) -> usize {
     let mut next_layer = vec![0; c.num_qubits];
     for gate in &c.gates {
-        let qubits = qubits_of(gate);
-        let layer = qubits.iter().map(|&q| next_layer[q]).max().unwrap_or(0) + 1;
-        for q in qubits {
+        let (n, qs) = qubit_operands(gate);
+        let layer = qs[..n].iter().map(|&q| next_layer[q]).max().unwrap_or(0) + 1;
+        for &q in &qs[..n] {
             next_layer[q] = layer;
         }
     }

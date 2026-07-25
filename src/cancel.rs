@@ -1,6 +1,6 @@
 //! The `CancelGates` pass: removes adjacent self-inverse gate pairs.
 
-use crate::circuit::{Circuit, Gate, Qubit};
+use crate::circuit::{Circuit, Gate, Qubit, qubit_operands};
 use crate::pass::Pass;
 use crate::phase_fold_rand::classify_quarter_pi;
 
@@ -20,7 +20,7 @@ fn cancel_pairs(gates: &[Gate], num_qubits: usize) -> Vec<Gate> {
 
     for (i, gate) in gates.iter().enumerate() {
         if is_self_inverse(gate) {
-            let (n, qs) = qubits_of(gate);
+            let (n, qs) = qubit_operands(gate);
             // The blocker is the latest gate touching any of this gate's qubits.
             let mut blocker: Option<usize> = None;
             for j in 0..n {
@@ -45,7 +45,7 @@ fn cancel_pairs(gates: &[Gate], num_qubits: usize) -> Vec<Gate> {
             }
         }
 
-        let (n, qs) = qubits_of(gate);
+        let (n, qs) = qubit_operands(gate);
         for j in 0..n {
             qubit_stacks[qs[j]].push(i);
         }
@@ -129,34 +129,6 @@ fn gates_equal(a: &Gate, b: &Gate) -> bool {
     }
 }
 
-fn qubits_of(gate: &Gate) -> (usize, [Qubit; 3]) {
-    match gate {
-        Gate::x(q)
-        | Gate::h(q)
-        | Gate::s(q)
-        | Gate::sdg(q)
-        | Gate::z(q)
-        | Gate::t(q)
-        | Gate::tdg(q)
-        | Gate::rz(_, q)
-        | Gate::reset(q) => (1, [*q, 0, 0]),
-        Gate::cnot { control, target } | Gate::cz { control, target } => {
-            (2, [*control, *target, 0])
-        }
-        Gate::ccx {
-            control1,
-            control2,
-            target,
-        }
-        | Gate::ccz {
-            control1,
-            control2,
-            target,
-        } => (3, [*control1, *control2, *target]),
-        Gate::measure { qubit, .. } => (1, [*qubit, 0, 0]),
-    }
-}
-
 fn is_h(g: &Gate, q: usize) -> bool {
     matches!(g, Gate::h(p) if *p == q)
 }
@@ -221,7 +193,7 @@ fn reduce_hadamards_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>>
     // Per-qubit ordered list of indices of gates touching that qubit.
     let mut tracks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
     for (i, g) in gates.iter().enumerate() {
-        let (n, qs) = qubits_of(g);
+        let (n, qs) = qubit_operands(g);
         for &q in &qs[..n] {
             tracks[q].push(i);
         }
@@ -382,7 +354,7 @@ fn cancel_commuting_pairs(input: &[Gate], num_qubits: usize) -> (Vec<Gate>, bool
 fn cancel_commuting_pairs_pass(gates: &[Gate], num_qubits: usize) -> Option<Vec<Gate>> {
     let mut tracks: Vec<Vec<usize>> = vec![Vec::new(); num_qubits];
     for (i, g) in gates.iter().enumerate() {
-        let (n, qs) = qubits_of(g);
+        let (n, qs) = qubit_operands(g);
         for &q in &qs[..n] {
             tracks[q].push(i);
         }

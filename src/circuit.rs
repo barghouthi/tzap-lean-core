@@ -205,7 +205,44 @@ impl fmt::Display for Circuit {
     }
 }
 
-/// Return the qubits a gate acts on.
+/// The qubits a gate acts on, as `(count, operands)` — the first `count`
+/// entries of the array are the operands, in the same order [`qubits_of`]
+/// reports them.
+///
+/// This is the form to reach for on a hot path: no gate acts on more than
+/// three qubits, so the operands ride in registers and a per-gate scan of a
+/// million-gate circuit allocates nothing. [`qubits_of`]'s `Vec` costs a
+/// malloc/free per gate, which dominated `pass::depth` before this existed.
+pub fn qubit_operands(gate: &Gate) -> (usize, [Qubit; 3]) {
+    match gate {
+        Gate::x(q)
+        | Gate::h(q)
+        | Gate::s(q)
+        | Gate::sdg(q)
+        | Gate::z(q)
+        | Gate::t(q)
+        | Gate::tdg(q)
+        | Gate::rz(_, q)
+        | Gate::reset(q) => (1, [*q, 0, 0]),
+        Gate::cnot { control, target } | Gate::cz { control, target } => {
+            (2, [*control, *target, 0])
+        }
+        Gate::ccx {
+            control1,
+            control2,
+            target,
+        }
+        | Gate::ccz {
+            control1,
+            control2,
+            target,
+        } => (3, [*control1, *control2, *target]),
+        Gate::measure { qubit, .. } => (1, [*qubit, 0, 0]),
+    }
+}
+
+/// Return the qubits a gate acts on. See [`qubit_operands`] for an
+/// allocation-free equivalent.
 pub fn qubits_of(gate: &Gate) -> Vec<Qubit> {
     match gate {
         Gate::x(q)
