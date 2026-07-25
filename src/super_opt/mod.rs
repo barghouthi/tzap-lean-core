@@ -180,6 +180,102 @@ struct ActiveWindow {
     // `analyze_window` can reject an Rz window in O(1) instead of rescanning
     // the whole (monotonically growing) gate list on every touch.
     contains_rz: bool,
+    // Anchor order: the number of windows created before this one. Slot
+    // indices in `active` get recycled (see `WindowArena`), so a slot index is
+    // no longer a proxy for age — but rewrite selection is greedy in anchor
+    // order, so the per-gate touched-window list must still be processed
+    // oldest-first. This is the key it sorts by.
+    seq: u64,
+}
+
+/// Slot storage for the live windows of one scan.
+///
+/// Nearly every gate anchors a window, but a window dies within
+/// `window_gates` gates of its anchor, so only a few dozen are ever live at
+/// once (measured on `benchmarks/cobble/ols-ridge.qasm` at `-O3`: 35–68 live,
+/// against 536k anchored). Indexing slots by a monotonically increasing
+/// counter therefore grew `active` to one 144-byte slot per gate — 77 MB,
+/// reallocated and page-faulted on every fixpoint sweep — to hold a working
+/// set of a few kilobytes. Retiring a window returns its slot to `free`, so
+/// the arena instead stays at high-water-mark size.
+///
+/// Slot indices are consequently *not* anchor order; `ActiveWindow::seq` is.
+#[derive(Debug, Default)]
+struct WindowArena {
+    slots: Vec<Option<ActiveWindow>>,
+    free: Vec<usize>,
+    /// Stamped with `gate_index + 1` when a slot is added to the per-gate
+    /// touched list, to dedup it without sorting. 0 means "not yet touched".
+    touch_stamp: Vec<usize>,
+    next_seq: u64,
+}
+
+impl WindowArena {
+    /// Take the window out of `slot`, which must be live.
+    fn take(&mut self, slot: usize) -> ActiveWindow {
+        self.slots[slot]
+            .take()
+            .expect("qubit index only contains live windows")
+    }
+
+    fn put_back(&mut self, slot: usize, window: ActiveWindow) {
+        self.slots[slot] = Some(window);
+    }
+
+    fn seq_of(&self, slot: usize) -> u64 {
+        self.slots[slot]
+            .as_ref()
+            .expect("qubit index only contains live windows")
+            .seq
+    }
+
+    /// The qubit support of the window in `slot`, which must be live.
+    fn qubits(&self, slot: usize) -> &[Qubit] {
+        &self.slots[slot]
+            .as_ref()
+            .expect("qubit index only contains live windows")
+            .qubits
+    }
+
+    /// The next anchor order value, consumed when building an `ActiveWindow`.
+    fn next_seq(&mut self) -> u64 {
+        self.next_seq += 1;
+        self.next_seq - 1
+    }
+
+    /// Store `window` in a recycled slot when one is free, else in a new one.
+    fn insert(&mut self, window: ActiveWindow) -> usize {
+        match self.free.pop() {
+            Some(slot) => {
+                self.slots[slot] = Some(window);
+                slot
+            }
+            None => {
+                self.slots.push(Some(window));
+                self.touch_stamp.push(0);
+                self.slots.len() - 1
+            }
+        }
+    }
+
+    /// Retire the window in `slot`: drop it from the per-qubit index (skipping
+    /// `exclude`, qubits a just-attempted expansion inserted but never
+    /// registered) and return the slot for reuse.
+    ///
+    /// The window must already have been `take`n out of the slot.
+    fn retire(
+        &mut self,
+        slot: usize,
+        qubits: &[Qubit],
+        exclude: &[Qubit],
+        windows_by_qubit: &mut [Vec<usize>],
+    ) {
+        unregister_window(slot, qubits, exclude, windows_by_qubit);
+        // Clear the stamp so a future tenant of this slot can never inherit a
+        // touch recorded against the previous one.
+        self.touch_stamp[slot] = 0;
+        self.free.push(slot);
+    }
 }
 
 impl SuperOpt {
@@ -250,11 +346,11 @@ impl SuperOpt {
 
         let frontier = self.take_anchor_frontier(circuit);
 
-        // Scan state: `active` owns the live windows (slot index = window id,
-        // `None` once dead); `windows_by_qubit` inverts it so a gate finds
-        // the windows it touches without scanning them all; `gates_by_qubit`
-        // is the full per-qubit gate history that window closure consults.
-        let mut active: Vec<Option<ActiveWindow>> = Vec::with_capacity(circuit.gates.len());
+        // Scan state: `arena` owns the live windows, recycling slots as they
+        // die; `windows_by_qubit` inverts it so a gate finds the windows it
+        // touches without scanning them all; `gates_by_qubit` is the full
+        // per-qubit gate history that window closure consults.
+        let mut arena = WindowArena::default();
         let mut windows_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
         let mut gates_by_qubit: Vec<Vec<usize>> = vec![Vec::new(); circuit.num_qubits];
         // Take the persistent store for the duration of this run; an early
@@ -267,34 +363,43 @@ impl SuperOpt {
         for (gate_index, gate) in circuit.gates.iter().enumerate() {
             let gate_qubits = unique_qubits(gate);
 
+            // Collect the windows this gate touches, deduped by slot via
+            // `touch_stamp` (a window registered on two of the gate's qubits
+            // appears in both lists) and ordered by anchor age, which is what
+            // greedy rewrite selection consumes.
             touched_windows.clear();
+            let stamp = gate_index + 1;
             for &qubit in &gate_qubits {
-                touched_windows.extend_from_slice(&windows_by_qubit[qubit]);
+                for &slot in &windows_by_qubit[qubit] {
+                    if arena.touch_stamp[slot] != stamp {
+                        arena.touch_stamp[slot] = stamp;
+                        touched_windows.push((arena.seq_of(slot), slot));
+                    }
+                }
                 gates_by_qubit[qubit].push(gate_index);
             }
+            // Sorting `(seq, slot)` pairs, rather than slots by a `seq_of` key
+            // closure: `sort_unstable_by_key` re-evaluates its key on every
+            // comparison, which would put a bounds-checked load and an
+            // `Option` unwrap inside the sort's inner loop.
             touched_windows.sort_unstable();
-            touched_windows.dedup();
 
             // Rz is outside the exact Clifford+T matrix domain; measurement
             // and reset are non-unitary. All three terminate windows touching
             // their qubit. Keep the gate in per-qubit history so a disjoint
             // window cannot later bridge across this barrier.
             if matches!(gate, Gate::rz(..) | Gate::measure { .. } | Gate::reset(_)) {
-                for &window_id in &touched_windows {
-                    let window = active[window_id]
-                        .take()
-                        .expect("qubit index only contains live windows");
-                    unregister_window(window_id, &window.qubits, &[], &mut windows_by_qubit);
+                for &(_, window_id) in &touched_windows {
+                    let window = arena.take(window_id);
+                    arena.retire(window_id, &window.qubits, &[], &mut windows_by_qubit);
                 }
                 continue;
             }
 
-            for &window_id in &touched_windows {
-                let mut window = active[window_id]
-                    .take()
-                    .expect("qubit index only contains live windows");
+            for &(_, window_id) in &touched_windows {
+                let mut window = arena.take(window_id);
                 if rewrites.is_claimed(gate_index) || rewrites.claims_any(&window.gate_indices) {
-                    unregister_window(window_id, &window.qubits, &[], &mut windows_by_qubit);
+                    arena.retire(window_id, &window.qubits, &[], &mut windows_by_qubit);
                     continue;
                 }
                 // `added_qubits` were inserted into `window.qubits` but never
@@ -310,7 +415,7 @@ impl SuperOpt {
                     self.window_gates,
                 );
                 if !within_bounds {
-                    unregister_window(
+                    arena.retire(
                         window_id,
                         &window.qubits,
                         &added_qubits,
@@ -340,7 +445,7 @@ impl SuperOpt {
                 )?;
 
                 if at_gate_limit || selected {
-                    unregister_window(
+                    arena.retire(
                         window_id,
                         &window.qubits,
                         &added_qubits,
@@ -350,7 +455,7 @@ impl SuperOpt {
                     for &qubit in &added_qubits {
                         windows_by_qubit[qubit].push(window_id);
                     }
-                    active[window_id] = Some(window);
+                    arena.put_back(window_id, window);
                 }
             }
 
@@ -367,6 +472,7 @@ impl SuperOpt {
                     // The barrier check above already sent Rz/measure/reset
                     // gates to `continue` before this anchor point is reached.
                     contains_rz: false,
+                    seq: arena.next_seq(),
                 };
                 // A single non-identity Clifford+T gate cannot be rewritten to
                 // the empty circuit. Analyze it only when diagnostics were
@@ -382,11 +488,10 @@ impl SuperOpt {
                 }
 
                 if self.window_gates > 1 && !rewrites.is_claimed(gate_index) {
-                    let window_id = active.len();
-                    for &qubit in &window.qubits {
+                    let window_id = arena.insert(window);
+                    for &qubit in arena.qubits(window_id) {
                         windows_by_qubit[qubit].push(window_id);
                     }
-                    active.push(Some(window));
                 }
             }
         }
