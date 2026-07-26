@@ -1,7 +1,10 @@
 import subprocess
 import sys
+from types import SimpleNamespace
 
+import pytest
 from qiskit import qasm2
+from tzap import _cli
 
 QASM = """\
 OPENQASM 2.0;
@@ -19,6 +22,12 @@ def run_module(*args):
         capture_output=True,
         text=True,
     )
+
+
+def fake_result(qasm=QASM):
+    metrics = SimpleNamespace(gates=0, t=0)
+    report = SimpleNamespace(baseline=metrics, output=metrics)
+    return SimpleNamespace(qasm=qasm, report=report)
 
 
 def test_module_version():
@@ -116,3 +125,101 @@ def test_module_rejects_invalid_epsilon_cleanly(tmp_path):
 
     assert completed.returncode == 1
     assert "positive, finite" in completed.stderr
+
+
+def test_module_reports_output_write_failures_without_traceback(tmp_path):
+    source = tmp_path / "input.qasm"
+    source.write_text(QASM, encoding="utf-8")
+
+    completed = run_module(source, "-O1", "-o", tmp_path)
+
+    assert completed.returncode == 1
+    assert "Error:" in completed.stderr
+    assert "Traceback" not in completed.stderr
+
+
+def test_main_forwards_every_optimizer_flag(monkeypatch, tmp_path):
+    source = tmp_path / "input.qasm"
+    source.write_text(QASM, encoding="utf-8")
+    captured = {}
+
+    def optimize_qasm(qasm, **options):
+        captured["qasm"] = qasm
+        captured["options"] = options
+        return fake_result()
+
+    monkeypatch.setattr(_cli, "optimize_qasm", optimize_qasm)
+
+    exit_code = _cli.main(
+        [
+            str(source),
+            "-Osuper",
+            "--fixpoint",
+            "--decompose-rz",
+            "--decompose-cz",
+            "--epsilon",
+            "0.001",
+            "--expr",
+            "--parallel",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == {
+        "qasm": QASM,
+        "options": {
+            "level": "Osuper",
+            "passes": None,
+            "fixpoint": True,
+            "decompose_rz": True,
+            "decompose_cz": True,
+            "rz_epsilon": 0.001,
+            "expr": True,
+            "parallel": True,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected_level"),
+    [("-O1", "O1"), ("-O2", "O2"), ("-O3", "O3"), ("-Osuper", "Osuper")],
+)
+def test_main_forwards_every_optimization_level(
+    monkeypatch, tmp_path, flag, expected_level
+):
+    source = tmp_path / "input.qasm"
+    source.write_text(QASM, encoding="utf-8")
+    captured = {}
+
+    def optimize_qasm(_qasm, **options):
+        captured.update(options)
+        return fake_result()
+
+    monkeypatch.setattr(_cli, "optimize_qasm", optimize_qasm)
+
+    assert _cli.main([str(source), flag]) == 0
+    assert captured["level"] == expected_level
+
+
+def test_main_normalizes_comma_separated_passes(monkeypatch, tmp_path):
+    source = tmp_path / "input.qasm"
+    source.write_text(QASM, encoding="utf-8")
+    captured = {}
+
+    def optimize_qasm(_qasm, **options):
+        captured.update(options)
+        return fake_result()
+
+    monkeypatch.setattr(_cli, "optimize_qasm", optimize_qasm)
+
+    assert (
+        _cli.main(
+            [
+                str(source),
+                "--passes",
+                " CancelGates, , PhaseFoldRand ",
+            ]
+        )
+        == 0
+    )
+    assert captured["passes"] == ["CancelGates", "PhaseFoldRand"]

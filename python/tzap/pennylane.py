@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 import pennylane as qml
 from pennylane.tape import QuantumScript
@@ -174,7 +174,7 @@ def _output_operations(
             if not line or line.startswith(("OPENQASM", "include ", "qreg ", "creg ")):
                 continue
 
-            statement = line[:-1] if line.endswith(";") else line
+            statement = line.removesuffix(";")
             if statement.startswith("measure "):
                 source, target = statement[len("measure ") :].split(" -> ")
                 wire = wires[_index(source)]

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag, dag_to_circuit
@@ -110,7 +111,7 @@ def _rebuild_on_original_bits(
         line = raw_line.strip()
         if not line or line.startswith(("OPENQASM", "include ", "qreg ", "creg ")):
             continue
-        statement = line[:-1] if line.endswith(";") else line
+        statement = line.removesuffix(";")
         if statement.startswith("measure "):
             source, target = statement[len("measure ") :].split(" -> ")
             flat.measure(_index(source), _classical_index(target))

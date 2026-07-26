@@ -6,8 +6,10 @@ import pennylane as qml
 import pytest
 from pennylane import numpy as pnp
 from tzap import optimize_qasm
+from tzap import pennylane as tzap_pennylane
 from tzap.pennylane import (
     PennyLaneError,
+    _concrete_angle,
     _output_operations,
     _tape_to_qasm,
     optimize,
@@ -273,6 +275,22 @@ def test_non_scalar_rz_is_rejected():
         optimize(tape, level="O1")
 
 
+def test_rz_without_an_angle_is_rejected():
+    class MissingAngle:
+        data = ()
+
+    with pytest.raises(PennyLaneError, match="exactly one angle"):
+        _concrete_angle(MissingAngle())
+
+
+def test_supported_operation_with_wrong_arity_is_rejected(monkeypatch):
+    tape = qml.tape.QuantumScript([qml.PauliX(0)])
+    monkeypatch.setattr(tzap_pennylane, "_operation_name", lambda _operation: "cx")
+
+    with pytest.raises(PennyLaneError, match="1 wires, expected 2"):
+        _tape_to_qasm(tape)
+
+
 @pytest.mark.parametrize(
     "operation",
     [
@@ -302,6 +320,31 @@ def test_unconditioned_mid_circuit_measurement_is_preserved():
 
     assert operation_names(transformed) == ["S", "MidMeasureMP"]
     assert transformed.operations[-1] is operation
+
+
+def test_output_bridge_reconstructs_measurement_without_original_tape_metadata():
+    operations = _output_operations(
+        "measure q[0] -> c[0];",
+        ("wire",),
+    )
+
+    assert len(operations) == 1
+    assert isinstance(operations[0], qml.measurements.MidMeasureMP)
+    assert list(operations[0].wires) == ["wire"]
+
+
+def test_output_bridge_reconstructs_standalone_reset():
+    operations = _output_operations("reset q[0];", ("wire",))
+
+    assert len(operations) == 1
+    assert isinstance(operations[0], qml.measurements.MidMeasureMP)
+    assert operations[0].reset
+    assert list(operations[0].wires) == ["wire"]
+
+
+def test_output_bridge_rejects_unknown_native_operation():
+    with pytest.raises(PennyLaneError, match="unsupported.*'y'"):
+        _output_operations("y q[0];", ("wire",))
 
 
 def test_qnode_unconditioned_mid_circuit_measurement_executes():

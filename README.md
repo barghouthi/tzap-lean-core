@@ -20,52 +20,61 @@ tzap is **multiple orders of magnitude** faster than other optimizers&mdash;and 
 
 ## Installation
 
-**Homebrew** (macOS/Linux, easiest option):
+You can use tzap as a command-line utility or a library.
+
+### Install the binary
+
+These options install the standalone native `tzap` executable.
+
+**Homebrew** (macOS/Linux):
 
 ```bash
 brew install qqq-wisc/tap/tzap
 ```
 
-**crates.io** (requires [Rust](https://rustup.rs/); builds from source):
-
-```bash
-cargo install tzap-opt
-```
-
-**pip** (no Rust required, downloads a prebuilt binary):
-
-```bash
-pip install tzap  # uv pip install tzap
-```
-
-Install the optional Qiskit integration with:
-
-```bash
-pip install "tzap[qiskit]"
-```
-
-Install the optional PennyLane integration with:
-
-```bash
-pip install "tzap[pennylane]"
-```
-
-**From source** (this repo, requires [Rust](https://rustup.rs/)):
-
-```bash
-cargo install --path .
-```
-
-**Prebuilt binary** (no Rust required, downloads and runs a shell installer) — macOS/Linux:
+**Prebuilt release binary** (macOS/Linux):
 
 ```bash
 curl -LsSf https://github.com/qqq-wisc/tzap/releases/latest/download/tzap-opt-installer.sh | sh
 ```
 
-## Usage
+**Build and install from crates.io** (requires [Rust](https://rustup.rs/)):
 
-tzap is a command line utility. It also works as a Python or Rust library; see
-the [Rust API documentation](API.md) for the latter.
+```bash
+cargo install tzap-opt
+```
+
+**Build from source** (requires Rust):
+
+```bash
+cargo install --path .
+```
+
+### Install a library
+
+**Python library** (prebuilt wheels; no Rust compiler required):
+
+```bash
+pip install tzap  # uv pip install tzap
+```
+
+The Python package requires Python 3.10 or later and includes both the Qiskit
+and PennyLane integrations. See the
+[Qiskit API guide](docs/qiskit.md) or
+[PennyLane API guide](docs/pennylane.md) for framework-specific setup.
+
+**Rust library**:
+
+```bash
+cargo add tzap-opt
+```
+
+The package is named `tzap-opt` on crates.io, but is imported as `tzap` in
+Rust code. See the [Rust API documentation](API.md).
+
+## Running tzap
+
+The standard command-line workflow is described below.
 
 **Optimize a circuit**
 
@@ -125,15 +134,14 @@ The optimizer releases Python's GIL while it runs. All CLI optimization
 options are available as keyword arguments, including `passes`,
 `decompose_rz`, `decompose_cz`, `rz_epsilon`, and `parallel`.
 
-**Qiskit transpiler pass**
+**Qiskit**
 
-Install `tzap[qiskit]`, then add `TzapOptimizationPass` to any Qiskit pass
-manager:
+After `pip install tzap`, add tzap to a Qiskit pass manager:
 
 ```python
 from qiskit import QuantumCircuit
 from qiskit.transpiler import PassManager
-from tzap.qiskit import TzapOptimizationPass
+from tzap.qiskit import TZapPass
 
 circuit = QuantumCircuit(2)
 circuit.h(0)
@@ -141,28 +149,14 @@ circuit.cx(0, 1)
 circuit.t(1)
 
 optimized = PassManager([
-    TzapOptimizationPass(level="O3"),
+    TZapPass(level="O3"),
 ]).run(circuit)
 ```
 
-There is also a short `TZapPass` alias and a convenience function:
+See the [Qiskit API guide](docs/qiskit.md) for the convenience function,
+supported basis, pass options, circuit-preservation guarantees, and errors.
 
-```python
-from tzap.qiskit import optimize
-
-optimized = optimize(circuit, level="O1")
-```
-
-The Qiskit circuit must first be translated to tzap's supported basis shown
-below. Bound numeric `rz` angles, measurements, and resets are supported;
-control-flow operations, classical conditions, symbolic parameters, and
-unsupported gates raise a `TranspilerError`. The pass retains the circuit's
-registers, bit identities, name, metadata, and existing global phase.
-
-**PennyLane transform**
-
-Install `tzap[pennylane]`, then use tzap as a transform on a tape, quantum
-function, or QNode:
+**PennyLane**
 
 ```python
 import pennylane as qml
@@ -182,21 +176,9 @@ def circuit():
 print(qml.draw(circuit)())
 ```
 
-Functional transform syntax works too:
-
-```python
-optimized_qnode = optimize(qnode, level="O1")
-optimized_tapes, postprocess = optimize(tape, level="O3")
-```
-
-The transform preserves arbitrary wire labels, shots, terminal measurements,
-observables, and existing `GlobalPhase` operations. It supports PennyLane's
-`PauliX`, `Hadamard`, `S`, `Adjoint(S)`, `PauliZ`, `T`, `Adjoint(T)`, `RZ`,
-`CNOT`, `CZ`, `Toffoli`, and `CCZ`. `RZ` angles must be concrete, finite, and
-non-trainable: trainable or traced angles are rejected rather than silently
-breaking autodiff. Unconditioned mid-circuit measurements and reset are
-preserved; postselection and classical feed-forward are rejected as dynamic
-circuits. Decompose other operations into this basis first.
+See the [PennyLane API guide](docs/pennylane.md) for QNode,
+quantum-function, and tape usage, supported operations, differentiation
+constraints, and errors.
 
 **Decompose Rz into Clifford+T**
 

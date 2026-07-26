@@ -1,13 +1,15 @@
-from typing_extensions import TypeAlias
-
-RawMetrics: TypeAlias = tuple[int, int, int, int, int]
-RawReport: TypeAlias = tuple[RawMetrics, RawMetrics, RawMetrics]
-
 class TzapError(Exception): ...
 class QasmError(TzapError): ...
 class OptimizationError(TzapError): ...
 
 __version__: str
+__all__ = [
+    "OptimizationError",
+    "QasmError",
+    "TzapError",
+    "__version__",
+    "_optimize_qasm",
+]
 
 def _optimize_qasm(
     qasm: str,
@@ -17,10 +19,17 @@ def _optimize_qasm(
     fixpoint: bool = False,
     decompose_rz: bool = False,
     decompose_cz: bool = False,
-    rz_epsilon: float = 1e-10,
+    rz_epsilon: float = ...,
     expr: bool = False,
     parallel: bool = False,
     superopt_qubits: int | None = None,
     superopt_window_gates: int | None = None,
     superopt_table_entries: int | None = None,
-) -> tuple[str, RawReport]: ...
+) -> tuple[
+    str,
+    tuple[
+        tuple[int, int, int, int, int],
+        tuple[int, int, int, int, int],
+        tuple[int, int, int, int, int],
+    ],
+]: ...

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, qasm2
-from qiskit.circuit import Parameter
+from qiskit.circuit import Instruction, Parameter
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.transpiler import PassManager
@@ -251,6 +251,40 @@ def test_control_flow_is_rejected_as_unsupported():
 
     with pytest.raises(TranspilerError, match="'if_else'"):
         optimize(circuit, level="O1")
+
+
+def test_classically_conditioned_supported_gate_is_rejected():
+    circuit = QuantumCircuit(1, 1)
+    operation = Instruction("x", 1, 0, [])
+    operation.condition = (circuit.cregs[0], 1)
+    circuit.append(operation, [0])
+
+    with pytest.raises(TranspilerError, match="classically conditioned"):
+        _dag_to_qasm(circuit_to_dag(circuit))
+
+
+def test_supported_gate_with_wrong_qubit_arity_is_rejected():
+    circuit = QuantumCircuit(2)
+    circuit.append(Instruction("x", 2, 0, []), [0, 1])
+
+    with pytest.raises(TranspilerError, match="2 qubits, expected 1"):
+        _dag_to_qasm(circuit_to_dag(circuit))
+
+
+def test_measurement_without_classical_target_is_rejected():
+    circuit = QuantumCircuit(1)
+    circuit.append(Instruction("measure", 1, 0, []), [0])
+
+    with pytest.raises(TranspilerError, match="exactly one classical bit"):
+        _dag_to_qasm(circuit_to_dag(circuit))
+
+
+def test_supported_quantum_gate_with_classical_operand_is_rejected():
+    circuit = QuantumCircuit(1, 1)
+    circuit.append(Instruction("x", 1, 1, []), [0], [0])
+
+    with pytest.raises(TranspilerError, match="classical operands"):
+        _dag_to_qasm(circuit_to_dag(circuit))
 
 
 def test_invalid_native_options_propagate_through_direct_pass_run():
