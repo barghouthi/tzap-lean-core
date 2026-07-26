@@ -8,13 +8,14 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 [![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
+[**Installation**](#installation) · [**Usage**](#running-tzap) · [**Qiskit integration**](docs/qiskit.md) · [**PennyLane integration**](docs/pennylane.md)
+
 A super fast, Rust-based optimizer for large Clifford+T circuits.
 - tzap's **philosophy** is that each optimization pass should be **linear** in circuit size.
 - tzap **minimizes T-count** with a new linear-time phase folding algorithm, based on [this paper](https://arxiv.org/abs/2605.13929).
 - tzap implements a new and fast **superoptimization** pass.
 - The core optimization algorithms are **fully formalized in Lean** under [`formalization`](formalization/).
 
-**Quick links:** [Installation](#installation) · [Usage](#running-tzap) · [Qiskit integration](docs/qiskit.md) · [PennyLane integration](docs/pennylane.md)
 
 tzap is **multiple orders of magnitude** faster than other optimizers&mdash;and **linearly** **scales** to **millions** of gates!
 <img src="assets/comparison.png"
