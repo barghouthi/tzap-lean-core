@@ -38,17 +38,9 @@ brew install qqq-wisc/tap/tzap
 curl -LsSf https://github.com/qqq-wisc/tzap/releases/latest/download/tzap-opt-installer.sh | sh
 ```
 
-**Build and install from crates.io** (requires [Rust](https://rustup.rs/)):
+**Build and install from crates.io** (requires [Rust](https://rustup.rs/)): `cargo install tzap-opt`
 
-```bash
-cargo install tzap-opt
-```
-
-**Build from source** (requires Rust):
-
-```bash
-cargo install --path .
-```
+**Build from source** (requires Rust): `cargo install --path .`
 
 ### Install a library
 
@@ -58,8 +50,8 @@ cargo install --path .
 pip install tzap  # uv pip install tzap
 ```
 
-The Python package requires Python 3.10 or later and includes both the Qiskit
-and PennyLane integrations. See the
+The Python package requires Python 3.10 or later and lets you run tzap as a
+Qiskit optimization pass or PennyLane transform. See the
 [Qiskit API guide](docs/qiskit.md) or
 [PennyLane API guide](docs/pennylane.md) for framework-specific setup.
 
@@ -115,70 +107,11 @@ $ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 tzap benchmarks/feynman/hwb12.qasm -O1 -o optimized.qasm
 ```
 
-**Python bindings**
+**Python APIs**
 
-`optimize_qasm` runs the same native Rust optimizer as the CLI and returns both
-the optimized OpenQASM 2 program and its metrics:
-
-```python
-from tzap import optimize_qasm
-
-with open("input.qasm") as source:
-    result = optimize_qasm(source.read(), level="O3")
-
-print(result.qasm)
-print(result.report.baseline.gates, "->", result.report.output.gates)
-```
-
-The optimizer releases Python's GIL while it runs. All CLI optimization
-options are available as keyword arguments, including `passes`,
-`decompose_rz`, `decompose_cz`, `rz_epsilon`, and `parallel`.
-
-**Qiskit**
-
-After `pip install tzap`, add tzap to a Qiskit pass manager:
-
-```python
-from qiskit import QuantumCircuit
-from qiskit.transpiler import PassManager
-from tzap.qiskit import TZapPass
-
-circuit = QuantumCircuit(2)
-circuit.h(0)
-circuit.cx(0, 1)
-circuit.t(1)
-
-optimized = PassManager([
-    TZapPass(level="O3"),
-]).run(circuit)
-```
-
-See the [Qiskit API guide](docs/qiskit.md) for the convenience function,
-supported basis, pass options, circuit-preservation guarantees, and errors.
-
-**PennyLane**
-
-```python
-import pennylane as qml
-from tzap.pennylane import optimize
-
-device = qml.device("default.qubit", wires=2)
-
-@optimize(level="O3")
-@qml.qnode(device)
-def circuit():
-    qml.Hadamard(0)
-    qml.Hadamard(0)
-    qml.T(1)
-    qml.T(1)
-    return qml.probs(wires=[0, 1])
-
-print(qml.draw(circuit)())
-```
-
-See the [PennyLane API guide](docs/pennylane.md) for QNode,
-quantum-function, and tape usage, supported operations, differentiation
-constraints, and errors.
+The package exposes the native optimizer through `optimize_qasm`, a
+[Qiskit optimization pass](docs/qiskit.md), and a
+[PennyLane transform](docs/pennylane.md).
 
 **Decompose Rz into Clifford+T**
 
