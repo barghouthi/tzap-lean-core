@@ -194,7 +194,9 @@ observables, and existing `GlobalPhase` operations. It supports PennyLane's
 `PauliX`, `Hadamard`, `S`, `Adjoint(S)`, `PauliZ`, `T`, `Adjoint(T)`, `RZ`,
 `CNOT`, `CZ`, `Toffoli`, and `CCZ`. `RZ` angles must be concrete, finite, and
 non-trainable: trainable or traced angles are rejected rather than silently
-breaking autodiff. Decompose other operations into this basis first.
+breaking autodiff. Unconditioned mid-circuit measurements and reset are
+preserved; postselection and classical feed-forward are rejected as dynamic
+circuits. Decompose other operations into this basis first.
 
 **Decompose Rz into Clifford+T**
 

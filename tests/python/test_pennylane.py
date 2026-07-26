@@ -292,12 +292,80 @@ def test_unsupported_operations_have_actionable_errors(operation):
         optimize(tape, level="O1")
 
 
-def test_mid_circuit_measurement_is_rejected():
+def test_unconditioned_mid_circuit_measurement_is_preserved():
     operation = qml.measurements.MidMeasureMP(wires=0)
-    tape = qml.tape.QuantumScript([operation], [qml.probs(wires=0)])
+    tape = qml.tape.QuantumScript(
+        [qml.T(0), qml.T(0), operation],
+        [qml.probs(wires=0)],
+    )
 
-    with pytest.raises(PennyLaneError, match="MidMeasure"):
+    transformed, _ = transform_tape(tape, level="O1")
+
+    assert operation_names(transformed) == ["S", "MidMeasureMP"]
+    assert transformed.operations[-1] is operation
+
+
+def test_qnode_unconditioned_mid_circuit_measurement_executes():
+    # Analytic execution defers the measurement onto an auxiliary wire.
+    device = qml.device("default.qubit", wires=3)
+
+    @optimize(level="O1")
+    @qml.qnode(device)
+    def circuit():
+        qml.Hadamard(0)
+        qml.measure(0)
+        return qml.probs(wires=[0, 1])
+
+    assert np.allclose(circuit(), np.array([0.5, 0.0, 0.5, 0.0]))
+
+
+def test_reset_is_preserved_and_executes():
+    reset = qml.measurements.MidMeasureMP(wires=0, reset=True)
+    tape = qml.tape.QuantumScript(
+        [qml.PauliX(0), reset],
+        [qml.probs(wires=0)],
+    )
+
+    transformed, _ = transform_tape(tape, level="O1")
+
+    assert transformed.operations[-1] is reset
+    assert transformed.operations[-1].reset
+
+    # Analytic execution defers the reset's measurement onto an auxiliary wire.
+    device = qml.device("default.qubit", wires=2)
+
+    @optimize(level="O1")
+    @qml.qnode(device)
+    def circuit():
+        qml.PauliX(0)
+        qml.measure(0, reset=True)
+        return qml.probs(wires=0)
+
+    assert np.allclose(circuit(), np.array([1.0, 0.0]))
+
+
+def test_postselection_is_rejected_as_dynamic():
+    tape = qml.tape.QuantumScript(
+        [qml.measurements.MidMeasureMP(wires=0, postselect=1)],
+        [qml.probs(wires=0)],
+    )
+
+    with pytest.raises(PennyLaneError, match="dynamic circuits.*postselection"):
         optimize(tape, level="O1")
+
+
+def test_qnode_classical_feed_forward_is_rejected():
+    device = qml.device("default.qubit", wires=2)
+
+    @optimize(level="O1")
+    @qml.qnode(device)
+    def circuit():
+        measurement = qml.measure(0)
+        qml.cond(measurement, qml.PauliX)(1)
+        return qml.probs(wires=[0, 1])
+
+    with pytest.raises(PennyLaneError, match="dynamic circuits"):
+        circuit()
 
 
 def test_decompose_cz_option_reaches_native_optimizer():

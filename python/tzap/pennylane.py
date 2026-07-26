@@ -45,6 +45,11 @@ _ARITIES = {
 
 
 def _operation_name(operation) -> str:
+    if isinstance(operation, qml.ops.op_math.Conditional):
+        raise PennyLaneError(
+            "tzap does not support dynamic circuits with classical feed-forward"
+        )
+
     if isinstance(operation, qml.ops.op_math.Adjoint):
         if isinstance(operation.base, qml.S):
             return "sdg"
@@ -107,10 +112,32 @@ def _tape_to_qasm(
         'include "qelib1.inc";',
         "qreg q[{}];".format(len(wires)),
     ]
+    mid_measurements = [
+        operation
+        for operation in tape.operations
+        if isinstance(operation, qml.measurements.MidMeasureMP)
+    ]
+    measurement_indices = {
+        id(operation): index for index, operation in enumerate(mid_measurements)
+    }
+    if mid_measurements:
+        lines.append("creg c[{}];".format(len(mid_measurements)))
 
     for operation in tape.operations:
         if isinstance(operation, qml.GlobalPhase):
             global_phases.append(operation)
+            continue
+
+        if isinstance(operation, qml.measurements.MidMeasureMP):
+            if operation.postselect is not None:
+                raise PennyLaneError(
+                    "tzap does not support dynamic circuits with postselection"
+                )
+            wire = wire_indices[operation.wires[0]]
+            cbit = measurement_indices[id(operation)]
+            lines.append("measure q[{}] -> c[{}];".format(wire, cbit))
+            if operation.reset:
+                lines.append("reset q[{}];".format(wire))
             continue
 
         name = _operation_name(operation)
@@ -142,8 +169,13 @@ def _indices(operands: str) -> List[int]:
     return [_index(operand.strip()) for operand in operands.split(",")]
 
 
-def _output_operations(qasm: str, wires: Sequence[object]):
+def _output_operations(
+    qasm: str,
+    wires: Sequence[object],
+    mid_measurements: Sequence[object] = (),
+):
     operations = []
+    resets_to_skip: Dict[object, int] = {}
     with qml.QueuingManager.stop_recording():
         for raw_line in qasm.splitlines():
             line = raw_line.strip()
@@ -157,6 +189,19 @@ def _output_operations(qasm: str, wires: Sequence[object]):
                 continue
 
             statement = line[:-1] if line.endswith(";") else line
+            if statement.startswith("measure "):
+                source, target = statement[len("measure ") :].split(" -> ")
+                wire = wires[_index(source)]
+                cbit = _index(target)
+                if cbit < len(mid_measurements):
+                    measurement = mid_measurements[cbit]
+                else:
+                    measurement = qml.measurements.MidMeasureMP(wires=wire)
+                operations.append(measurement)
+                if measurement.reset:
+                    resets_to_skip[wire] = resets_to_skip.get(wire, 0) + 1
+                continue
+
             name, operands = statement.split(" ", 1)
             wire_operands = [wires[index] for index in _indices(operands)]
             if name.startswith("rz("):
@@ -185,6 +230,14 @@ def _output_operations(qasm: str, wires: Sequence[object]):
                 operations.append(qml.Toffoli(wires=wire_operands))
             elif name == "ccz":
                 operations.append(qml.CCZ(wires=wire_operands))
+            elif name == "reset":
+                wire = wire_operands[0]
+                if resets_to_skip.get(wire, 0):
+                    resets_to_skip[wire] -= 1
+                else:
+                    operations.append(
+                        qml.measurements.MidMeasureMP(wires=wire, reset=True)
+                    )
             else:
                 raise PennyLaneError(
                     "tzap returned an operation unsupported by the PennyLane "
@@ -235,7 +288,15 @@ def _optimize_transform(
     )
     optimized_operations = [
         *global_phases,
-        *_output_operations(result.qasm, wires),
+        *_output_operations(
+            result.qasm,
+            wires,
+            tuple(
+                operation
+                for operation in tape.operations
+                if isinstance(operation, qml.measurements.MidMeasureMP)
+            ),
+        ),
     ]
     transformed_tape = tape.copy(operations=optimized_operations)
 
