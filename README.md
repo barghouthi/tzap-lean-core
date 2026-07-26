@@ -44,6 +44,12 @@ Install the optional Qiskit integration with:
 pip install "tzap[qiskit]"
 ```
 
+Install the optional PennyLane integration with:
+
+```bash
+pip install "tzap[pennylane]"
+```
+
 **From source** (this repo, requires [Rust](https://rustup.rs/)):
 
 ```bash
@@ -152,6 +158,43 @@ below. Bound numeric `rz` angles, measurements, and resets are supported;
 control-flow operations, classical conditions, symbolic parameters, and
 unsupported gates raise a `TranspilerError`. The pass retains the circuit's
 registers, bit identities, name, metadata, and existing global phase.
+
+**PennyLane transform**
+
+Install `tzap[pennylane]`, then use tzap as a transform on a tape, quantum
+function, or QNode:
+
+```python
+import pennylane as qml
+from tzap.pennylane import optimize
+
+device = qml.device("default.qubit", wires=2)
+
+@optimize(level="O3")
+@qml.qnode(device)
+def circuit():
+    qml.Hadamard(0)
+    qml.Hadamard(0)
+    qml.T(1)
+    qml.T(1)
+    return qml.probs(wires=[0, 1])
+
+print(qml.draw(circuit)())
+```
+
+Functional transform syntax works too:
+
+```python
+optimized_qnode = optimize(qnode, level="O1")
+optimized_tapes, postprocess = optimize(tape, level="O3")
+```
+
+The transform preserves arbitrary wire labels, shots, terminal measurements,
+observables, and existing `GlobalPhase` operations. It supports PennyLane's
+`PauliX`, `Hadamard`, `S`, `Adjoint(S)`, `PauliZ`, `T`, `Adjoint(T)`, `RZ`,
+`CNOT`, `CZ`, `Toffoli`, and `CCZ`. `RZ` angles must be concrete, finite, and
+non-trainable: trainable or traced angles are rejected rather than silently
+breaking autodiff. Decompose other operations into this basis first.
 
 **Decompose Rz into Clifford+T**
 

@@ -25,9 +25,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        qiskit:
-          - "qiskit==1.0.*"
-          - "qiskit>=2"
+        include:
+          - qiskit: "qiskit==1.0.*"
+            pennylane: "pennylane==0.40.*"
+            autoray: "autoray<0.8"
+          - qiskit: "qiskit>=2"
+            pennylane: "pennylane>=0.45"
+            autoray: "autoray>=0.8"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -37,5 +41,7 @@ jobs:
       - name: Test Python and Qiskit bindings
         run: |
           uv venv
-          uv pip install -e . "pytest>=7" "${{ matrix.qiskit }}"
+          uv pip install -e . "pytest>=7" \
+            "${{ matrix.qiskit }}" "${{ matrix.pennylane }}" \
+            "${{ matrix.autoray }}"
           uv run --no-sync pytest tests/python

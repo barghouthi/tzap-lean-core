@@ -18,8 +18,10 @@ classifiers = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+pennylane = ["pennylane>=0.40"]
 qiskit = ["qiskit>=1.0"]
 test = [
+    "pennylane>=0.40",
     "pytest>=7",
     "qiskit>=1.0",
 ]
