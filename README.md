@@ -38,11 +38,9 @@ brew install qqq-wisc/tap/tzap
 curl -LsSf https://github.com/qqq-wisc/tzap/releases/latest/download/tzap-opt-installer.sh | sh
 ```
 
-**Build and install from crates.io** (requires [Rust](https://rustup.rs/)): `cargo install tzap-opt`
+You can also build and install tzap from [crates.io](crates.io) (`cargo install tzap-opt`) or build from source (`cargo install --path .`).
 
-**Build from source** (requires Rust): `cargo install --path .`
-
-### Install a library
+### Install the library
 
 **Python library** (prebuilt wheels; no Rust compiler required):
 
@@ -55,14 +53,13 @@ Qiskit optimization pass or PennyLane transform. See the
 [Qiskit API guide](docs/qiskit.md) or
 [PennyLane API guide](docs/pennylane.md) for framework-specific setup.
 
-**Rust library**:
+**Native Rust library**:
 
 ```bash
 cargo add tzap-opt
 ```
 
-The package is named `tzap-opt` on crates.io, but is imported as `tzap` in
-Rust code. See the [Rust API documentation](API.md).
+See the [Rust API documentation](API.md).
 
 ## Running tzap
 
