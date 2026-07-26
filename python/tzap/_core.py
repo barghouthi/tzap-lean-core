@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Iterable, Sequence
 
 from . import _native
 
@@ -40,7 +40,7 @@ class OptimizationResult:
     report: OptimizationReport
 
 
-def _metrics(raw: Tuple[int, int, int, int, int]) -> Metrics:
+def _metrics(raw: tuple[int, int, int, int, int]) -> Metrics:
     return Metrics(*raw)
 
 
@@ -48,16 +48,16 @@ def optimize_qasm(
     qasm: str,
     *,
     level: str = "O3",
-    passes: Optional[Iterable[str]] = None,
+    passes: Iterable[str] | None = None,
     fixpoint: bool = False,
     decompose_rz: bool = False,
     decompose_cz: bool = False,
     rz_epsilon: float = 1e-10,
     expr: bool = False,
     parallel: bool = False,
-    superopt_qubits: Optional[int] = None,
-    superopt_window_gates: Optional[int] = None,
-    superopt_table_entries: Optional[int] = None,
+    superopt_qubits: int | None = None,
+    superopt_window_gates: int | None = None,
+    superopt_table_entries: int | None = None,
 ) -> OptimizationResult:
     """Optimize an OpenQASM 2 program with tzap.
 
@@ -68,7 +68,7 @@ def optimize_qasm(
     The CPU-heavy optimizer releases Python's GIL while it runs.
     """
 
-    pass_list: Optional[Sequence[str]]
+    pass_list: Sequence[str] | None
     pass_list = None if passes is None else tuple(passes)
     optimized, raw_report = _native._optimize_qasm(
         qasm,

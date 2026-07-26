@@ -3,14 +3,13 @@ import math
 import re
 
 import pytest
-
 import tzap
 
 
 def make_qasm(body, *, qubits=1, cbits=0):
-    declarations = ["qreg q[{}];".format(qubits)]
+    declarations = [f"qreg q[{qubits}];"]
     if cbits:
-        declarations.append("creg c[{}];".format(cbits))
+        declarations.append(f"creg c[{cbits}];")
     return "\n".join(
         [
             "OPENQASM 2.0;",
@@ -98,9 +97,7 @@ def test_all_metrics_are_populated():
 
     result = tzap.optimize_qasm(circuit, passes=["CancelGates"])
 
-    assert result.report.input == tzap.Metrics(
-        gates=3, two_qubit=1, depth=3, t=0, rz=1
-    )
+    assert result.report.input == tzap.Metrics(gates=3, two_qubit=1, depth=3, t=0, rz=1)
     assert result.report.baseline == result.report.input
     assert result.report.output == result.report.input
 

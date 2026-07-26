@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Iterable
 
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag, dag_to_circuit
@@ -39,10 +39,10 @@ def _dag_to_qasm(dag: DAGCircuit) -> str:
     lines = [
         "OPENQASM 2.0;",
         'include "qelib1.inc";',
-        "qreg q[{}];".format(len(dag.qubits)),
+        f"qreg q[{len(dag.qubits)}];",
     ]
     if dag.clbits:
-        lines.append("creg c[{}];".format(len(dag.clbits)))
+        lines.append(f"creg c[{len(dag.clbits)}];")
 
     # Qiskit's default topological tie-breaker sorts independent operations by
     # their bit operands. That is semantically valid, but it changes the
@@ -53,16 +53,16 @@ def _dag_to_qasm(dag: DAGCircuit) -> str:
     # nodes, which the topological sorter also presents to the key function.
     insertion_rank = {node: index for index, node in enumerate(dag.op_nodes())}
     nodes = dag.topological_op_nodes(
-        key=lambda node: "{:020d}".format(insertion_rank.get(node, -1))
+        key=lambda node: f"{insertion_rank.get(node, -1):020d}"
     )
     for node in nodes:
         operation = node.op
         name = operation.name
         if name not in _ARITIES:
             raise TranspilerError(
-                "tzap does not support Qiskit operation {!r}; transpile to the "
+                f"tzap does not support Qiskit operation {name!r}; transpile to the "
                 "basis [x, h, s, sdg, z, t, tdg, rz, cx, cz, ccx, ccz, "
-                "measure, reset] before running TzapOptimizationPass".format(name)
+                "measure, reset] before running TzapOptimizationPass"
             )
         if getattr(operation, "condition", None) is not None:
             raise TranspilerError(
@@ -70,13 +70,11 @@ def _dag_to_qasm(dag: DAGCircuit) -> str:
             )
         if len(node.qargs) != _ARITIES[name]:
             raise TranspilerError(
-                "operation {!r} has {} qubits, expected {}".format(
-                    name, len(node.qargs), _ARITIES[name]
-                )
+                f"operation {name!r} has {len(node.qargs)} qubits, expected {_ARITIES[name]}"
             )
 
         qubits = [qubit_indices[bit] for bit in node.qargs]
-        operands = ",".join("q[{}]".format(index) for index in qubits)
+        operands = ",".join(f"q[{index}]" for index in qubits)
         if name == "rz":
             try:
                 angle = float(operation.params[0])
@@ -86,21 +84,17 @@ def _dag_to_qasm(dag: DAGCircuit) -> str:
                 ) from error
             if not math.isfinite(angle):
                 raise TranspilerError("tzap requires finite rz angles")
-            lines.append("rz({!r}) {};".format(angle, operands))
+            lines.append(f"rz({angle!r}) {operands};")
         elif name == "measure":
             if len(node.cargs) != 1:
                 raise TranspilerError("measure must target exactly one classical bit")
-            lines.append(
-                "measure {} -> c[{}];".format(
-                    operands, cbit_indices[node.cargs[0]]
-                )
-            )
+            lines.append(f"measure {operands} -> c[{cbit_indices[node.cargs[0]]}];")
         else:
             if node.cargs:
                 raise TranspilerError(
-                    "operation {!r} unexpectedly has classical operands".format(name)
+                    f"operation {name!r} unexpectedly has classical operands"
                 )
-            lines.append("{} {};".format(name, operands))
+            lines.append(f"{name} {operands};")
 
     return "\n".join(lines) + "\n"
 
@@ -114,13 +108,7 @@ def _rebuild_on_original_bits(
     flat = QuantumCircuit(original.num_qubits, original.num_clbits)
     for raw_line in optimized_qasm.splitlines():
         line = raw_line.strip()
-        if (
-            not line
-            or line.startswith("OPENQASM")
-            or line.startswith("include ")
-            or line.startswith("qreg ")
-            or line.startswith("creg ")
-        ):
+        if not line or line.startswith(("OPENQASM", "include ", "qreg ", "creg ")):
             continue
         statement = line[:-1] if line.endswith(";") else line
         if statement.startswith("measure "):
@@ -154,7 +142,7 @@ def _classical_index(operand: str) -> int:
     return _index(operand)
 
 
-def _indices(operands: str) -> List[int]:
+def _indices(operands: str) -> list[int]:
     return [_index(operand.strip()) for operand in operands.split(",")]
 
 
@@ -171,19 +159,19 @@ class TzapOptimizationPass(TransformationPass):
         self,
         *,
         level: str = "O3",
-        passes: Optional[Iterable[str]] = None,
+        passes: Iterable[str] | None = None,
         fixpoint: bool = False,
         decompose_rz: bool = False,
         decompose_cz: bool = False,
         rz_epsilon: float = 1e-10,
         expr: bool = False,
         parallel: bool = False,
-        superopt_qubits: Optional[int] = None,
-        superopt_window_gates: Optional[int] = None,
-        superopt_table_entries: Optional[int] = None,
+        superopt_qubits: int | None = None,
+        superopt_window_gates: int | None = None,
+        superopt_table_entries: int | None = None,
     ) -> None:
         super().__init__()
-        self._options: Dict[str, Any] = {
+        self._options: dict[str, Any] = {
             "level": level,
             "passes": None if passes is None else tuple(passes),
             "fixpoint": fixpoint,

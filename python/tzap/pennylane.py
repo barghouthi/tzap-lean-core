@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, Sequence
 
 import pennylane as qml
 from pennylane.tape import QuantumScript
@@ -56,17 +56,17 @@ def _operation_name(operation) -> str:
         if isinstance(operation.base, qml.T):
             return "tdg"
         raise PennyLaneError(
-            "tzap does not support PennyLane operation {!r}; only adjoints of "
-            "S and T are supported".format(operation.name)
+            f"tzap does not support PennyLane operation {operation.name!r}; only adjoints of "
+            "S and T are supported"
         )
 
     for operation_type, name in _SIMPLE_OPERATIONS:
         if isinstance(operation, operation_type):
             return name
     raise PennyLaneError(
-        "tzap does not support PennyLane operation {!r}; decompose to "
+        f"tzap does not support PennyLane operation {operation.name!r}; decompose to "
         "[PauliX, Hadamard, S, Adjoint(S), PauliZ, T, Adjoint(T), RZ, "
-        "CNOT, CZ, Toffoli, CCZ] before applying tzap".format(operation.name)
+        "CNOT, CZ, Toffoli, CCZ] before applying tzap"
     )
 
 
@@ -92,7 +92,7 @@ def _concrete_angle(operation) -> float:
 
 def _tape_to_qasm(
     tape: QuantumScript,
-) -> Tuple[str, Sequence[object], Sequence[object]]:
+) -> tuple[str, Sequence[object], Sequence[object]]:
     wires = tuple(tape.wires)
     # QuantumScript derives wire order by first appearance. For conventional
     # integer or string labels, a canonical ordering avoids changing tzap's
@@ -103,14 +103,12 @@ def _tape_to_qasm(
         wires = tuple(sorted(wires))
     except TypeError:
         pass
-    wire_indices: Dict[object, int] = {
-        wire: index for index, wire in enumerate(wires)
-    }
+    wire_indices: dict[object, int] = {wire: index for index, wire in enumerate(wires)}
     global_phases = []
     lines = [
         "OPENQASM 2.0;",
         'include "qelib1.inc";',
-        "qreg q[{}];".format(len(wires)),
+        f"qreg q[{len(wires)}];",
     ]
     mid_measurements = [
         operation
@@ -121,7 +119,7 @@ def _tape_to_qasm(
         id(operation): index for index, operation in enumerate(mid_measurements)
     }
     if mid_measurements:
-        lines.append("creg c[{}];".format(len(mid_measurements)))
+        lines.append(f"creg c[{len(mid_measurements)}];")
 
     for operation in tape.operations:
         if isinstance(operation, qml.GlobalPhase):
@@ -135,28 +133,22 @@ def _tape_to_qasm(
                 )
             wire = wire_indices[operation.wires[0]]
             cbit = measurement_indices[id(operation)]
-            lines.append("measure q[{}] -> c[{}];".format(wire, cbit))
+            lines.append(f"measure q[{wire}] -> c[{cbit}];")
             if operation.reset:
-                lines.append("reset q[{}];".format(wire))
+                lines.append(f"reset q[{wire}];")
             continue
 
         name = _operation_name(operation)
         operation_wires = tuple(operation.wires)
         if len(operation_wires) != _ARITIES[name]:
             raise PennyLaneError(
-                "operation {!r} has {} wires, expected {}".format(
-                    operation.name,
-                    len(operation_wires),
-                    _ARITIES[name],
-                )
+                f"operation {operation.name!r} has {len(operation_wires)} wires, expected {_ARITIES[name]}"
             )
-        operands = ",".join(
-            "q[{}]".format(wire_indices[wire]) for wire in operation_wires
-        )
+        operands = ",".join(f"q[{wire_indices[wire]}]" for wire in operation_wires)
         if name == "rz":
-            lines.append("rz({!r}) {};".format(_concrete_angle(operation), operands))
+            lines.append(f"rz({_concrete_angle(operation)!r}) {operands};")
         else:
-            lines.append("{} {};".format(name, operands))
+            lines.append(f"{name} {operands};")
 
     return "\n".join(lines) + "\n", wires, tuple(global_phases)
 
@@ -165,7 +157,7 @@ def _index(operand: str) -> int:
     return int(operand[operand.index("[") + 1 : operand.index("]")])
 
 
-def _indices(operands: str) -> List[int]:
+def _indices(operands: str) -> list[int]:
     return [_index(operand.strip()) for operand in operands.split(",")]
 
 
@@ -175,17 +167,11 @@ def _output_operations(
     mid_measurements: Sequence[object] = (),
 ):
     operations = []
-    resets_to_skip: Dict[object, int] = {}
+    resets_to_skip: dict[object, int] = {}
     with qml.QueuingManager.stop_recording():
         for raw_line in qasm.splitlines():
             line = raw_line.strip()
-            if (
-                not line
-                or line.startswith("OPENQASM")
-                or line.startswith("include ")
-                or line.startswith("qreg ")
-                or line.startswith("creg ")
-            ):
+            if not line or line.startswith(("OPENQASM", "include ", "qreg ", "creg ")):
                 continue
 
             statement = line[:-1] if line.endswith(";") else line
@@ -241,7 +227,7 @@ def _output_operations(
             else:
                 raise PennyLaneError(
                     "tzap returned an operation unsupported by the PennyLane "
-                    "adapter: {!r}".format(name)
+                    f"adapter: {name!r}"
                 )
     return operations
 
@@ -251,16 +237,16 @@ def _optimize_transform(
     tape: QuantumScript,
     *,
     level: str = "O3",
-    passes: Optional[Iterable[str]] = None,
+    passes: Iterable[str] | None = None,
     fixpoint: bool = False,
     decompose_rz: bool = False,
     decompose_cz: bool = False,
     rz_epsilon: float = 1e-10,
     expr: bool = False,
     parallel: bool = False,
-    superopt_qubits: Optional[int] = None,
-    superopt_window_gates: Optional[int] = None,
-    superopt_table_entries: Optional[int] = None,
+    superopt_qubits: int | None = None,
+    superopt_window_gates: int | None = None,
+    superopt_table_entries: int | None = None,
 ):
     """Optimize a PennyLane tape, quantum function, or QNode with tzap.
 
@@ -310,16 +296,16 @@ def optimize(
     tape=None,
     *,
     level: str = "O3",
-    passes: Optional[Iterable[str]] = None,
+    passes: Iterable[str] | None = None,
     fixpoint: bool = False,
     decompose_rz: bool = False,
     decompose_cz: bool = False,
     rz_epsilon: float = 1e-10,
     expr: bool = False,
     parallel: bool = False,
-    superopt_qubits: Optional[int] = None,
-    superopt_window_gates: Optional[int] = None,
-    superopt_table_entries: Optional[int] = None,
+    superopt_qubits: int | None = None,
+    superopt_window_gates: int | None = None,
+    superopt_table_entries: int | None = None,
 ):
     """Optimize a PennyLane tape, quantum function, or QNode with tzap.
 

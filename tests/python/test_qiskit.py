@@ -9,9 +9,8 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.transpiler import PassManager
 from qiskit.transpiler.basepasses import TransformationPass
 from qiskit.transpiler.exceptions import TranspilerError
-
 from tzap import optimize_qasm
-from tzap.qiskit import TZapPass, TzapOptimizationPass, _dag_to_qasm, optimize
+from tzap.qiskit import TzapOptimizationPass, TZapPass, _dag_to_qasm, optimize
 
 
 def test_pass_has_qiskit_transformation_pass_contract():
@@ -120,9 +119,7 @@ def test_bound_numeric_rz_round_trips():
 
     optimized = optimize(circuit, passes=["CancelGates"])
 
-    assert float(optimized.data[0].operation.params[0]) == pytest.approx(
-        -0.123456789
-    )
+    assert float(optimized.data[0].operation.params[0]) == pytest.approx(-0.123456789)
 
 
 def test_decompose_cz_option_reaches_native_optimizer():
@@ -197,9 +194,11 @@ def test_measurement_and_reset_order_on_same_wire_is_preserved():
 
     optimized = optimize(circuit, passes=["CancelGates"])
 
-    assert [
-        instruction.operation.name for instruction in optimized.data
-    ] == ["measure", "reset", "measure"]
+    assert [instruction.operation.name for instruction in optimized.data] == [
+        "measure",
+        "reset",
+        "measure",
+    ]
     assert optimized.find_bit(optimized.data[0].clbits[0]).index == 1
     assert optimized.find_bit(optimized.data[2].clbits[0]).index == 0
 
@@ -224,7 +223,7 @@ def test_other_unsupported_operations_name_the_operation(operation):
     else:
         circuit.delay(10, 0)
 
-    with pytest.raises(TranspilerError, match="'{}'".format(operation)):
+    with pytest.raises(TranspilerError, match=f"'{operation}'"):
         optimize(circuit, level="O1")
 
 
@@ -267,9 +266,7 @@ def test_native_ccz_reset_and_measure_round_trip():
     circuit.reset(0)
     circuit.measure(2, 0)
 
-    optimized = PassManager(
-        [TZapPass(passes=["CancelGates"])]
-    ).run(circuit)
+    optimized = PassManager([TZapPass(passes=["CancelGates"])]).run(circuit)
 
     assert optimized.count_ops() == {"ccz": 1, "reset": 1, "measure": 1}
 
@@ -320,31 +317,22 @@ def test_qiskit_matches_native_pipeline_on_repository_fixtures(fixture_name):
     qiskit_output = optimize(qasm2.loads(source_qasm), level="O3")
     native_output = qasm2.loads(native.qasm)
 
-    assert _canonical_operations(qiskit_output) == _canonical_operations(
-        native_output
-    )
+    assert _canonical_operations(qiskit_output) == _canonical_operations(native_output)
 
 
 def test_laplacian_filter_matches_native_cli_pipeline():
     benchmark = (
-        Path(__file__).parents[2]
-        / "benchmarks"
-        / "cobble"
-        / "laplacian-filter.qasm"
+        Path(__file__).parents[2] / "benchmarks" / "cobble" / "laplacian-filter.qasm"
     )
     source_qasm = benchmark.read_text(encoding="utf-8")
 
     native = optimize_qasm(source_qasm, level="O3")
-    qiskit_output = PassManager([TZapPass(level="O3")]).run(
-        qasm2.loads(source_qasm)
-    )
+    qiskit_output = PassManager([TZapPass(level="O3")]).run(qasm2.loads(source_qasm))
     native_output = qasm2.loads(native.qasm)
 
     assert len(qiskit_output.data) == native.report.output.gates
     assert qiskit_output.depth() == native.report.output.depth
-    assert _canonical_operations(qiskit_output) == _canonical_operations(
-        native_output
-    )
+    assert _canonical_operations(qiskit_output) == _canonical_operations(native_output)
 
 
 def _canonical_operations(circuit):

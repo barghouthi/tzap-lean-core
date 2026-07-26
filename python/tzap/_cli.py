@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import List, Optional
 
 from ._core import TzapError, optimize_qasm
 from ._native import __version__
@@ -30,11 +29,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--epsilon", type=float, default=1e-10)
     parser.add_argument("--expr", action="store_true")
     parser.add_argument("--parallel", action="store_true")
-    parser.add_argument("-v", "--version", action="version", version="tzap " + __version__)
+    parser.add_argument(
+        "-v", "--version", action="version", version="tzap " + __version__
+    )
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     output = args.output or args.output_positional
     try:
@@ -58,19 +59,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             with open(output, "w", encoding="utf-8") as destination:
                 destination.write(result.qasm)
     except (OSError, TzapError, ValueError) as error:
-        print("Error: {}".format(error), file=sys.stderr)
+        print(f"Error: {error}", file=sys.stderr)
         return 1
 
     report = result.report
     print(
-        "{} -> {} gates; {} -> {} T/Tdg".format(
-            report.baseline.gates,
-            report.output.gates,
-            report.baseline.t,
-            report.output.t,
-        ),
+        f"{report.baseline.gates} -> {report.output.gates} gates; {report.baseline.t} -> {report.output.t} T/Tdg",
         file=sys.stderr,
     )
     if output:
-        print("wrote {}".format(output), file=sys.stderr)
+        print(f"wrote {output}", file=sys.stderr)
     return 0

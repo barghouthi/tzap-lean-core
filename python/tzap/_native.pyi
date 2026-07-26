@@ -1,7 +1,7 @@
-from typing import List, Optional, Tuple
+from typing_extensions import TypeAlias
 
-RawMetrics = Tuple[int, int, int, int, int]
-RawReport = Tuple[RawMetrics, RawMetrics, RawMetrics]
+RawMetrics: TypeAlias = tuple[int, int, int, int, int]
+RawReport: TypeAlias = tuple[RawMetrics, RawMetrics, RawMetrics]
 
 class TzapError(Exception): ...
 class QasmError(TzapError): ...
@@ -13,14 +13,14 @@ def _optimize_qasm(
     qasm: str,
     *,
     level: str = "O3",
-    passes: Optional[List[str]] = None,
+    passes: list[str] | None = None,
     fixpoint: bool = False,
     decompose_rz: bool = False,
     decompose_cz: bool = False,
     rz_epsilon: float = 1e-10,
     expr: bool = False,
     parallel: bool = False,
-    superopt_qubits: Optional[int] = None,
-    superopt_window_gates: Optional[int] = None,
-    superopt_table_entries: Optional[int] = None,
-) -> Tuple[str, RawReport]: ...
+    superopt_qubits: int | None = None,
+    superopt_window_gates: int | None = None,
+    superopt_table_entries: int | None = None,
+) -> tuple[str, RawReport]: ...

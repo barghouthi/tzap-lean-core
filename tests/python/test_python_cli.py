@@ -3,7 +3,6 @@ import sys
 
 from qiskit import qasm2
 
-
 QASM = """\
 OPENQASM 2.0;
 include "qelib1.inc";

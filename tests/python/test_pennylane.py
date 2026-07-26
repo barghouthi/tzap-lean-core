@@ -5,7 +5,6 @@ import numpy as np
 import pennylane as qml
 import pytest
 from pennylane import numpy as pnp
-
 from tzap import optimize_qasm
 from tzap.pennylane import (
     PennyLaneError,
@@ -441,7 +440,9 @@ def test_parallel_transform_path():
     # Map-reduce chunking is permitted to optimize independently; this checks
     # that the transformed tape remains executable and measurements survive.
     assert transformed.measurements == tape.measurements
-    assert all(isinstance(operation, qml.PauliX) for operation in transformed.operations)
+    assert all(
+        isinstance(operation, qml.PauliX) for operation in transformed.operations
+    )
 
 
 def test_qnode_decorator_executes_optimized_circuit():
@@ -505,23 +506,19 @@ def test_transformed_and_original_tapes_have_same_unitary():
 
     original_matrix = qml.matrix(tape, wire_order=[0, 1])
     transformed_matrix = qml.matrix(transformed, wire_order=[0, 1])
-    phase = original_matrix.flat[np.argmax(np.abs(original_matrix))] / (
-        transformed_matrix.flat[np.argmax(np.abs(original_matrix))]
+    phase = (
+        original_matrix.flat[np.argmax(np.abs(original_matrix))]
+        / (transformed_matrix.flat[np.argmax(np.abs(original_matrix))])
     )
     assert np.allclose(original_matrix, phase * transformed_matrix)
 
 
 def test_laplacian_filter_matches_native_pipeline():
     benchmark = (
-        Path(__file__).parents[2]
-        / "benchmarks"
-        / "cobble"
-        / "laplacian-filter.qasm"
+        Path(__file__).parents[2] / "benchmarks" / "cobble" / "laplacian-filter.qasm"
     )
     source_qasm = benchmark.read_text(encoding="utf-8")
-    tape = qml.tape.QuantumScript(
-        _output_operations(source_qasm, tuple(range(11)))
-    )
+    tape = qml.tape.QuantumScript(_output_operations(source_qasm, tuple(range(11))))
 
     transformed, _ = transform_tape(tape, level="O3")
     native = optimize_qasm(source_qasm, level="O3")
