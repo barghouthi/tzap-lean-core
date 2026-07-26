@@ -38,6 +38,12 @@ cargo install tzap-opt
 pip install tzap  # uv pip install tzap
 ```
 
+Install the optional Qiskit integration with:
+
+```bash
+pip install "tzap[qiskit]"
+```
+
 **From source** (this repo, requires [Rust](https://rustup.rs/)):
 
 ```bash
@@ -52,7 +58,8 @@ curl -LsSf https://github.com/qqq-wisc/tzap/releases/latest/download/tzap-opt-in
 
 ## Usage
 
-tzap is a command line utility. It also works as a Rust library; see the [Rust API documentation](API.md).
+tzap is a command line utility. It also works as a Python or Rust library; see
+the [Rust API documentation](API.md) for the latter.
 
 **Optimize a circuit**
 
@@ -92,6 +99,59 @@ $ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 ```bash
 tzap benchmarks/feynman/hwb12.qasm -O1 -o optimized.qasm
 ```
+
+**Python bindings**
+
+`optimize_qasm` runs the same native Rust optimizer as the CLI and returns both
+the optimized OpenQASM 2 program and its metrics:
+
+```python
+from tzap import optimize_qasm
+
+with open("input.qasm") as source:
+    result = optimize_qasm(source.read(), level="O3")
+
+print(result.qasm)
+print(result.report.baseline.gates, "->", result.report.output.gates)
+```
+
+The optimizer releases Python's GIL while it runs. All CLI optimization
+options are available as keyword arguments, including `passes`,
+`decompose_rz`, `decompose_cz`, `rz_epsilon`, and `parallel`.
+
+**Qiskit transpiler pass**
+
+Install `tzap[qiskit]`, then add `TzapOptimizationPass` to any Qiskit pass
+manager:
+
+```python
+from qiskit import QuantumCircuit
+from qiskit.transpiler import PassManager
+from tzap.qiskit import TzapOptimizationPass
+
+circuit = QuantumCircuit(2)
+circuit.h(0)
+circuit.cx(0, 1)
+circuit.t(1)
+
+optimized = PassManager([
+    TzapOptimizationPass(level="O3"),
+]).run(circuit)
+```
+
+There is also a short `TZapPass` alias and a convenience function:
+
+```python
+from tzap.qiskit import optimize
+
+optimized = optimize(circuit, level="O1")
+```
+
+The Qiskit circuit must first be translated to tzap's supported basis shown
+below. Bound numeric `rz` angles, measurements, and resets are supported;
+control-flow operations, classical conditions, symbolic parameters, and
+unsupported gates raise a `TranspilerError`. The pass retains the circuit's
+registers, bit identities, name, metadata, and existing global phase.
 
 **Decompose Rz into Clifford+T**
 

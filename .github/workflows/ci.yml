@@ -19,3 +19,23 @@ jobs:
           enable-cache: true
       - run: cargo test
       - run: cargo test --release -- --ignored
+
+  python-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        qiskit:
+          - "qiskit==1.0.*"
+          - "qiskit>=2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Test Python and Qiskit bindings
+        run: |
+          uv venv
+          uv pip install -e . "pytest>=7" "${{ matrix.qiskit }}"
+          uv run --no-sync pytest tests/python
