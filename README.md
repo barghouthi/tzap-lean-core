@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml/badge.svg)](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/tzap-opt.svg)](https://crates.io/crates/tzap-opt)
+[![PyPI](https://img.shields.io/pypi/v/tzap.svg)](https://pypi.org/project/tzap/)
 ![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
 ![Lean 4](https://img.shields.io/badge/Lean_4-black?logo=lean&logoColor=white)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
