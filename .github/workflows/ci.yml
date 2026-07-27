@@ -20,6 +20,20 @@ jobs:
       - run: cargo test
       - run: cargo test --release -- --ignored
 
+  # The release wheel matrix covers Windows and macOS, but nothing else in CI
+  # compiles there — so a Windows-only build break would first show up at tag
+  # time, after a release is already half-published. This is the cheap guard.
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+
   python-quality:
     runs-on: ubuntu-latest
     steps:

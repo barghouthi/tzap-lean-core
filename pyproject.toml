@@ -45,3 +45,14 @@ features = ["python", "pyo3/extension-module"]
 module-name = "tzap._native"
 python-source = "python"
 strip = true
+# The sdist only has to build the extension module, so drop everything a
+# source build never reads. benchmarks/ alone is 43 MB uncompressed — it was
+# ~95% of the sdist. README.md points at GitHub for the assets/ figure, so
+# excluding these leaves no broken references behind.
+exclude = [
+    ".github/**",
+    "assets/**",
+    "benchmarks/**",
+    "experiments/**",
+    "formalization/**",
+]
