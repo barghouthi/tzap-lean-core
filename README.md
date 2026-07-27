@@ -49,7 +49,7 @@ You can also build and install tzap from [crates.io](https://crates.io/crates/tz
 You can also use tzap through the Rust API; see the [Rust API documentation](https://github.com/qqq-wisc/tzap/blob/main/API.md).
 
 ### Integrations with Qiskit and PennyLane
-You can also use tzap as a Python library and apply it as
+You can also use tzap as a Python library and apply it as a
 Qiskit optimization pass or PennyLane transform. See the
 [Qiskit API guide](https://github.com/qqq-wisc/tzap/blob/main/docs/qiskit.md) or
 [PennyLane API guide](https://github.com/qqq-wisc/tzap/blob/main/docs/pennylane.md) for framework-specific setup.
