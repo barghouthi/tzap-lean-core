@@ -1,4 +1,4 @@
-import TZap.Circuit
+import Tzap.Circuit
 
 /-!
 # Symbolic Parity Analysis
@@ -29,11 +29,11 @@ Hadamards without disturbing earlier parities (`Parity.eval_eq_of_agree`), and s
 randomized analysis knows how many variables to draw hashes for.
 -/
 
-namespace TZap.Symbolic
+namespace Tzap.Symbolic
 
 /-- Syntax of affine Boolean parities. `xor` is interpreted over `𝔽₂`; a parity thus denotes an
 affine function `𝔽₂^ℕ → 𝔽₂` of its variables. Variables below `n` are circuit inputs; higher
-ones are allocated at Hadamards. Canonical normal forms live in `TZap/Affine.lean`. -/
+ones are allocated at Hadamards. Canonical normal forms live in `Tzap/Affine.lean`. -/
 inductive Parity where
   | const (b : Bool)
   | var (id : Nat)
@@ -190,7 +190,7 @@ theorem analyzeFrom_bounded {n} (s : State n) (C : Circuit n) (hs : s.Bounded) :
   | cons g C ih => exact ih (step s g) (step_bounded s g hs)
 
 /-- The state produced by `analyze` is always well-formed; in particular `nextFresh` bounds all
-variables, which sizes the sample space of the randomized analysis (`TZap/Randomized.lean`). -/
+variables, which sizes the sample space of the randomized analysis (`Tzap/Randomized.lean`). -/
 theorem analyze_bounded {n} (C : Circuit n) : (analyze C).Bounded :=
   analyzeFrom_bounded (initial n) C (initial_bounded n)
 
@@ -202,4 +202,4 @@ and threaded through the merge argument via `Algorithm.step_preserves_consistenc
 def Consistent {n} (s : State n) (valuation : Nat → Bool) (b : Basis n) : Prop :=
   ∀ q, (s.qubit q).eval valuation = b q
 
-end TZap.Symbolic
+end Tzap.Symbolic

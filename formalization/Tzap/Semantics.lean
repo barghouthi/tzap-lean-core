@@ -1,6 +1,6 @@
 import Mathlib.Analysis.Complex.Exponential
-import TZap.WeightedRelation
-import TZap.Circuit
+import Tzap.WeightedRelation
+import Tzap.Circuit
 
 /-!
 # Exact Circuit Semantics
@@ -22,10 +22,10 @@ Key algebraic facts used downstream:
   `Algorithm.mergeInto_sound`) preserves semantics.
 * `gate_ne_zero_shape` — every nonzero gate entry has a constrained output shape; combined
   with `nonzero_cons_witness` this lets the
-  soundness proof (`TZap/Soundness.lean`) analyse exactly the transitions a circuit supports.
+  soundness proof (`Tzap/Soundness.lean`) analyse exactly the transitions a circuit supports.
 -/
 
-namespace TZap.Semantics
+namespace Tzap.Semantics
 
 open Complex
 
@@ -106,7 +106,7 @@ theorem gate_ne_zero_shape {n} {g : Gate n} {b b' : Basis n}
 has nonzero amplitude from `x` to `z`, some intermediate state `y` is reached from `x` by `g` and
 carried to `z` by `C`, both with nonzero amplitude. Specializes
 `WeightedRelation.comp_ne_zero_witness`; iterated, it is the step case of the soundness
-induction in `TZap/Soundness.lean`. -/
+induction in `Tzap/Soundness.lean`. -/
 theorem nonzero_cons_witness {n} {g : Gate n} {C : Circuit n} {x z : Basis n}
     (h : circuit (g :: C) x z ≠ 0) :
     ∃ y, gate g x y ≠ 0 ∧ circuit C y z ≠ 0 :=
@@ -132,4 +132,4 @@ theorem rz_cons_apply {n} (θ : ℝ) (q : Fin n) (C : Circuit n) (x z : Basis n)
   simp [circuit, WeightedRelation.comp, gate]
 
 end
-end TZap.Semantics
+end Tzap.Semantics

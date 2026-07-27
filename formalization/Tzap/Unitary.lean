@@ -1,5 +1,5 @@
 import Mathlib.Data.Matrix.Mul
-import TZap.Semantics
+import Tzap.Semantics
 
 /-!
 # Dense Unitary Semantics
@@ -14,7 +14,7 @@ The gate entries use exactly the same convention as `Semantics`, including
 equality with the weighted-relation semantics after accounting for the opposite index order.
 -/
 
-namespace TZap.Unitary
+namespace Tzap.Unitary
 
 noncomputable section
 
@@ -85,4 +85,4 @@ theorem asWeightedRelation_unitary {n : Nat} (C : Circuit n) :
   unitary_agrees C
 
 end
-end TZap.Unitary
+end Tzap.Unitary

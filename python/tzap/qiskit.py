@@ -63,7 +63,7 @@ def _dag_to_qasm(dag: DAGCircuit) -> str:
             raise TranspilerError(
                 f"tzap does not support Qiskit operation {name!r}; transpile to the "
                 "basis [x, h, s, sdg, z, t, tdg, rz, cx, cz, ccx, ccz, "
-                "measure, reset] before running TzapOptimizationPass"
+                "measure, reset] before running TzapPass"
             )
         if getattr(operation, "condition", None) is not None:
             raise TranspilerError(
@@ -147,7 +147,7 @@ def _indices(operands: str) -> list[int]:
     return [_index(operand.strip()) for operand in operands.split(",")]
 
 
-class TzapOptimizationPass(TransformationPass):
+class TzapPass(TransformationPass):
     """Run tzap as a Qiskit transformation pass.
 
     Input operations must already be in tzap's supported basis. Circuit name,
@@ -193,13 +193,10 @@ class TzapOptimizationPass(TransformationPass):
         return circuit_to_dag(rebuilt)
 
 
-TZapPass = TzapOptimizationPass
-
-
 def optimize(circuit: QuantumCircuit, **options: Any) -> QuantumCircuit:
     """Optimize a Qiskit circuit with a one-pass Qiskit ``PassManager``."""
 
-    return PassManager([TzapOptimizationPass(**options)]).run(circuit)
+    return PassManager([TzapPass(**options)]).run(circuit)
 
 
-__all__ = ["TZapPass", "TzapOptimizationPass", "optimize"]
+__all__ = ["TzapPass", "optimize"]

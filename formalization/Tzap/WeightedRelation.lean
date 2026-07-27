@@ -10,21 +10,21 @@ import Mathlib.Tactic.Contrapose
 This file defines the semantic universe of the whole development: *weighted relations*
 `WeightedRelation α β = α → β → ℂ`, i.e. complex matrices indexed by (typically finite) types.
 Quantum gates and circuits over `n` qubits denote weighted relations on the computational basis
-`Basis n = Fin n → Bool` (see `TZap/Semantics.lean`); the entry `r x y` is the amplitude of the
+`Basis n = Fin n → Bool` (see `Tzap/Semantics.lean`); the entry `r x y` is the amplitude of the
 transition from input basis state `x` to output basis state `y`.
 
 We provide the identity relation `id`, matrix composition `comp` (summing amplitudes over the
 intermediate basis, i.e. ordinary matrix multiplication in diagrammatic order), and the monoid
-laws `comp_assoc` and `id_comp`. Circuit equivalence in `TZap/PhaseFolding.lean` is
+laws `comp_assoc` and `id_comp`. Circuit equivalence in `Tzap/PhaseFolding.lean` is
 *equality* of weighted relations, so these laws underlie every semantic rewriting step.
 
 The key supporting lemma is `comp_ne_zero_witness`: a nonzero composite amplitude admits an
 intermediate point with nonzero amplitudes on both legs. Iterated over a circuit (via
 `Semantics.nonzero_cons_witness`), it extracts a nonzero-amplitude *path* through the circuit —
-the engine of the symbolic-analysis soundness proof in `TZap/Soundness.lean`.
+the engine of the symbolic-analysis soundness proof in `Tzap/Soundness.lean`.
 -/
 
-namespace TZap
+namespace Tzap
 
 noncomputable section
 
@@ -92,4 +92,4 @@ theorem comp_assoc [Fintype α] [Fintype β] [Fintype γ]
 
 end WeightedRelation
 end
-end TZap
+end Tzap

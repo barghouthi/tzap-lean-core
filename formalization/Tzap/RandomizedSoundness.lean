@@ -1,16 +1,16 @@
-import TZap.Soundness
-import TZap.Collision
+import Tzap.Soundness
+import Tzap.Collision
 
 /-! # Soundness of the randomized (hash-based) parity analysis
 
 This file connects three previously independent pieces:
 
 * the *exact* soundness of the symbolic parity analysis against the complex
-  circuit semantics (`TZap.Soundness.symbolic_soundness`),
+  circuit semantics (`Tzap.Soundness.symbolic_soundness`),
 * the correspondence between the randomized analysis and the symbolic one
-  evaluated under an explicit draw stream (`TZap.Randomized`), and
+  evaluated under an explicit draw stream (`Tzap.Randomized`), and
 * the affine collision bound for uniform `k`-bit hashing
-  (`TZap.Collision.affine_collision_bound`).
+  (`Tzap.Collision.affine_collision_bound`).
 
 The chain of reasoning: a semantic disagreement between qubit `q` of the input
 and qubit `q'` of the output on some supported (nonzero-amplitude) transition
@@ -28,13 +28,13 @@ finite sample space `Sample m k = Fin m → Fin k → 𝔽₂`, where
 plus Hadamard-allocated fresh variables) that the hashes may mention.
 -/
 
-namespace TZap.RandomizedSoundness
+namespace Tzap.RandomizedSoundness
 
-open TZap.Symbolic
-open TZap.Affine
-open TZap.Randomized
-open TZap.Collision
-open TZap.FiniteProbability
+open Tzap.Symbolic
+open Tzap.Affine
+open Tzap.Randomized
+open Tzap.Collision
+open Tzap.FiniteProbability
 
 noncomputable section
 
@@ -169,4 +169,4 @@ theorem randomized_analysis_sound {n k : Nat} (C : Circuit n) (q q' : Fin n)
   exact affine_collision_bound p p' hp hp' hpp'
 
 end
-end TZap.RandomizedSoundness
+end Tzap.RandomizedSoundness

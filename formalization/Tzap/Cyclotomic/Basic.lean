@@ -22,7 +22,7 @@ window when a coefficient escapes it, which is a representability *restriction* 
 mathematical statement proved here.
 
 The main results are the closure lemmas `IsCyclotomic.add`, `IsCyclotomic.mul` and
-`IsCyclotomic.sum`. They are what `TZap/Cyclotomic/Semantics.lean` needs: circuit semantics is
+`IsCyclotomic.sum`. They are what `Tzap/Cyclotomic/Semantics.lean` needs: circuit semantics is
 built from sums of products of gate entries, so a set containing every gate entry and closed
 under `+` and `*` contains every circuit amplitude.
 
@@ -41,7 +41,7 @@ subring of `ℂ`, but nothing downstream needed that packaging.
 | `sqrt_two_eq : √2 = ω - ω³` | the `sqrt(2) = omega - omega^3` identity behind `divide_by_sqrt_2` |
 -/
 
-namespace TZap.Cyclotomic
+namespace Tzap.Cyclotomic
 
 noncomputable section
 
@@ -231,4 +231,4 @@ theorem sum {ι : Type*} (s : Finset ι) (f : ι → ℂ) (h : ∀ i ∈ s, IsCy
 end IsCyclotomic
 
 end
-end TZap.Cyclotomic
+end Tzap.Cyclotomic

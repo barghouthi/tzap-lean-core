@@ -1,7 +1,7 @@
 import Mathlib.Analysis.Complex.Basic
 import Mathlib.Algebra.BigOperators.Fin
 import Mathlib.LinearAlgebra.UnitaryGroup
-import TZap.Unitary
+import Tzap.Unitary
 
 /-!
 # Canonicalizing a Matrix Up to Global Phase
@@ -50,7 +50,7 @@ a representative within the ring rather than forcing the pivot to `1`.
 | `canonicalize_eq_iff` | `equivalent_up_to_global_phase` |
 -/
 
-namespace TZap.SuperOpt.GlobalPhase
+namespace Tzap.SuperOpt.GlobalPhase
 
 open scoped Classical
 
@@ -302,17 +302,17 @@ theorem canonicalize_eq_iff_of_mem_unitaryGroup [Fintype ι] [DecidableEq ι] [N
 
 end
 
-end TZap.SuperOpt.GlobalPhase
+end Tzap.SuperOpt.GlobalPhase
 
 /-! ## The implementation's scan order
 
 The results above hold for any fixed linear order on the index type. The optimizer scans its
 row-major `data` array, i.e. it orders basis states by the integer they encode, with qubit `q`
 contributing `2^q` (`bit(q) = 1 << q` in `src/super_opt/matrix.rs`). That order is supplied here
-so the theorems apply directly to `TZap.Unitary.UnitaryMatrix`.
+so the theorems apply directly to `Tzap.Unitary.UnitaryMatrix`.
 -/
 
-namespace TZap.Basis
+namespace Tzap.Basis
 
 /-- The integer a basis state encodes, little-endian: qubit `q` contributes `2^q`, matching the
 implementation's `bit(q) = 1 << q`. -/
@@ -333,4 +333,4 @@ row-major scan visits matrix entries. -/
 instance instLinearOrder {n : Nat} : LinearOrder (Basis n) :=
   LinearOrder.lift' toNat toNat_injective
 
-end TZap.Basis
+end Tzap.Basis

@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 
 import pytest
+import tzap.qiskit as tzap_qiskit
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, qasm2
 from qiskit.circuit import Instruction, Parameter
 from qiskit.converters import circuit_to_dag, dag_to_circuit
@@ -10,16 +11,16 @@ from qiskit.transpiler import PassManager
 from qiskit.transpiler.basepasses import TransformationPass
 from qiskit.transpiler.exceptions import TranspilerError
 from tzap import optimize_qasm
-from tzap.qiskit import TzapOptimizationPass, TZapPass, _dag_to_qasm, optimize
+from tzap.qiskit import TzapPass, _dag_to_qasm, optimize
 
 
 def test_pass_has_qiskit_transformation_pass_contract():
-    pass_ = TzapOptimizationPass(level="O1")
+    pass_ = TzapPass(level="O1")
 
     assert isinstance(pass_, TransformationPass)
     assert pass_.is_transformation_pass
     assert not pass_.is_analysis_pass
-    assert TZapPass is TzapOptimizationPass
+    assert tzap_qiskit.__all__ == ["TzapPass", "optimize"]
 
 
 def test_transformation_pass_optimizes_and_preserves_structure():
@@ -38,7 +39,7 @@ def test_transformation_pass_optimizes_and_preserves_structure():
     circuit.t(qreg[1])
     circuit.measure(qreg[1], creg[0])
 
-    optimized = PassManager([TzapOptimizationPass(level="O1")]).run(circuit)
+    optimized = PassManager([TzapPass(level="O1")]).run(circuit)
 
     assert optimized.count_ops() == {"s": 1, "measure": 1}
     assert optimized.name == "kept-name"
@@ -48,12 +49,12 @@ def test_transformation_pass_optimizes_and_preserves_structure():
     assert [register.name for register in optimized.cregs] == ["readout"]
 
 
-def test_short_alias_and_convenience_function():
+def test_pass_and_convenience_function():
     circuit = QuantumCircuit(1)
     circuit.x(0)
     circuit.x(0)
 
-    assert isinstance(TZapPass(level="O1"), TzapOptimizationPass)
+    assert isinstance(TzapPass(level="O1"), TransformationPass)
     assert len(optimize(circuit, level="O1").data) == 0
 
 
@@ -73,7 +74,7 @@ def test_run_accepts_and_returns_a_dag():
     circuit.x(0)
     circuit.x(0)
 
-    output = TZapPass(level="O1").run(circuit_to_dag(circuit))
+    output = TzapPass(level="O1").run(circuit_to_dag(circuit))
 
     assert isinstance(output, DAGCircuit)
     assert len(output.op_nodes()) == 0
@@ -208,7 +209,7 @@ def test_unsupported_gate_has_actionable_error():
     circuit.y(0)
 
     with pytest.raises(TranspilerError, match="does not support.*'y'"):
-        PassManager([TZapPass(level="O1")]).run(circuit)
+        PassManager([TzapPass(level="O1")]).run(circuit)
 
 
 @pytest.mark.parametrize("operation", ["barrier", "swap", "rx", "delay"])
@@ -232,7 +233,7 @@ def test_unbound_rz_is_rejected():
     circuit.rz(Parameter("theta"), 0)
 
     with pytest.raises(TranspilerError, match="bound real numbers"):
-        PassManager([TZapPass(level="O1")]).run(circuit)
+        PassManager([TzapPass(level="O1")]).run(circuit)
 
 
 @pytest.mark.parametrize("angle", [math.inf, -math.inf, math.nan])
@@ -291,7 +292,7 @@ def test_invalid_native_options_propagate_through_direct_pass_run():
     circuit = QuantumCircuit(1)
 
     with pytest.raises(ValueError, match="optimization level"):
-        TZapPass(level="invalid").run(circuit_to_dag(circuit))
+        TzapPass(level="invalid").run(circuit_to_dag(circuit))
 
 
 def test_native_ccz_reset_and_measure_round_trip():
@@ -300,7 +301,7 @@ def test_native_ccz_reset_and_measure_round_trip():
     circuit.reset(0)
     circuit.measure(2, 0)
 
-    optimized = PassManager([TZapPass(passes=["CancelGates"])]).run(circuit)
+    optimized = PassManager([TzapPass(passes=["CancelGates"])]).run(circuit)
 
     assert optimized.count_ops() == {"ccz": 1, "reset": 1, "measure": 1}
 
@@ -361,7 +362,7 @@ def test_laplacian_filter_matches_native_cli_pipeline():
     source_qasm = benchmark.read_text(encoding="utf-8")
 
     native = optimize_qasm(source_qasm, level="O3")
-    qiskit_output = PassManager([TZapPass(level="O3")]).run(qasm2.loads(source_qasm))
+    qiskit_output = PassManager([TzapPass(level="O3")]).run(qasm2.loads(source_qasm))
     native_output = qasm2.loads(native.qasm)
 
     assert len(qiskit_output.data) == native.report.output.gates

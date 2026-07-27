@@ -1,13 +1,13 @@
-import TZap.Semantics
-import TZap.Symbolic
-import TZap.Soundness
-import TZap.PhaseFolding
-import TZap.Affine
+import Tzap.Semantics
+import Tzap.Symbolic
+import Tzap.Soundness
+import Tzap.PhaseFolding
+import Tzap.Affine
 
 /-! # Algorithm 1: phase folding via parity analysis
 
 The executable optimizer from the paper. It walks the circuit once, tracking
-the symbolic state `σ` of `TZap.Symbolic`. When it reaches `Rz θ q` whose
+the symbolic state `σ` of `Tzap.Symbolic`. When it reaches `Rz θ q` whose
 parity `σ(q)` recurs at a later `Rz`, the angle `θ` is forwarded into that
 later gate; repeated forwarding leaves each merged group as a single `Rz` at
 its last position, exactly as in the paper's Algorithm 1.
@@ -34,9 +34,9 @@ Contents and proof architecture:
   denotes exactly the same weighted relation as the input.
 -/
 
-namespace TZap.Algorithm
+namespace Tzap.Algorithm
 
-open TZap.Symbolic TZap.Semantics TZap.Soundness
+open Tzap.Symbolic Tzap.Semantics Tzap.Soundness
 
 noncomputable section
 
@@ -314,4 +314,4 @@ theorem fold_correct {n : Nat} (C : Circuit n) :
     (Symbolic.initial_bounded n) (initial_consistent x)
 
 end
-end TZap.Algorithm
+end Tzap.Algorithm

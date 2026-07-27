@@ -1,5 +1,5 @@
-import TZap.Cyclotomic.Basic
-import TZap.Cyclotomic.Semantics
+import Tzap.Cyclotomic.Basic
+import Tzap.Cyclotomic.Semantics
 
 /-!
 # Cyclotomic Representation of Clifford+T Amplitudes

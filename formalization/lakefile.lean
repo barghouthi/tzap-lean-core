@@ -6,8 +6,8 @@ package «tzap-lean» where
 
 require "leanprover-community" / "mathlib" @ git "v4.30.0"
 
-lean_lib TZap where
-  roots := #[`TZap]
+lean_lib Tzap where
+  roots := #[`Tzap]
 
 @[default_target]
 lean_exe tzapCheck where

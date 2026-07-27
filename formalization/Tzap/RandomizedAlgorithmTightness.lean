@@ -1,4 +1,4 @@
-import TZap.RandomizedAlgorithm
+import Tzap.RandomizedAlgorithm
 
 /-! # Tightness of the randomized Algorithm 1 bound
 
@@ -10,9 +10,9 @@ exactly `2^-k`.  On precisely those samples the randomized optimizer merges
 the rotations across the two wires, producing a non-equivalent circuit.
 -/
 
-namespace TZap.RandomizedAlgorithm
+namespace Tzap.RandomizedAlgorithm
 
-open TZap.Randomized TZap.Collision TZap.FiniteProbability
+open Tzap.Randomized Tzap.Collision Tzap.FiniteProbability
 open scoped ENNReal
 
 noncomputable section
@@ -148,4 +148,4 @@ theorem randomized_fold_correct_tight_pi {k : Nat} :
   randomized_fold_correct_tight Real.pi phase_pi_true_ne_one
 
 end
-end TZap.RandomizedAlgorithm
+end Tzap.RandomizedAlgorithm

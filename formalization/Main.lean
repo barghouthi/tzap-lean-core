@@ -1,4 +1,4 @@
-import TZap
+import Tzap
 
 def main : IO Unit :=
-  IO.println "TZap formalization checked successfully."
+  IO.println "Tzap formalization checked successfully."

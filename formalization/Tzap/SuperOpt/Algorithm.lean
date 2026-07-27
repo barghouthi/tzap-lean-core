@@ -1,5 +1,5 @@
 import Mathlib.Data.List.Enum
-import TZap.SuperOpt.Table
+import Tzap.SuperOpt.Table
 
 /-!
 # Anchored Connected-Window SuperOpt
@@ -15,9 +15,9 @@ Rust's optimized per-qubit reverse indices. This changes bookkeeping cost, not t
 rewrite principle.
 -/
 
-namespace TZap.SuperOpt.Algorithm
+namespace Tzap.SuperOpt.Algorithm
 
-open TZap.Unitary
+open Tzap.Unitary
 
 noncomputable section
 
@@ -338,4 +338,4 @@ theorem optimize_correct {n : Nat} (table : UnitaryTable n) (bounds : WindowBoun
   exact optimizeFuel_correct table bounds input.length input
 
 end
-end TZap.SuperOpt.Algorithm
+end Tzap.SuperOpt.Algorithm

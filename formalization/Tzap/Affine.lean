@@ -1,12 +1,12 @@
 import Mathlib.Data.ZMod.Basic
 import Mathlib.Data.Finsupp.Basic
 import Mathlib.Algebra.CharP.Two
-import TZap.Symbolic
+import Tzap.Symbolic
 
 /-!
 # Canonical affine normal forms over 𝔽₂
 
-The symbolic analysis (`TZap.Symbolic`) represents each qubit's parity as an
+The symbolic analysis (`Tzap.Symbolic`) represents each qubit's parity as an
 expression *tree* (`Parity`: constants, variables, xor). Trees that denote the
 same Boolean affine function can look different, so the optimizer cannot
 compare parities syntactically. This file provides the canonical
@@ -27,9 +27,9 @@ normal forms, `Randomized.lean` hashes parities through `normalize`, and
 -/
 
 
-namespace TZap.Affine
+namespace Tzap.Affine
 
-open TZap.Symbolic
+open Tzap.Symbolic
 
 noncomputable section
 
@@ -174,4 +174,4 @@ theorem normalize_bounded {p : Parity} {m : Nat} (hp : p.Bounded m) :
       · exact ihp hp.1 i (Finsupp.mem_support_iff.mpr hpi)
 
 end
-end TZap.Affine
+end Tzap.Affine

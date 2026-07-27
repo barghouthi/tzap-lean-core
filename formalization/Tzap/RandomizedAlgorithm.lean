@@ -1,11 +1,11 @@
-import TZap.Algorithm
-import TZap.RandomizedSoundness
+import Tzap.Algorithm
+import Tzap.RandomizedSoundness
 
 /-! # Randomized Algorithm 1: phase folding with hashed parities
 
-The randomized variant of Algorithm 1 (`TZap.Algorithm.fold`): instead of
+The randomized variant of Algorithm 1 (`Tzap.Algorithm.fold`): instead of
 canonical affine parities, each qubit carries a `k`-bit hash (the randomized
-analysis of `TZap.Randomized`), and merge decisions compare hashes.
+analysis of `Tzap.Randomized`), and merge decisions compare hashes.
 
 The development follows the paper:
 * Whenever the sample is *faithful* — no two distinct parities compared by the
@@ -31,10 +31,10 @@ Key notions used throughout:
   canonical forms nevertheless hash equal under `sample`.
 -/
 
-namespace TZap.RandomizedAlgorithm
+namespace Tzap.RandomizedAlgorithm
 
-open TZap.Symbolic TZap.Affine TZap.Randomized TZap.Collision
-open TZap.FiniteProbability TZap.Algorithm
+open Tzap.Symbolic Tzap.Affine Tzap.Randomized Tzap.Collision
+open Tzap.FiniteProbability Tzap.Algorithm
 
 attribute [local instance] Classical.propDecidable
 
@@ -556,4 +556,4 @@ theorem randomized_fold_correct {n k : Nat} (C : Circuit n) :
     _ ≤ _ := collides_probability_le _ (rzParities_bounded C)
 
 end
-end TZap.RandomizedAlgorithm
+end Tzap.RandomizedAlgorithm

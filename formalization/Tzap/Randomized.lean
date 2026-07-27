@@ -1,9 +1,9 @@
-import TZap.Affine
+import Tzap.Affine
 
 /-!
 # The randomized (hash-based) parity analysis
 
-The symbolic analysis (`TZap.Symbolic`) tracks, for each qubit, an exact parity
+The symbolic analysis (`Tzap.Symbolic`) tracks, for each qubit, an exact parity
 expression over ℕ-indexed variables. For large circuits the paper replaces these
 expressions by short *hashes*: each variable independently draws a uniform `k`-bit
 string, and a parity is hashed by XORing (adding in `𝔽₂`, per hash coordinate) the
@@ -26,10 +26,10 @@ is thus isolated in the collision bound (`Collision.lean`) and its uses.
 -/
 
 
-namespace TZap.Randomized
+namespace Tzap.Randomized
 
-open TZap.Symbolic
-open TZap.Affine
+open Tzap.Symbolic
+open Tzap.Affine
 
 noncomputable section
 
@@ -221,4 +221,4 @@ theorem analyze_qubit_eq_evalBits {n k} (draws : Draws k) (C : Circuit n) (q : F
   (analyze_correspond draws C).2 q
 
 end
-end TZap.Randomized
+end Tzap.Randomized

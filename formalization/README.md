@@ -1,7 +1,7 @@
 # tzap-lean: A Lean 4 Formalization of tzap
 
 A machine-checked formalization, in Lean 4 with Mathlib, of the semantics,
-static analysis, and optimization algorithm from the TZap paper on phase
+static analysis, and optimization algorithm from the Tzap paper on phase
 folding of quantum circuits. It covers the exact weighted-relation semantics,
 the symbolic parity analysis and its soundness, the phase-folding rewrite, the
 randomized (hash-based) analysis with its collision bound, and Algorithm 1
@@ -12,16 +12,16 @@ correctness theorems.
 
 | Theorem | File | Statement (informal) |
 |---|---|---|
-| `SuperOpt.Algorithm.optimize_correct` | `TZap/SuperOpt/Algorithm.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics. |
-| `SuperOpt.GlobalPhase.canonicalize_eq_iff` | `TZap/SuperOpt/GlobalPhase.lean` | Dividing a matrix by the phase of its first nonzero entry decides equivalence up to global phase exactly: two nonzero matrices have equal canonical forms iff they differ by a unit-modulus scalar. |
-| `SuperOpt.build_minimal_of_library` | `TZap/SuperOpt/Search.lean` | The circuit the bounded length-ordered search files under a canonical key is a *shortest* circuit over the gate library realizing that key — so a table hit is the synthesis answer, with no search at lookup time. |
-| `Unitary.unitary_agrees` | `TZap/Unitary.lean` | Dense unitary matrix semantics is exactly equal to the weighted-relation semantics after swapping the matrix indices. |
-| `RandomizedAlgorithm.randomized_fold_correct` | `TZap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
-| `RandomizedSoundness.randomized_analysis_sound` | `TZap/RandomizedSoundness.lean` | A semantically false equality reported by the randomized analysis with `k`-bit hashes has probability at most `2⁻ᵏ`. |
-| `Algorithm.fold_correct` | `TZap/Algorithm.lean` | The exact Algorithm 1 preserves circuit semantics: `⟦fold C⟧ = ⟦C⟧`. |
-| `PhaseFolding.phase_folding` | `TZap/PhaseFolding.lean` | The single-merge rewrite: if the parity condition holds, merging two rotations preserves semantics. |
-| `Soundness.parity_equality_sound` | `TZap/Soundness.lean` | Every parity equality claimed by the symbolic analysis holds on every supported transition. |
-| `Collision.affine_collision_bound` | `TZap/Collision.lean` | Two distinct affine parities collide under uniform `k`-bit hashing with probability at most `2⁻ᵏ`. |
+| `SuperOpt.Algorithm.optimize_correct` | `Tzap/SuperOpt/Algorithm.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics. |
+| `SuperOpt.GlobalPhase.canonicalize_eq_iff` | `Tzap/SuperOpt/GlobalPhase.lean` | Dividing a matrix by the phase of its first nonzero entry decides equivalence up to global phase exactly: two nonzero matrices have equal canonical forms iff they differ by a unit-modulus scalar. |
+| `SuperOpt.build_minimal_of_library` | `Tzap/SuperOpt/Search.lean` | The circuit the bounded length-ordered search files under a canonical key is a *shortest* circuit over the gate library realizing that key — so a table hit is the synthesis answer, with no search at lookup time. |
+| `Unitary.unitary_agrees` | `Tzap/Unitary.lean` | Dense unitary matrix semantics is exactly equal to the weighted-relation semantics after swapping the matrix indices. |
+| `RandomizedAlgorithm.randomized_fold_correct` | `Tzap/RandomizedAlgorithm.lean` | The randomized Algorithm 1 with `k`-bit hashes returns a non-equivalent circuit with probability at most `C(t,2) · 2⁻ᵏ`, where `t` is the number of `Rz` gates. |
+| `RandomizedSoundness.randomized_analysis_sound` | `Tzap/RandomizedSoundness.lean` | A semantically false equality reported by the randomized analysis with `k`-bit hashes has probability at most `2⁻ᵏ`. |
+| `Algorithm.fold_correct` | `Tzap/Algorithm.lean` | The exact Algorithm 1 preserves circuit semantics: `⟦fold C⟧ = ⟦C⟧`. |
+| `PhaseFolding.phase_folding` | `Tzap/PhaseFolding.lean` | The single-merge rewrite: if the parity condition holds, merging two rotations preserves semantics. |
+| `Soundness.parity_equality_sound` | `Tzap/Soundness.lean` | Every parity equality claimed by the symbolic analysis holds on every supported transition. |
+| `Collision.affine_collision_bound` | `Tzap/Collision.lean` | Two distinct affine parities collide under uniform `k`-bit hashing with probability at most `2⁻ᵏ`. |
 
 ## Building
 
@@ -40,28 +40,28 @@ The modules, in dependency order:
 
 ### Semantics
 
-- **`TZap/WeightedRelation.lean`** — Complex-weighted relations
+- **`Tzap/WeightedRelation.lean`** — Complex-weighted relations
   `α → β → ℂ` (finite matrices), with identity, composition (summing
   amplitudes over the intermediate basis), associativity, and a witness lemma:
   a nonzero composite amplitude has a nonzero-amplitude path.
 
-- **`TZap/Circuit.lean`** — Syntax. Basis states are `Fin n → Bool`; gates are
+- **`Tzap/Circuit.lean`** — Syntax. Basis states are `Fin n → Bool`; gates are
   `CNOT`, `H`, `X`, and `Rz θ`; a circuit is a list of gates executed
   head-first.
 
-- **`TZap/Semantics.lean`** — Exact complex semantics. Each gate denotes a
+- **`Tzap/Semantics.lean`** — Exact complex semantics. Each gate denotes a
   weighted relation (`Rz θ = diag(1, e^{iθ})`, Hadamard with `±1/√2`
   coefficients); circuits compose gate relations. Key algebraic facts:
   `phase_add` (`Rz` angles add on equal parity bits) and nonzero-amplitude
   shape lemmas used throughout the soundness proofs.
 
-- **`TZap/Unitary.lean`** — General exact dense-matrix semantics using the
+- **`Tzap/Unitary.lean`** — General exact dense-matrix semantics using the
   row-output/column-input convention and left-applied gate matrices. Its gates
   use the formalization's weighted-relation convention, including
   `Rz θ = diag(1, e^{iθ})`. `unitary_agrees` proves literal equality after
   swapping the matrix indices.
 
-- **`TZap/SuperOpt/GlobalPhase.lean`** — Table *construction*: the canonical
+- **`Tzap/SuperOpt/GlobalPhase.lean`** — Table *construction*: the canonical
   form under global phase. The table must give two circuits that differ only by
   an unobservable phase `e^{iφ}` the same key, so it stores a canonical
   representative — scan entries in a fixed order, take the first nonzero one
@@ -75,7 +75,7 @@ The modules, in dependency order:
   states; `Basis.instLinearOrder` supplies the implementation's row-major one
   (qubit `q` contributing `2^q`, matching `bit(q) = 1 << q`).
 
-- **`TZap/SuperOpt/Search.lean`** — Table construction proper: the bounded
+- **`Tzap/SuperOpt/Search.lean`** — Table construction proper: the bounded
   enumeration and why first-wins insertion yields minimality. `level` is one
   breadth-first layer (all library circuits of a given length), `searchOrder`
   concatenates layers `0 … bound`, and `build` files under each canonical key
@@ -90,10 +90,10 @@ The modules, in dependency order:
   essential — a plain depth-first traversal reaches `[T, T]` before `[S]` and
   would file a length-2 circuit under `S`'s key.
 
-- **`TZap/SuperOpt/Table.lean`** — The optimizer-specific abstract
+- **`Tzap/SuperOpt/Table.lean`** — The optimizer-specific abstract
   unitary-to-circuit synthesis table and its exact soundness contract.
 
-- **`TZap/SuperOpt/Algorithm.lean`** — The Rust-style connected-window pass.
+- **`Tzap/SuperOpt/Algorithm.lean`** — The Rust-style connected-window pass.
   Every gate becomes an anchor; its component grows across later gates while
   unrelated gates are skipped, and later bridge gates retroactively pull in
   earlier disconnected components. Windows are bounded by gate count and
@@ -103,14 +103,14 @@ The modules, in dependency order:
 
 ### Symbolic parity analysis
 
-- **`TZap/Symbolic.lean`** — The abstract domain. A `Parity` is a Boolean
+- **`Tzap/Symbolic.lean`** — The abstract domain. A `Parity` is a Boolean
   affine expression (`const`, `var`, `xor`) over ℕ-indexed variables; a
   symbolic `State` assigns a parity to each qubit plus a fresh-variable
   counter. The four transfer functions of the paper (`CNOT` xors parities,
   `X` flips, `H` allocates a fresh variable, `Rz` is the identity) and the
   analysis `analyze = analyzeFrom initial`, with boundedness invariants.
 
-- **`TZap/Soundness.lean`** — Soundness of the analysis against the exact
+- **`Tzap/Soundness.lean`** — Soundness of the analysis against the exact
   semantics (the appendix theorem). Every input/output pair with nonzero
   amplitude is realized by a valuation of the initial and Hadamard-allocated
   variables (`symbolic_soundness`); consequently, any claimed input/output
@@ -121,7 +121,7 @@ The modules, in dependency order:
 
 ### Phase folding (the rewrite)
 
-- **`TZap/PhaseFolding.lean`** — Circuit equivalence (`⟦C⟧ = ⟦D⟧` as weighted
+- **`Tzap/PhaseFolding.lean`** — Circuit equivalence (`⟦C⟧ = ⟦D⟧` as weighted
   relations), the paper's side `Condition` (the parity at the first rotation
   site equals the parity at the second on all reachable states), and the exact
   phase-folding theorem: under the condition,
@@ -129,7 +129,7 @@ The modules, in dependency order:
 
 ### Algorithm 1 (exact)
 
-- **`TZap/Algorithm.lean`** — The executable optimizer and its correctness.
+- **`Tzap/Algorithm.lean`** — The executable optimizer and its correctness.
   - `mergeInto s p θ gs` forwards the angle `θ` into the first later `Rz`
     whose parity (under the evolving symbolic state) has the same canonical
     affine form as `p`.
@@ -147,39 +147,39 @@ The modules, in dependency order:
 
 ### Randomized analysis and hashing
 
-- **`TZap/Affine.lean`** — Canonical affine normal forms over 𝔽₂: a `Form` is
+- **`Tzap/Affine.lean`** — Canonical affine normal forms over 𝔽₂: a `Form` is
   a constant plus an `𝔽₂`-coefficient vector (`Finsupp`); `normalize` maps
   parity expressions to forms, commuting with evaluation.
 
-- **`TZap/FiniteProbability.lean`** — The probability layer, built directly on
+- **`Tzap/FiniteProbability.lean`** — The probability layer, built directly on
   Mathlib's `PMF.uniformOfFintype` with event probabilities as `ℝ≥0∞`
   outer-measure masses. The one project-specific result is
   `uniform_fiber_of_surjective`: every fiber of a surjective additive
   homomorphism between finite groups has probability `|B|⁻¹` under the uniform
   PMF — the group-theoretic engine behind the collision bound.
 
-- **`TZap/Randomized.lean`** — The randomized analysis: each variable draws a
+- **`Tzap/Randomized.lean`** — The randomized analysis: each variable draws a
   uniform `k`-bit string, and every qubit carries the 𝔽₂-sum of its parity's
   draws. Deterministic given an explicit draw stream, it is shown to be
   exactly the symbolic analysis evaluated under the draws
   (`analyze_correspond`).
 
-- **`TZap/Collision.lean`** — The collision bound: two *distinct* affine forms
+- **`Tzap/Collision.lean`** — The collision bound: two *distinct* affine forms
   hash equal under a uniform sample with probability at most `2⁻ᵏ`
   (`affine_collision_bound`). Proved by reducing collision to membership in a
   fiber of a surjective 𝔽₂-linear map.
 
-- **`TZap/RandomizedSoundness.lean`** — Soundness of the randomized analysis:
+- **`Tzap/RandomizedSoundness.lean`** — Soundness of the randomized analysis:
   if some supported transition disagrees at the queried qubits, a false
   randomized equality occurs with probability at most `2⁻ᵏ`.
 
-- **`TZap/RandomizedPhaseFolding.lean`** — The per-merge guarantee: accepting
+- **`Tzap/RandomizedPhaseFolding.lean`** — The per-merge guarantee: accepting
   a merge whose rewritten circuit is *not* equivalent happens with probability
   at most `2⁻ᵏ` (`randomized_phase_folding`), and the dichotomy form.
 
 ### Algorithm 1 (randomized)
 
-- **`TZap/RandomizedAlgorithm.lean`** — The hash-based optimizer and its
+- **`Tzap/RandomizedAlgorithm.lean`** — The hash-based optimizer and its
   probabilistic correctness.
   - `mergeIntoR` / `foldFromR` / `foldR`: the same single pass as `fold`, but
     the state carries `k`-bit hashes and merge decisions compare hashes.

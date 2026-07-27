@@ -1,4 +1,4 @@
-import TZap.Semantics
+import Tzap.Semantics
 
 /-! # The phase-folding rewrite
 
@@ -19,13 +19,13 @@ first rotation can be removed and its angle added into the second:
 
   `pre ; middle ; Rz (θ+φ) q' ; suffix`.
 
-The `Condition` itself is discharged, in `TZap.Algorithm`, by the parity
+The `Condition` itself is discharged, in `Tzap.Algorithm`, by the parity
 analysis via `Soundness.parity_equality_sound`.
 -/
 
-namespace TZap.PhaseFolding
+namespace Tzap.PhaseFolding
 
-open TZap.Semantics
+open Tzap.Semantics
 
 noncomputable section
 
@@ -122,4 +122,4 @@ theorem phase_folding {n : Nat} (pre middle suffix : Circuit n)
     exact hcondition input x y hprefix hmiddle
 
 end
-end TZap.PhaseFolding
+end Tzap.PhaseFolding

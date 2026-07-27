@@ -1,12 +1,12 @@
 import Mathlib.Algebra.BigOperators.Finsupp.Basic
 import Mathlib.Tactic.LinearCombination
-import TZap.Randomized
-import TZap.FiniteProbability
+import Tzap.Randomized
+import Tzap.FiniteProbability
 
 /-!
 # The hash-collision bound
 
-The randomized analysis (`TZap.Randomized`) hashes each affine parity into `k` bits.
+The randomized analysis (`Tzap.Randomized`) hashes each affine parity into `k` bits.
 Its only failure mode is a *collision*: two parities with distinct canonical normal
 forms (`Affine.Form`) hashing to the same `k`-bit string. This file proves that a
 collision happens with probability at most `2⁻ᵏ` (`affine_collision_bound`).
@@ -30,11 +30,11 @@ per-pair bound with the union bound to control the whole optimizer.
 -/
 
 
-namespace TZap.Collision
+namespace Tzap.Collision
 
-open TZap.Affine
-open TZap.Randomized
-open TZap.FiniteProbability
+open Tzap.Affine
+open Tzap.Randomized
+open Tzap.FiniteProbability
 
 noncomputable section
 
@@ -281,4 +281,4 @@ theorem affine_collision_bound {m k : Nat} (p q : Form)
     rw [hevent, uniform_fiber_of_surjective _ hsurj, inv_card_bitString]
 
 end
-end TZap.Collision
+end Tzap.Collision

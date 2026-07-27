@@ -1,5 +1,5 @@
-import TZap.PhaseFolding
-import TZap.RandomizedSoundness
+import Tzap.PhaseFolding
+import Tzap.RandomizedSoundness
 
 /-! # Randomized phase folding: the per-merge guarantee
 
@@ -31,14 +31,14 @@ of Mathlib's uniform PMF on the finite sample space
 `Sample (analyze (pre ++ middle)).nextFresh k`, valued in `ℝ≥0∞`.
 -/
 
-namespace TZap.RandomizedPhaseFolding
+namespace Tzap.RandomizedPhaseFolding
 
-open TZap.Symbolic
-open TZap.Affine
-open TZap.Randomized
-open TZap.Collision
-open TZap.FiniteProbability
-open TZap.PhaseFolding
+open Tzap.Symbolic
+open Tzap.Affine
+open Tzap.Randomized
+open Tzap.Collision
+open Tzap.FiniteProbability
+open Tzap.PhaseFolding
 
 noncomputable section
 
@@ -252,4 +252,4 @@ theorem randomized_phase_folding_dichotomy {n k} (pre middle suffix : Circuit n)
   · exact Or.inr (randomized_phase_folding pre middle suffix θ φ q q' h)
 
 end
-end TZap.RandomizedPhaseFolding
+end Tzap.RandomizedPhaseFolding

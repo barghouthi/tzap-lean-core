@@ -1,13 +1,13 @@
-import TZap.Semantics
-import TZap.Symbolic
+import Tzap.Semantics
+import Tzap.Symbolic
 
 /-! # Soundness of the symbolic parity analysis
 
 This file proves the appendix soundness theorem of the paper: the symbolic
-parity analysis of `TZap.Symbolic` is a sound abstraction of the exact
-complex-amplitude semantics of `TZap.Semantics`.
+parity analysis of `Tzap.Symbolic` is a sound abstraction of the exact
+complex-amplitude semantics of `Tzap.Semantics`.
 
-The key notion (defined in `TZap.Symbolic`) is `Consistent s v b`: under the
+The key notion (defined in `Tzap.Symbolic`) is `Consistent s v b`: under the
 valuation `v : Nat → Bool` of the symbolic variables, the parity expression
 `s.qubit q` evaluates to the concrete bit `b q` for every qubit `q`. The
 analysis is sound in the sense that every *supported* transition of the
@@ -21,7 +21,7 @@ Structure of the proof:
   Hadamard case extends the valuation, and only at the fresh variable.
 * `analyzeFrom_sound` — the induction over the circuit, generalized to an
   arbitrary well-formed (bounded) starting state; this generality is reused
-  by the algorithm proofs in `TZap.Algorithm`.
+  by the algorithm proofs in `Tzap.Algorithm`.
 * `symbolic_soundness` — the theorem specialized to the initial state, where
   the witness valuation agrees with the input bits on the initial variables.
 * `parity_equality_sound` — the consequence the optimizer relies on: any
@@ -32,7 +32,7 @@ Valuations are total functions `Nat → Bool`; `AgreeBelow k v w` says `v` and
 `w` agree on all variables `< k`, i.e. on everything allocated so far.
 -/
 
-namespace TZap.Soundness
+namespace Tzap.Soundness
 
 open Symbolic
 
@@ -82,7 +82,7 @@ fresh variable allocated by a Hadamard (all other gates keep `v` unchanged).
 
 **Significance.** This is the per-gate case split of the appendix soundness
 proof; it is the induction step used by both `analyzeFrom_sound` below and
-the algorithm correctness proofs in `TZap.Algorithm`.
+the algorithm correctness proofs in `Tzap.Algorithm`.
 -/
 
 /--
@@ -148,7 +148,7 @@ only fixes the fresh variables allocated by the Hadamards inside `C`.
 
 **Significance.** This is the circuit-level induction of the soundness proof,
 deliberately generalized from the initial state to any well-formed state so
-that the algorithm proofs in `TZap.Algorithm` can invoke it mid-circuit.
+that the algorithm proofs in `Tzap.Algorithm` can invoke it mid-circuit.
 -/
 
 /--
@@ -263,4 +263,4 @@ theorem parity_equality_sound {n} (C : Circuit n) (q q' : Fin n)
     _ = ((Symbolic.analyze C).qubit q').eval valuation := by rw [heq]
     _ = x' q' := hout q'
 
-end TZap.Soundness
+end Tzap.Soundness

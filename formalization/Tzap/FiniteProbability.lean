@@ -16,7 +16,7 @@ bound in `Collision.lean`.  Optimizer-wide bounds use Mathlib's outer-measure
 finite-union inequality rather than a custom probability or union-bound API.
 -/
 
-namespace TZap.FiniteProbability
+namespace Tzap.FiniteProbability
 
 noncomputable section
 
@@ -63,4 +63,4 @@ theorem uniform_fiber_of_surjective
   rw [mul_assoc, ENNReal.inv_mul_cancel hFzero hFtop, mul_one]
 
 end
-end TZap.FiniteProbability
+end Tzap.FiniteProbability

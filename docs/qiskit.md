@@ -36,22 +36,16 @@ optimized = optimize(circuit, level="O3")
 print(optimized.count_ops())
 ```
 
-Use `TzapOptimizationPass` when composing tzap with other transpiler passes:
+Use `TzapPass` when composing tzap with other transpiler passes:
 
 ```python
 from qiskit.transpiler import PassManager
-from tzap.qiskit import TzapOptimizationPass
+from tzap.qiskit import TzapPass
 
 manager = PassManager([
-    TzapOptimizationPass(level="O3"),
+    TzapPass(level="O3"),
 ])
 optimized = manager.run(circuit)
-```
-
-`TZapPass` is a shorter alias for `TzapOptimizationPass`:
-
-```python
-from tzap.qiskit import TZapPass
 ```
 
 ## Preparing a circuit
@@ -68,8 +62,7 @@ outside the supported basis raise Qiskit's `TranspilerError`.
 
 ```python
 optimize(circuit, **options) -> QuantumCircuit
-TzapOptimizationPass(**options)
-TZapPass(**options)
+TzapPass(**options)
 ```
 
 Common keyword options are:

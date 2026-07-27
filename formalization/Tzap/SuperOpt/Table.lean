@@ -1,4 +1,4 @@
-import TZap.Unitary
+import Tzap.Unitary
 
 /-!
 # Abstract SuperOpt Synthesis Table
@@ -7,9 +7,9 @@ The concrete synthesis table is intentionally abstracted to a partial matrix-to-
 The optimizer uses only its exact semantic soundness contract.
 -/
 
-namespace TZap.SuperOpt
+namespace Tzap.SuperOpt
 
-open TZap.Unitary
+open Tzap.Unitary
 
 noncomputable section
 
@@ -36,4 +36,4 @@ theorem lookup_semantics {n : Nat} (table : UnitaryTable n) (window replacement 
 end UnitaryTable
 
 end
-end TZap.SuperOpt
+end Tzap.SuperOpt

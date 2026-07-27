@@ -1,12 +1,12 @@
-import TZap.Cyclotomic.Basic
-import TZap.Semantics
+import Tzap.Cyclotomic.Basic
+import Tzap.Semantics
 
 /-!
 # Clifford+T Amplitudes Are Cyclotomic
 
 The main result: every complex number appearing in the weighted relation of a Clifford+T circuit
 is exactly representable in SuperOpt's cyclotomic format
-`(a + bω + cω² + dω³)/√2^k` (`TZap/Cyclotomic/Basic.lean`).
+`(a + bω + cω² + dω³)/√2^k` (`Tzap/Cyclotomic/Basic.lean`).
 
 `IsCliffordT` restricts `Gate` to the gate set SuperOpt's exact matrices cover: `X`, `CNOT`,
 Hadamard, and `Rz` at integer multiples of `π/4` — which is `T` (`k = 1`), `S` (`k = 2`), `Z`
@@ -26,9 +26,9 @@ The proof is three steps:
   `∃ a b c d k` normal form that `src/super_opt/matrix.rs` stores.
 -/
 
-namespace TZap.Cyclotomic
+namespace Tzap.Cyclotomic
 
-open TZap.Semantics
+open Tzap.Semantics
 
 noncomputable section
 
@@ -146,4 +146,4 @@ theorem exists_cyclotomic_representation {n : Nat} (C : Circuit n)
   isCyclotomic_circuit C hC x y
 
 end
-end TZap.Cyclotomic
+end Tzap.Cyclotomic

@@ -18,13 +18,13 @@ The `Basis` namespace defines how the classical (permutation) gates act on basis
 These functions are the "shapes" appearing in the exact gate semantics
 (`Semantics.gate`) and in the nonzero-amplitude shape lemma `Semantics.gate_ne_zero_shape`,
 which the soundness proof matches against the symbolic transfer functions of
-`TZap/Symbolic.lean`.
+`Tzap/Symbolic.lean`.
 -/
 
-namespace TZap
+namespace Tzap
 
 /-- Computational basis states of `n` qubits: a Boolean value for each wire `Fin n`.
-Weighted relations over `Basis n` (see `TZap/Semantics.lean`) are `2ⁿ × 2ⁿ` matrices. -/
+Weighted relations over `Basis n` (see `Tzap/Semantics.lean`) are `2ⁿ × 2ⁿ` matrices. -/
 abbrev Basis (n : Nat) := Fin n → Bool
 
 /-- The four gate forms used in the paper: `CNOT` (controlled-NOT), Hadamard, `X` (NOT), and the
@@ -66,4 +66,4 @@ def cnot {n : Nat} (b : Basis n) (c t : Fin n) : Basis n :=
     (h : r ≠ q) : update b q v r = b r := by simp [update, h]
 
 end Basis
-end TZap
+end Tzap

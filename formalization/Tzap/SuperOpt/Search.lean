@@ -1,11 +1,11 @@
-import TZap.SuperOpt.GlobalPhase
+import Tzap.SuperOpt.GlobalPhase
 
 /-!
 # Bounded Search and the Synthesis Table
 
 This file formalizes how SuperOpt *builds* its synthesis table (`src/super_opt/table.rs`): grow
 circuits over a finite gate library one gate at a time, and record each unitary the first time it
-is reached, keyed by the phase-canonical form from `TZap.SuperOpt.GlobalPhase`. The payoff is
+is reached, keyed by the phase-canonical form from `Tzap.SuperOpt.GlobalPhase`. The payoff is
 `build_minimal`: a table hit is not merely *a* circuit for that unitary, it is a *shortest* one,
 which is why a lookup needs no search of its own.
 
@@ -45,10 +45,10 @@ The Rust also keys on a 64-bit hash of the canonical matrix and confirms hits by
 the hash is a performance device, and the exact comparison is what `canonicalize` models.
 -/
 
-namespace TZap.SuperOpt
+namespace Tzap.SuperOpt
 
-open TZap.Unitary
-open TZap.SuperOpt.GlobalPhase
+open Tzap.Unitary
+open Tzap.SuperOpt.GlobalPhase
 
 open scoped Classical
 
@@ -241,7 +241,7 @@ theorem build_minimal_of_library {library : List (Gate n)} {bound : Nat}
 circuit implements the same operator as any competing circuit up to an unobservable phase, and
 is no longer than any of them.
 
-The nonzero hypotheses are what `TZap.SuperOpt.GlobalPhase.canonicalize_eq_iff` needs to turn
+The nonzero hypotheses are what `Tzap.SuperOpt.GlobalPhase.canonicalize_eq_iff` needs to turn
 equality of canonical forms into genuine phase-equivalence; they hold for any circuit whose
 matrix is unitary. -/
 theorem build_minimal_up_to_phase {library : List (Gate n)} {bound : Nat}
@@ -254,4 +254,4 @@ theorem build_minimal_up_to_phase {library : List (Gate n)} {bound : Nat}
 
 end
 
-end TZap.SuperOpt
+end Tzap.SuperOpt
