@@ -19,9 +19,11 @@ A super fast, Rust-based optimizer for large Clifford+T circuits.
 tzap is **multiple orders of magnitude** faster than other optimizers&mdash;and **linearly** **scales** to **millions** of gates!
 Here's a runtime comparison to two powerful optimizers on increasingly larger circuits.
 
-<img src="https://raw.githubusercontent.com/qqq-wisc/tzap/main/assets/comparison.svg"
-     alt="Runtime comparison of tzap, VOQC, and QuiZX on GF multipliers"
-     style="width: 60%; height: auto;">
+<p align="center">
+  <img src="https://raw.githubusercontent.com/qqq-wisc/tzap/main/assets/comparison.svg"
+       alt="Runtime comparison of tzap, VOQC, and QuiZX on GF multipliers"
+       style="width: 60%; height: auto;">
+</p>
 
 ## Installation
 
