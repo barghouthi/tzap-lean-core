@@ -8,7 +8,7 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 [![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
-[**Installation**](#installation) · [**Using tzap**](#running-tzap) &nbsp;**|**&nbsp;  [**Qiskit integration**](https://github.com/qqq-wisc/tzap/blob/main/docs/qiskit.md) · [**PennyLane integration**](https://github.com/qqq-wisc/tzap/blob/main/docs/pennylane.md)
+[**Installation**](#installation) · [**Using tzap**](#running-tzap) &nbsp;**|**&nbsp;  [Qiskit integration](https://github.com/qqq-wisc/tzap/blob/main/docs/qiskit.md) · [PennyLane integration](https://github.com/qqq-wisc/tzap/blob/main/docs/pennylane.md)
 
 A super fast, Rust-based optimizer for large Clifford+T circuits.
 - tzap is state-of-the-art in *speed*, *scalability*, and *gate-count reduction*.
