@@ -1,10 +1,27 @@
 name: CI
 
+# Doc-only edits cannot break the build, so they skip the matrix. API.md is
+# deliberately absent from these lists: src/lib.rs pulls it in with
+# include_str!, so a bad doc link or doctest there does fail `cargo test`.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - 'assets/**'
+      - 'formalization/**'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - 'assets/**'
+      - 'formalization/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 jobs:
   test:
