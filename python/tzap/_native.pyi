@@ -1,0 +1,35 @@
+class TzapError(Exception): ...
+class QasmError(TzapError): ...
+class OptimizationError(TzapError): ...
+
+__version__: str
+__all__ = [
+    "OptimizationError",
+    "QasmError",
+    "TzapError",
+    "__version__",
+    "_optimize_qasm",
+]
+
+def _optimize_qasm(
+    qasm: str,
+    *,
+    level: str = "O3",
+    passes: list[str] | None = None,
+    fixpoint: bool = False,
+    decompose_rz: bool = False,
+    decompose_cz: bool = False,
+    rz_epsilon: float = ...,
+    expr: bool = False,
+    parallel: bool = False,
+    superopt_qubits: int | None = None,
+    superopt_window_gates: int | None = None,
+    superopt_table_entries: int | None = None,
+) -> tuple[
+    str,
+    tuple[
+        tuple[int, int, int, int, int],
+        tuple[int, int, int, int, int],
+        tuple[int, int, int, int, int],
+    ],
+]: ...

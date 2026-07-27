@@ -2,57 +2,60 @@
 
 [![CI](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml/badge.svg)](https://github.com/qqq-wisc/tzap/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/tzap-opt.svg)](https://crates.io/crates/tzap-opt)
+[![PyPI](https://img.shields.io/pypi/v/tzap.svg)](https://pypi.org/project/tzap/)
 ![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
 ![Lean 4](https://img.shields.io/badge/Lean_4-black?logo=lean&logoColor=white)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 [![arXiv](https://img.shields.io/badge/arXiv-2605.13929-b31b1b.svg)](https://arxiv.org/abs/2605.13929)
 
+[**Installation**](#installation) · [**Using tzap**](#running-tzap) · [**Qiskit integration**](https://github.com/qqq-wisc/tzap/blob/main/docs/qiskit.md) · [**PennyLane integration**](https://github.com/qqq-wisc/tzap/blob/main/docs/pennylane.md)
+
 A super fast, Rust-based optimizer for large Clifford+T circuits.
-- tzap's **philosophy** is that each optimization pass should be **linear** in circuit size.
+- tzap is state-of-the-art in *speed*, *scalability*, and *gate-count reduction*.
 - tzap **minimizes T-count** with a new linear-time phase folding algorithm, based on [this paper](https://arxiv.org/abs/2605.13929).
 - tzap implements a new and fast **superoptimization** pass.
-- The core optimization algorithms are **fully formalized in Lean** under [`formalization`](formalization/).
+- The core optimization algorithms are **fully formalized in Lean** under [`formalization`](https://github.com/qqq-wisc/tzap/blob/main/formalization/).
 
 tzap is **multiple orders of magnitude** faster than other optimizers&mdash;and **linearly** **scales** to **millions** of gates!
-<img src="assets/comparison.png"
+Here's a runtime comparison to two powerful optimizers on increasingly larger circuits.
+<img src="https://raw.githubusercontent.com/qqq-wisc/tzap/main/assets/comparison.png"
      alt="Runtime comparison of tzap, VOQC, and QuiZX on GF multipliers"
      style="width: 100%; height: auto;">
 
 ## Installation
 
-**Homebrew** (macOS/Linux, easiest option):
+You can use tzap as a command-line utility or a library.
+
+### Install the binary
+
+These options install the standalone native `tzap` executable.
+
+**Homebrew** (macOS/Linux):
 
 ```bash
 brew install qqq-wisc/tap/tzap
 ```
 
-**crates.io** (requires [Rust](https://rustup.rs/); builds from source):
-
-```bash
-cargo install tzap-opt
-```
-
-**pip** (no Rust required, downloads a prebuilt binary):
-
-```bash
-pip install tzap  # uv pip install tzap
-```
-
-**From source** (this repo, requires [Rust](https://rustup.rs/)):
-
-```bash
-cargo install --path .
-```
-
-**Prebuilt binary** (no Rust required, downloads and runs a shell installer) — macOS/Linux:
+**Prebuilt release binary** (macOS/Linux):
 
 ```bash
 curl -LsSf https://github.com/qqq-wisc/tzap/releases/latest/download/tzap-opt-installer.sh | sh
 ```
 
-## Usage
+You can also build and install tzap from [crates.io](https://crates.io/crates/tzap-opt) (`cargo install tzap-opt`) or build from source (`cargo install --path .`).
+You can also use tzap through the Rust API; see the [Rust API documentation](https://github.com/qqq-wisc/tzap/blob/main/API.md).
 
-tzap is a command line utility. It also works as a Rust library; see the [Rust API documentation](API.md).
+### Integrations with Qiskit and PennyLane
+You can also use tzap as a Python library and apply it as
+Qiskit optimization pass or PennyLane transform. See the
+[Qiskit API guide](https://github.com/qqq-wisc/tzap/blob/main/docs/qiskit.md) or
+[PennyLane API guide](https://github.com/qqq-wisc/tzap/blob/main/docs/pennylane.md) for framework-specific setup.
+
+
+
+## Running tzap
+
+The standard command-line workflow is described below.
 
 **Optimize a circuit**
 
@@ -93,6 +96,12 @@ $ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 tzap benchmarks/feynman/hwb12.qasm -O1 -o optimized.qasm
 ```
 
+**Python APIs**
+
+The package exposes the native optimizer through `optimize_qasm`, a
+[Qiskit optimization pass](https://github.com/qqq-wisc/tzap/blob/main/docs/qiskit.md), and a
+[PennyLane transform](https://github.com/qqq-wisc/tzap/blob/main/docs/pennylane.md).
+
 **Decompose Rz into Clifford+T**
 
 Use `--decompose-rz` when the target backend only accepts Clifford+T; tzap uses [gridsynth](https://crates.io/crates/rsgridsynth). `--epsilon` trades approximation accuracy for circuit size (default `1e-10`; larger is coarser).
@@ -127,7 +136,7 @@ Toffoli (`ccx`) and doubly controlled-Z (`ccz`) are auto-decomposed into Cliffor
 ## Correctness
 
 1. **Fuzzing and equivalence verification** on small random circuits and benchmark circuits.
-2. **Lean formalization:** core algorithms are implemented and proven sound in Lean 4 — see [`formalization`](formalization/).
+2. **Lean formalization:** core algorithms are implemented and proven sound in Lean 4 — see [`formalization`](https://github.com/qqq-wisc/tzap/blob/main/formalization/).
 
 ## Citation
 

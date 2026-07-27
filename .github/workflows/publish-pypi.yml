@@ -8,30 +8,113 @@ on:
         type: string
 
 jobs:
+  # A source distribution is the fallback for every platform the wheel matrix
+  # below does not cover: without it `pip install tzap` hard-fails there
+  # instead of building the extension from source.
+  build-sdist:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - name: Verify the sdist builds a working wheel
+        run: |
+          python -m venv .venv-sdist
+          .venv-sdist/bin/pip install --no-binary tzap dist/*.tar.gz
+          .venv-sdist/bin/python tests/python/wheel_smoke.py
+      - name: Upload sdist
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-sdist
+          path: dist
+
   build-wheels:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-apple-darwin
-            runner: macos-14
+          # macOS: both arches build on the arm64 runner. Only the native
+          # aarch64 wheel can be executed here, so x86_64 goes untested.
           - target: aarch64-apple-darwin
             runner: macos-14
+            manylinux: auto
+            python: "3.10"
+            smoke: true
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            manylinux: auto
+            python: "3.10"
+          # Linux glibc: native runner per arch, so both get smoke-tested.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
+            manylinux: auto
+            python: "3.10"
+            smoke: true
           - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            manylinux: auto
+            python: "3.10"
+            smoke: true
+          # Linux musl: built in the musllinux container. Not smoke-tested —
+          # qiskit and pennylane have no musl wheels, so installing this one
+          # would compile numpy and scipy from source on Alpine.
+          - target: x86_64-unknown-linux-musl
             runner: ubuntu-22.04
+            manylinux: musllinux_1_2
+            python: "3.10"
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+            manylinux: musllinux_1_2
+            python: "3.10"
+          # Windows: each arch on its own native runner. Cross-compiling pyo3
+          # to arm64 from the x86_64 runner would need PYO3_CROSS_LIB_DIR
+          # pointing at an arm64 python3.lib; building natively avoids that.
+          # CPython ships no 3.10 for Windows on arm, so that runner builds
+          # against 3.11 — the wheel is still abi3 and tagged cp310.
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            manylinux: auto
+            python: "3.10"
+            smoke: true
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            manylinux: auto
+            python: "3.11"
+            smoke: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist
-          manylinux: auto
+          manylinux: ${{ matrix.manylinux }}
+      # Publishing an unimportable wheel is the failure mode that matters, and
+      # it is invisible until someone pip-installs the release. The abi3 wheel
+      # is tagged cp310, so testing on the oldest supported interpreter also
+      # confirms the floor in requires-python.
+      - name: Smoke-test the wheel
+        if: ${{ matrix.smoke }}
+        shell: bash
+        run: |
+          python -m venv .venv-wheel
+          if [ -d .venv-wheel/bin ]; then venv=.venv-wheel/bin; else venv=.venv-wheel/Scripts; fi
+          "$venv/python" -m pip install --upgrade pip
+          "$venv/python" -m pip install dist/*.whl
+          "$venv/python" tests/python/wheel_smoke.py
+          "$venv/tzap" --version
       - name: Upload wheel
         uses: actions/upload-artifact@v7
         with:
@@ -39,7 +122,9 @@ jobs:
           path: dist
 
   publish-pypi:
-    needs: build-wheels
+    needs:
+      - build-sdist
+      - build-wheels
     runs-on: ubuntu-22.04
     steps:
       - name: Download wheels

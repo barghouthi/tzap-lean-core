@@ -19,3 +19,75 @@ jobs:
           enable-cache: true
       - run: cargo test
       - run: cargo test --release -- --ignored
+
+  # The release wheel matrix covers Windows and macOS, but nothing else in CI
+  # compiles there — so a Windows-only build break would first show up at tag
+  # time, after a release is already half-published. This is the cheap guard.
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+
+  python-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff check python tests/python pyproject.toml
+      - run: uv run ruff format --check python tests/python
+      - run: uv run python -m mypy.stubtest tzap._native
+
+  python-wheel-py310:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build the ABI3 wheel
+        run: uvx --from "maturin>=1.7,<2.0" maturin build --release --out dist
+      - name: Test the wheel on the minimum supported Python
+        run: |
+          uv venv --python 3.10 .venv-wheel
+          uv pip install --python .venv-wheel/bin/python dist/*.whl
+          .venv-wheel/bin/python tests/python/wheel_smoke.py
+
+  python-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - qiskit: "qiskit==1.0.*"
+            pennylane: "pennylane==0.40.*"
+            autoray: "autoray<0.8"
+          - qiskit: "qiskit>=2"
+            pennylane: "pennylane>=0.45"
+            autoray: "autoray>=0.8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Test Python and Qiskit bindings
+        run: |
+          uv venv
+          uv pip install -e . "pytest>=7" \
+            "${{ matrix.qiskit }}" "${{ matrix.pennylane }}" \
+            "${{ matrix.autoray }}"
+          uv run --no-sync pytest tests/python

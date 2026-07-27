@@ -10,6 +10,9 @@ pub mod phase_fold_rand;
 pub mod qasm;
 pub mod super_opt;
 
+#[cfg(feature = "python")]
+mod python;
+
 #[cfg(test)]
 mod bench;
 #[cfg(test)]
