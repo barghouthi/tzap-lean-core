@@ -99,12 +99,6 @@ $ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 tzap benchmarks/feynman/hwb12.qasm -O1 -o optimized.qasm
 ```
 
-**Python APIs**
-
-The package exposes the native optimizer through `optimize_qasm`, a
-[Qiskit optimization pass](https://github.com/qqq-wisc/tzap/blob/main/docs/qiskit.md), and a
-[PennyLane transform](https://github.com/qqq-wisc/tzap/blob/main/docs/pennylane.md).
-
 **Decompose Rz into Clifford+T**
 
 Use `--decompose-rz` when the target backend only accepts Clifford+T; tzap uses [gridsynth](https://crates.io/crates/rsgridsynth). `--epsilon` trades approximation accuracy for circuit size (default `1e-10`; larger is coarser).
