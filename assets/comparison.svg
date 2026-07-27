@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="900"
+     height="365"
+     viewBox="0 0 900 365"
+     role="img"
+     aria-labelledby="title description">
+  <title id="title">Runtime comparison of tzap, voqc, and quizx</title>
+  <desc id="description">
+    Linear wall-clock comparison from zero to one hour. On GF(2^64), tzap takes
+    17.9 milliseconds, voqc takes 5 minutes 18 seconds, and quizx takes
+    17 minutes 39 seconds. On GF(2^128), tzap takes 61.3 milliseconds while
+    voqc and quizx exceed one hour. The caption notes that tzap with -O1
+    matches T-count reductions in milliseconds.
+  </desc>
+
+  <defs>
+    <pattern id="purple-hatch"
+             width="9"
+             height="9"
+             patternUnits="userSpaceOnUse"
+             patternTransform="rotate(45)">
+      <rect width="9" height="9" fill="#ffffff"/>
+      <line x1="0" y1="0" x2="0" y2="9" stroke="#9d73d2" stroke-width="3"/>
+    </pattern>
+    <pattern id="orange-hatch"
+             width="9"
+             height="9"
+             patternUnits="userSpaceOnUse"
+             patternTransform="rotate(45)">
+      <rect width="9" height="9" fill="#ffffff"/>
+      <line x1="0" y1="0" x2="0" y2="9" stroke="#f1b64c" stroke-width="3"/>
+    </pattern>
+    <style>
+      text {
+        fill: #3d3947;
+        font-family: "DejaVu Sans", Arial, Helvetica, sans-serif;
+        font-size: 22px;
+        font-weight: 400;
+      }
+      .series {
+        text-anchor: end;
+        dominant-baseline: middle;
+      }
+      .primary {
+        font-weight: 700;
+      }
+      .group {
+        text-anchor: end;
+        dominant-baseline: middle;
+      }
+      .value {
+        dominant-baseline: middle;
+      }
+      .tick {
+        fill: #6f6978;
+        text-anchor: middle;
+        font-size: 21px;
+      }
+      .axis-title {
+        text-anchor: middle;
+        font-size: 22px;
+      }
+      .caption {
+        fill: #8a8492;
+        text-anchor: middle;
+        font-size: 18px;
+      }
+      .timeout {
+        fill: #6f6978;
+      }
+      .grid {
+        stroke: #dbd7e1;
+        stroke-width: 1;
+      }
+    </style>
+  </defs>
+
+  <rect width="900" height="365" fill="#ffffff"/>
+
+  <!-- Linear time grid: 0 through 60 minutes. -->
+  <g aria-hidden="true">
+    <line class="grid" x1="190" y1="5" x2="190" y2="251"/>
+    <line class="grid" x1="295.8" y1="5" x2="295.8" y2="251"/>
+    <line class="grid" x1="401.7" y1="5" x2="401.7" y2="251"/>
+    <line class="grid" x1="507.5" y1="5" x2="507.5" y2="251"/>
+    <line class="grid" x1="613.3" y1="5" x2="613.3" y2="251"/>
+    <line class="grid" x1="719.2" y1="5" x2="719.2" y2="251"/>
+    <line class="grid" x1="825" y1="5" x2="825" y2="251"/>
+    <line class="grid" x1="190" y1="251" x2="825" y2="251"/>
+  </g>
+
+  <!-- GF(2^64). -->
+  <text class="group" x="112" y="61">GF(2⁶⁴)</text>
+
+  <text class="series primary" x="181" y="30">tzap</text>
+  <rect x="190" y="18" width="2" height="24" fill="#9d73d2"/>
+  <text class="value" x="200" y="30">17.9 ms</text>
+
+  <text class="series" x="181" y="61">voqc</text>
+  <rect x="190" y="49" width="56.1" height="24" fill="#9d73d2"/>
+  <text class="value" x="254" y="61">5m 18s</text>
+
+  <text class="series" x="181" y="92">quizx</text>
+  <rect x="190" y="80" width="186.8" height="24" fill="#f1b64c"/>
+  <text class="value" x="385" y="92">17m 39s</text>
+
+  <!-- GF(2^128). -->
+  <text class="group" x="112" y="195">GF(2¹²⁸)</text>
+
+  <text class="series primary" x="181" y="164">tzap</text>
+  <rect x="190" y="152" width="2" height="24" fill="#9d73d2"/>
+  <text class="value" x="200" y="164">61.3 ms</text>
+
+  <text class="series" x="181" y="195">voqc</text>
+  <rect x="190"
+        y="183"
+        width="635"
+        height="24"
+        fill="url(#purple-hatch)"
+        stroke="#9d73d2"
+        stroke-width="2"/>
+  <text class="value timeout" x="837" y="195">&gt; 1 h</text>
+
+  <text class="series" x="181" y="226">quizx</text>
+  <rect x="190"
+        y="214"
+        width="635"
+        height="24"
+        fill="url(#orange-hatch)"
+        stroke="#f1b64c"
+        stroke-width="2"/>
+  <text class="value timeout" x="837" y="226">&gt; 1 h</text>
+
+  <!-- Axis labels, inset from every edge to avoid clipping. -->
+  <g aria-hidden="true">
+    <text class="tick" x="190" y="277">0</text>
+    <text class="tick" x="295.8" y="277">10 min</text>
+    <text class="tick" x="401.7" y="277">20 min</text>
+    <text class="tick" x="507.5" y="277">30 min</text>
+    <text class="tick" x="613.3" y="277">40 min</text>
+    <text class="tick" x="719.2" y="277">50 min</text>
+    <text class="tick" x="825" y="277">1 h</text>
+    <text class="axis-title" x="507.5" y="316">wall-clock time</text>
+    <text class="caption" x="507.5" y="351">tzap with -O1 matches T-count reductions in milliseconds</text>
+  </g>
+</svg>
