@@ -22,7 +22,7 @@ Here's a runtime comparison to two powerful optimizers on increasingly larger ci
 <p align="center">
   <img src="https://raw.githubusercontent.com/qqq-wisc/tzap/main/assets/comparison.svg"
        alt="Runtime comparison of tzap, VOQC, and QuiZX on GF multipliers"
-       style="width: 60%; height: auto;">
+       style="width: 70%; height: auto;">
 </p>
 
 ## Installation
