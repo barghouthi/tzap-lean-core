@@ -449,16 +449,29 @@ pub(super) fn shared_synthesis_table(config: SuperOptTableConfig) -> SharedTable
     static TABLES: OnceLock<Mutex<TableCache>> = OnceLock::new();
 
     let tables = TABLES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut tables = tables
-        .lock()
-        .expect("SuperOpt synthesis-table cache mutex was poisoned");
-    if let Some(table) = tables.get(&config) {
+    if let Some(table) = lock_cache(tables).get(&config) {
         return table.clone();
     }
 
+    // Built with the cache lock *released*, which is load-bearing rather than
+    // merely tidy: `UnitaryCircuitTable::build` is rayon-parallel, so holding
+    // a process-wide mutex across it deadlocks. A rayon worker running an
+    // unrelated stolen job can call back in here — the map-reduce path builds
+    // a `SuperOpt` per chunk, and `SuperOpt::new` is public, so any caller can
+    // do this from inside their own parallel iterator — and block on the lock,
+    // while the builder blocks waiting for workers to drain its own parallel
+    // iterators. Once every worker is parked on the lock, nothing can make
+    // progress. Two threads racing the same cold config may now each build a
+    // table, but only the first insertion is kept, so all callers still share
+    // one `Arc` per config.
     let table = build_or_load_from_disk(config).map(Arc::new);
-    tables.insert(config, table.clone());
-    table
+    lock_cache(tables).entry(config).or_insert(table).clone()
+}
+
+fn lock_cache(tables: &Mutex<TableCache>) -> std::sync::MutexGuard<'_, TableCache> {
+    tables
+        .lock()
+        .expect("SuperOpt synthesis-table cache mutex was poisoned")
 }
 
 /// Directory holding on-disk synthesis-table caches. `None` when `$HOME`
