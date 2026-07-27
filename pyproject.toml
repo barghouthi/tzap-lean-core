@@ -25,6 +25,10 @@ dynamic = ["version"]
 test = [
     "pytest>=7",
 ]
+qcec = [
+    "mqt.qcec>=3",
+    "pytest>=7",
+]
 
 [dependency-groups]
 dev = [
@@ -55,4 +59,9 @@ exclude = [
     "benchmarks/**",
     "experiments/**",
     "formalization/**",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "qcec: randomized end-to-end equivalence checks using MQT QCEC",
 ]
