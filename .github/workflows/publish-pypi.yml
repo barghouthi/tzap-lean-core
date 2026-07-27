@@ -83,20 +83,15 @@ jobs:
             runner: ubuntu-22.04-arm
             manylinux: musllinux_1_2
             python: "3.10"
-          # Windows: each arch on its own native runner. Cross-compiling pyo3
-          # to arm64 from the x86_64 runner would need PYO3_CROSS_LIB_DIR
-          # pointing at an arm64 python3.lib; building natively avoids that.
-          # CPython ships no 3.10 for Windows on arm, so that runner builds
-          # against 3.11 — the wheel is still abi3 and tagged cp310.
+          # Windows x86_64 only. The arm64 wheel builds cleanly, but qiskit
+          # and rustworkx (pulled in by pennylane) publish no win_arm64
+          # wheels, so pip cannot install this package's dependencies there
+          # — shipping the wheel would advertise support that
+          # `pip install tzap` does not actually deliver.
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
             manylinux: auto
             python: "3.10"
-            smoke: true
-          - target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
-            manylinux: auto
-            python: "3.11"
             smoke: true
     runs-on: ${{ matrix.runner }}
     steps:
