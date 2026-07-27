@@ -90,9 +90,9 @@ $ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 
 | Level | Description |
 |---|---|
-| `-O1` | Randomized phase folding + basic gate cancellation. Fastest; already captures most of the T-gate reduction. |
+| `-O1` | phase folding + basic gate cancellation. Fastest; captures most of the T-gate reduction. |
 | `-O2` | Adds superoptimization to `-O1`. |
-| `-O3` | Repeats `-O2` until reaching a fixpoint. **Default.** |
+| **`-O3`** | **Default.** Repeats `-O2` until reaching a fixpoint.  |
 | `-Osuper` | Like `-O3`, but with more superoptimization power (slower on first use). |
 
 ```bash
