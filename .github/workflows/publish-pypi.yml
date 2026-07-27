@@ -6,6 +6,12 @@ on:
       plan:
         required: true
         type: string
+  # A manual run is a dry run: every build and smoke-test job below runs, and
+  # the upload job at the bottom skips itself. This is how the matrix gets
+  # exercised before a tag, since a failure discovered at release time leaves
+  # the tag, the GitHub release and the crates.io publish already done with
+  # nothing on PyPI to match them.
+  workflow_dispatch:
 
 jobs:
   # A source distribution is the fallback for every platform the wheel matrix
@@ -18,6 +24,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      # Pin the same interpreter the wheels are tagged for, so the source
+      # build is checked against the floor in requires-python too.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -125,6 +136,8 @@ jobs:
     needs:
       - build-sdist
       - build-wheels
+    # Never upload from a manual dry run — only from the release workflow.
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Download wheels
