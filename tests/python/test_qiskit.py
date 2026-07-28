@@ -357,7 +357,7 @@ def test_qiskit_matches_native_pipeline_on_repository_fixtures(fixture_name):
 
 def test_laplacian_filter_matches_native_cli_pipeline():
     benchmark = (
-        Path(__file__).parents[2] / "benchmarks" / "cobble" / "laplacian-filter.qasm"
+        Path(__file__).parents[2] / "benchmarks" / "cobble-t" / "laplacian-filter.qasm"
     )
     source_qasm = benchmark.read_text(encoding="utf-8")
 

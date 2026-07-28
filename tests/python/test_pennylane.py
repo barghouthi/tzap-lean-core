@@ -558,7 +558,7 @@ def test_transformed_and_original_tapes_have_same_unitary():
 
 def test_laplacian_filter_matches_native_pipeline():
     benchmark = (
-        Path(__file__).parents[2] / "benchmarks" / "cobble" / "laplacian-filter.qasm"
+        Path(__file__).parents[2] / "benchmarks" / "cobble-t" / "laplacian-filter.qasm"
     )
     source_qasm = benchmark.read_text(encoding="utf-8")
     tape = qml.tape.QuantumScript(_output_operations(source_qasm, tuple(range(11))))

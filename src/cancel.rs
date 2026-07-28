@@ -9,7 +9,7 @@ use crate::phase_fold_rand::classify_quarter_pi;
 /// The three sweep kinds each want a per-qubit index of gate positions, a
 /// circuit-sized deletion mark, and (for Hadamard reduction) a circuit-sized
 /// replacement table. Allocating those per sweep was the pass's dominant cost
-/// on large inputs: a fixpoint over `benchmarks/cobble/ols-ridge-d12.qasm`
+/// on large inputs: a fixpoint over cobble's `ols-ridge-d12.qasm`
 /// runs 76 self-inverse, 55 Hadamard, and 66 commuting-pair sweeps over 33M
 /// gate positions in total, and `Gate` is 32 bytes — so the replacement table
 /// alone was ~290 MB of freshly allocated, freshly zeroed, freshly

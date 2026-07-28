@@ -2226,7 +2226,7 @@ fn audit_all_benchmark_rewrites() {
     use crate::phase_fold_rand::PhaseFoldRand;
 
     let mut paths = Vec::new();
-    for corpus in ["feynman", "cobble"] {
+    for corpus in ["feynman", "cobble-t"] {
         let directory = format!("{}/benchmarks/{corpus}", env!("CARGO_MANIFEST_DIR"));
         paths.extend(
             std::fs::read_dir(directory)

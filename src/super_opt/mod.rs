@@ -231,7 +231,7 @@ fn registered_seq(entry: Registration) -> u32 {
 ///
 /// Nearly every gate anchors a window, but a window dies within
 /// `window_gates` gates of its anchor, so only a few dozen are ever live at
-/// once (measured on `benchmarks/cobble/ols-ridge.qasm` at `-O3`: 35–68 live,
+/// once (measured on `benchmarks/cobble-t/ols-ridge.qasm` at `-O3`: 35–68 live,
 /// against 536k anchored). Indexing slots by a monotonically increasing
 /// counter therefore grew `slots` to one slot per gate — tens of megabytes,
 /// reallocated and page-faulted on every fixpoint sweep — to hold a working
