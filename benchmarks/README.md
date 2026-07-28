@@ -4,7 +4,7 @@ Circuits used to measure tzap. All are OpenQASM 2.0.
 
 | corpus      | files | qubits | gates (total)      | gate set        |
 | ----------- | ----- | ------ | ------------------ | --------------- |
-| `feynman`   | 45    | 5–768  | 45–1.1M (2.46M)    | Clifford+T      |
+| `feynman`   | 43    | 5–768  | 57–1.1M (2.46M)    | Clifford+T      |
 | `cobble-t`  | 6     | 11–22  | 34k–588k (1.35M)   | Clifford+T      |
 | `cobble-rz` | 6     | 11–22  | 1.9k–353k (793k)   | Clifford+T+Rz   |
 | `qft`       | 4     | 20–50  | 310k–1.03M (2.68M) | Clifford+T      |
@@ -15,9 +15,6 @@ The standard Feynman / T-par benchmark suite — arithmetic and reversible-logic
 circuits (`adder`, `barenco_tof`, `gf2^N_mult`, `hwb`, `mod_adder`, `qcla`,
 `tof`, `vbe_adder`, …) used across the T-count optimization literature. From
 [meamy/feynman](https://github.com/meamy/feynman).
-
-`mod5_4_dec.qasm` and `mod5_4_wisq.qasm` are local variants of `mod5_4.qasm`
-that differ in Clifford framing, not upstream files.
 
 ## `cobble-t` and `cobble-rz`
 
