@@ -71,13 +71,13 @@ For example, using a benchmark in this repo:
 ```console
 $ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
 ⚡️ tzap v0.4.4
-  Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.098s
+  Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.080s
 	└─ 20 qubits · 514,412 gates
-  Loaded superoptimizer table in 0.018s
+  Loaded superoptimizer table in 0.021s
 
   Converged after 6 rounds
 
-  ┌─ Final result · 43.7% fewer gates · 2.169s ──────────────────────────┐
+  ┌─ Final result · 43.7% fewer gates · 1.595s ──────────────────────────┐
   │ Gates    ━━━━━━━━━━━━━╸────────────────── ↓43.7% · 514,412 → 289,484 │
   │ 2q gates ━━━━━╸────────────────────────── ↓18.7% · 191,803 → 155,914 │
   │ T/Tdg    ━━━━━━━━━━━━━━━╸──────────────── ↓49.9% · 171,465 →  85,897 │
