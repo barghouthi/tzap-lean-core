@@ -1,4 +1,5 @@
 import Tzap.Cyclotomic.Basic
+import Tzap.Cyclotomic.Canonical
 import Tzap.Cyclotomic.Semantics
 
 /-!
