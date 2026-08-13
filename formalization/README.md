@@ -12,7 +12,8 @@ correctness theorems.
 
 | Theorem | File | Statement (informal) |
 |---|---|---|
-| `SuperOpt.Algorithm.optimize_correct` | `Tzap/SuperOpt/Algorithm.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics. |
+| `SuperOpt.Algorithm.optimize_correct` | `Tzap/SuperOpt/Algorithm.lean` | The anchored connected-component SuperOpt pass, with skipped unrelated gates and retroactive bridge closure, preserves exact weighted-relation semantics and never returns a longer circuit. |
+| `SuperOpt.Algorithm.optimize_linear` | `Tzap/SuperOpt/Algorithm.lean` | The same pass runs in linear time: it examines at most `budget` windows per input gate, a constant fixed by the window bounds rather than by the circuit. |
 | `SuperOpt.GlobalPhase.canonicalize_eq_iff` | `Tzap/SuperOpt/GlobalPhase.lean` | Dividing a matrix by the phase of its first nonzero entry decides equivalence up to global phase exactly: two nonzero matrices have equal canonical forms iff they differ by a unit-modulus scalar. |
 | `SuperOpt.build_minimal_of_library` | `Tzap/SuperOpt/Search.lean` | The circuit the bounded length-ordered search files under a canonical key is a *shortest* circuit over the gate library realizing that key — so a table hit is the synthesis answer, with no search at lookup time. |
 | `Unitary.unitary_agrees` | `Tzap/Unitary.lean` | Dense unitary matrix semantics is exactly equal to the weighted-relation semantics after swapping the matrix indices. |
@@ -99,7 +100,10 @@ The modules, in dependency order:
   earlier disconnected components. Windows are bounded by gate count and
   qubit support, table results must be strictly shorter, and accepted windows
   are removed before scanning the remaining gates. `optimize_correct` proves
-  exact weighted-relation equivalence.
+  exact weighted-relation equivalence and that the output is no longer than the
+  input; `optimize_linear` bounds the work the pass does by a constant times the
+  number of input gates. The module header writes out the scan the definitions
+  model, and says where the model departs from it.
 
 ### Symbolic parity analysis
 

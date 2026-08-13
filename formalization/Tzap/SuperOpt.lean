@@ -14,4 +14,9 @@ top-level `Tzap.Unitary` module.
 form that makes two unitaries differing only by a global phase share one table key, and the
 bounded length-ordered enumeration whose first-wins insertion makes every stored circuit a
 shortest one for its key.
+
+`Tzap.SuperOpt.Algorithm` holds the pass itself, together with both of its
+guarantees, proved about one definition: `optimize_correct` (equivalent output, no
+larger) and `optimize_linear` (work bounded by a constant times the number of input
+gates).
 -/
