@@ -2,6 +2,7 @@
 
 pub mod cancel;
 pub mod circuit;
+pub mod cnot_min;
 pub mod decompose;
 pub mod optimize;
 pub mod pass;

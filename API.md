@@ -158,6 +158,7 @@ A custom pass only needs to supply `name` and `run`.
 | `SuperOpt` | `tzap::super_opt` | Replaces small windows using its shared unitary-to-circuit table |
 | `PhaseFoldRand` | `tzap::phase_fold_rand` | Merges T/Rz gates across the circuit via randomized parity tracking |
 | `PhaseFoldGlobalExpr` | `tzap::phase_fold_global_expr` | Merges T/Rz gates via symbolic parity expressions |
+| `CnotMin` | `tzap::cnot_min` | Re-synthesizes CNOT-dihedral blocks to cut two-qubit gates |
 
 ### Running passes
 

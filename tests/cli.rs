@@ -931,7 +931,7 @@ fn optimization_levels_are_mutually_exclusive() {
 // --- pass and mode combinations ---
 
 /// Every pass selectable via `--passes`, in default pipeline order.
-const ALL_PASS_NAMES: [&str; 7] = [
+const ALL_PASS_NAMES: [&str; 8] = [
     "DecomposeToffoli",
     "DecomposeCz",
     "DecomposeRz",
@@ -939,6 +939,7 @@ const ALL_PASS_NAMES: [&str; 7] = [
     "SuperOpt",
     "PhaseFoldRand",
     "PhaseFoldGlobalExpr",
+    "CnotMin",
 ];
 
 /// Exercises every decomposition pass: a Toffoli, a CZ, and an Rz rotation,

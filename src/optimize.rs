@@ -15,6 +15,7 @@ use rayon::prelude::*;
 
 use crate::cancel::CancelGates;
 use crate::circuit::{Circuit, Gate, qubit_operands};
+use crate::cnot_min::CnotMin;
 use crate::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use crate::pass::{Pass, count_2q, count_rz, count_t, depth};
 use crate::phase_fold_global_expr::PhaseFoldGlobalExpr;
@@ -99,12 +100,13 @@ pub enum PassName {
     SuperOpt,
     PhaseFoldRand,
     PhaseFoldGlobalExpr,
+    CnotMin,
 }
 
 impl PassName {
     /// All passes — `(name, variant, description)` — in a stable order
     /// suitable for listing to a user.
-    pub const ALL: [(&'static str, PassName, &'static str); 7] = [
+    pub const ALL: [(&'static str, PassName, &'static str); 8] = [
         (
             "DecomposeToffoli",
             PassName::DecomposeToffoli,
@@ -139,6 +141,11 @@ impl PassName {
             "PhaseFoldGlobalExpr",
             PassName::PhaseFoldGlobalExpr,
             "Merge T/Rz rotations via symbolic parity expressions",
+        ),
+        (
+            "CnotMin",
+            PassName::CnotMin,
+            "Re-synthesize CNOT-dihedral blocks to cut two-qubit gates",
         ),
     ];
 
@@ -727,6 +734,7 @@ fn optimize_explicit(
     let cancel_pass = CancelGates;
     let global = PhaseFoldRand;
     let global_expr = PhaseFoldGlobalExpr;
+    let cnot_min_pass = CnotMin::default();
 
     let uses_superopt = names.iter().any(|p| matches!(p, PassName::SuperOpt));
     let superopt_pass = match uses_superopt {
@@ -747,6 +755,7 @@ fn optimize_explicit(
                     .expect("constructed when the pass is selected"),
                 PassName::PhaseFoldRand => &global,
                 PassName::PhaseFoldGlobalExpr => &global_expr,
+                PassName::CnotMin => &cnot_min_pass,
             }
         })
         .collect();
@@ -772,6 +781,7 @@ fn optimize_default(
     let cancel_pass = CancelGates;
     let global = PhaseFoldRand;
     let global_expr = PhaseFoldGlobalExpr;
+    let cnot_min_pass = CnotMin::default();
 
     if level_uses_superopt(options.level) {
         // O2 runs a fixed 2 rounds rather than to a true fixpoint — O3 and
@@ -779,7 +789,10 @@ fn optimize_default(
         // one.
         let max_rounds = (options.level == Level::O2).then_some(2);
         let superopt_pass = initialize_superopt(options, options.level, observer)?;
-        let passes: Vec<&dyn Pass> = vec![&cancel_pass, &superopt_pass, &global];
+        // CnotMin leads the sweep: it re-synthesizes whole CNOT-dihedral
+        // blocks, which reshapes the circuit far more than the peephole
+        // rewriter does, and the passes after it then work on the result.
+        let passes: Vec<&dyn Pass> = vec![&cnot_min_pass, &cancel_pass, &superopt_pass, &global];
         let decompose: Option<&dyn Pass> = options.decompose_rz.then_some(&rz_decompose);
         Ok(run_to_fixpoint(
             circuit, &passes, decompose, observer, max_rounds,

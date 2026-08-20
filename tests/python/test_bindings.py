@@ -146,6 +146,7 @@ def test_passes_accept_a_one_shot_generator():
         "SuperOpt",
         "PhaseFoldRand",
         "PhaseFoldGlobalExpr",
+        "CnotMin",
     ],
 )
 def test_every_public_pass_name_is_accepted(pass_name):
