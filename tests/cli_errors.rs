@@ -714,10 +714,10 @@ fn optimization_levels_mutually_exclusive_all_pairs() {
 }
 
 #[test]
-fn passes_conflicts_with_decompose_rz_and_expr() {
+fn passes_conflicts_with_decompose_rz_and_cz() {
     let dir = tempfile::tempdir().unwrap();
     let input = write_qasm(dir.path(), "in.qasm", TRIVIAL_QASM);
-    for flag in ["--decompose-rz", "--decompose-cz", "--expr"] {
+    for flag in ["--decompose-rz", "--decompose-cz"] {
         let out = tzap_run(&[input.to_str().unwrap(), "--passes", "CancelGates", flag]);
         let stderr = assert_clear_error(&out, &format!("--passes + {flag}"));
         assert!(stderr.contains("cannot be combined"), "got: {stderr}");

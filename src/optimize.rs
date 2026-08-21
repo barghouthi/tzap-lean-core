@@ -18,7 +18,6 @@ use crate::circuit::{Circuit, Gate, qubit_operands};
 use crate::cnot_min::CnotMin;
 use crate::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
 use crate::pass::{Pass, count_2q, count_rz, count_t, depth};
-use crate::phase_fold_global_expr::PhaseFoldGlobalExpr;
 use crate::phase_fold_rand::PhaseFoldRand;
 use crate::super_opt::{SuperOpt, SuperOptError, SuperOptTableConfig, table_is_cached};
 
@@ -99,14 +98,13 @@ pub enum PassName {
     CancelGates,
     SuperOpt,
     PhaseFoldRand,
-    PhaseFoldGlobalExpr,
     CnotMin,
 }
 
 impl PassName {
     /// All passes — `(name, variant, description)` — in a stable order
     /// suitable for listing to a user.
-    pub const ALL: [(&'static str, PassName, &'static str); 8] = [
+    pub const ALL: [(&'static str, PassName, &'static str); 7] = [
         (
             "DecomposeToffoli",
             PassName::DecomposeToffoli,
@@ -136,11 +134,6 @@ impl PassName {
             "PhaseFoldRand",
             PassName::PhaseFoldRand,
             "Merge T/Rz rotations via randomized parity tracking",
-        ),
-        (
-            "PhaseFoldGlobalExpr",
-            PassName::PhaseFoldGlobalExpr,
-            "Merge T/Rz rotations via symbolic parity expressions",
         ),
         (
             "CnotMin",
@@ -196,9 +189,6 @@ pub struct Options {
     pub decompose_cz: bool,
     /// Approximation epsilon for `decompose_rz`.
     pub rz_epsilon: f64,
-    /// Use the symbolic phase-folding pass instead of the randomized one.
-    /// Only consulted under [`Level::O1`].
-    pub expr: bool,
     /// Optimize gate-contiguous chunks of the circuit in parallel, then
     /// concatenate the results (see [`optimize`]).
     pub parallel: bool,
@@ -215,7 +205,6 @@ impl Default for Options {
             decompose_rz: false,
             decompose_cz: false,
             rz_epsilon: DEFAULT_RZ_EPSILON,
-            expr: false,
             parallel: false,
             superopt: SuperOptBounds::default(),
         }
@@ -733,7 +722,6 @@ fn optimize_explicit(
     };
     let cancel_pass = CancelGates;
     let global = PhaseFoldRand;
-    let global_expr = PhaseFoldGlobalExpr;
     let cnot_min_pass = CnotMin::default();
 
     let uses_superopt = names.iter().any(|p| matches!(p, PassName::SuperOpt));
@@ -754,7 +742,6 @@ fn optimize_explicit(
                     .as_ref()
                     .expect("constructed when the pass is selected"),
                 PassName::PhaseFoldRand => &global,
-                PassName::PhaseFoldGlobalExpr => &global_expr,
                 PassName::CnotMin => &cnot_min_pass,
             }
         })
@@ -780,7 +767,6 @@ fn optimize_default(
     };
     let cancel_pass = CancelGates;
     let global = PhaseFoldRand;
-    let global_expr = PhaseFoldGlobalExpr;
     let cnot_min_pass = CnotMin::default();
 
     if level_uses_superopt(options.level) {
@@ -798,8 +784,7 @@ fn optimize_default(
             circuit, &passes, decompose, observer, max_rounds,
         ))
     } else {
-        let phase_fold: &dyn Pass = if options.expr { &global_expr } else { &global };
-        let optimization_passes: Vec<&dyn Pass> = vec![&cancel_pass, phase_fold];
+        let optimization_passes: Vec<&dyn Pass> = vec![&cancel_pass, &global];
 
         // Optimize, then (for decompose_rz) decompose Rz and optimize the result
         // again — so the selected optimization pipeline runs on both sides of gridsynth.

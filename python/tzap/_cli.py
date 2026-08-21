@@ -27,7 +27,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--decompose-rz", action="store_true")
     parser.add_argument("--decompose-cz", action="store_true")
     parser.add_argument("--epsilon", type=float, default=1e-10)
-    parser.add_argument("--expr", action="store_true")
     parser.add_argument("--parallel", action="store_true")
     parser.add_argument(
         "-v", "--version", action="version", version="tzap " + __version__
@@ -52,7 +51,6 @@ def main(argv: list[str] | None = None) -> int:
             decompose_rz=args.decompose_rz,
             decompose_cz=args.decompose_cz,
             rz_epsilon=args.epsilon,
-            expr=args.expr,
             parallel=args.parallel,
         )
         if output:

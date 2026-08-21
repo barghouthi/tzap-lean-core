@@ -89,7 +89,6 @@ decomposition.
 | `decompose_rz` | `false` | Decompose Rz into Clifford+T via gridsynth |
 | `decompose_cz` | `false` | Decompose CZ into H+CX+H before optimizing |
 | `rz_epsilon` | `1e-10` | Approximation epsilon for `decompose_rz` |
-| `expr` | `false` | Use the symbolic phase-folding pass. Only consulted under `O1` |
 | `parallel` | `false` | Optimize gate-contiguous chunks concurrently, then concatenate |
 | `superopt` | all `None` | Per-run overrides for the SuperOpt window/table bounds |
 
@@ -157,7 +156,6 @@ A custom pass only needs to supply `name` and `run`.
 | `CancelGates` | `tzap::cancel` | Removes adjacent self-inverse gate pairs (HH, XX, etc.) |
 | `SuperOpt` | `tzap::super_opt` | Replaces small windows using its shared unitary-to-circuit table |
 | `PhaseFoldRand` | `tzap::phase_fold_rand` | Merges T/Rz gates across the circuit via randomized parity tracking |
-| `PhaseFoldGlobalExpr` | `tzap::phase_fold_global_expr` | Merges T/Rz gates via symbolic parity expressions |
 | `CnotMin` | `tzap::cnot_min` | Re-synthesizes CNOT-dihedral blocks to cut two-qubit gates |
 
 ### Running passes

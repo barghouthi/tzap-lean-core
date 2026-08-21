@@ -20,7 +20,6 @@ def _optimize_qasm(
     decompose_rz: bool = False,
     decompose_cz: bool = False,
     rz_epsilon: float = ...,
-    expr: bool = False,
     parallel: bool = False,
     superopt_qubits: int | None = None,
     superopt_window_gates: int | None = None,
