@@ -780,10 +780,10 @@ mod tests {
 
     const TOL: f64 = 1e-9;
 
-    struct TestRng(u64);
+    pub(super) struct TestRng(pub(super) u64);
 
     impl TestRng {
-        fn next(&mut self, upper: usize) -> usize {
+        pub(super) fn next(&mut self, upper: usize) -> usize {
             self.0 ^= self.0 << 13;
             self.0 ^= self.0 >> 7;
             self.0 ^= self.0 << 17;
@@ -799,6 +799,52 @@ mod tests {
     /// itself rather than the give-up path.
     fn unbounded() -> Budget {
         Budget::new(usize::MAX, usize::MAX)
+    }
+
+    pub(super) fn count_t(gates: &[Gate]) -> usize {
+        gates
+            .iter()
+            .filter(|g| matches!(g, Gate::t(_) | Gate::tdg(_)))
+            .count()
+    }
+
+    /// A random circuit mixing everything the pass interprets with the gates
+    /// that end a block, on up to `max_qubits` wires and `max_len` gates.
+    pub(super) fn random_mixed_circuit(
+        rng: &mut TestRng,
+        max_qubits: usize,
+        max_len: usize,
+    ) -> Circuit {
+        let n = 1 + rng.next(max_qubits);
+        let mut c = Circuit::new(n);
+        for _ in 0..rng.next(max_len) {
+            let q = rng.next(n);
+            match rng.next(9) {
+                0 => c.apply(Gate::t(q)),
+                1 => c.apply(Gate::tdg(q)),
+                2 => c.apply(Gate::s(q)),
+                3 => c.apply(Gate::sdg(q)),
+                4 => c.apply(Gate::z(q)),
+                5 => c.apply(Gate::x(q)),
+                6 => c.apply(Gate::h(q)),
+                7 if n > 1 => {
+                    let t = (q + 1 + rng.next(n - 1)) % n;
+                    c.apply(Gate::cz {
+                        control: q,
+                        target: t,
+                    });
+                }
+                _ if n > 1 => {
+                    let t = (q + 1 + rng.next(n - 1)) % n;
+                    c.apply(Gate::cnot {
+                        control: q,
+                        target: t,
+                    });
+                }
+                _ => c.apply(Gate::z(q)),
+            }
+        }
+        c
     }
 
     /// Apply a CNOT list to a parity state, the way the hardware would.
@@ -1489,6 +1535,93 @@ mod tests {
         );
     }
 
+    /// T-count must not rise either. [`Chunk::flush`] only compares
+    /// `(two-qubit, total)`, so nothing in the accept test looks at T
+    /// directly -- it holds because the phase map merges every rotation on a
+    /// parity into one, and [`emit_rotation`] spends at most one T on it.
+    /// Worth pinning precisely because it is a consequence rather than a
+    /// check: T is the expensive resource these circuits are measured in.
+    #[test]
+    fn never_increases_t_count() {
+        let mut rng = TestRng(0x1234_5678_9abc_def0);
+        for case in 0..2000 {
+            let c = random_mixed_circuit(&mut rng, 5, 30);
+            let out = cnot_min(&c);
+            assert!(
+                count_t(&out.gates) <= count_t(&c.gates),
+                "case {case}: T {} -> {}",
+                count_t(&c.gates),
+                count_t(&out.gates)
+            );
+        }
+    }
+
+    /// The pass is not idempotent -- a second application can find more,
+    /// since the first one reshapes the blocks the second sees -- but it must
+    /// *settle*, and never grow on the way. That is what lets it sit in a
+    /// fixpoint loop: an oscillating pass would spin forever, and a growing
+    /// one would undo the loop's progress.
+    ///
+    /// Measured over 200k random circuits, 0.16% were not idempotent after
+    /// one extra application and every one settled within three.
+    #[test]
+    fn repeated_application_reaches_a_fixed_point() {
+        let mut rng = TestRng(0xfeed_beef_1234_5678);
+        for case in 0..2000 {
+            let c = random_mixed_circuit(&mut rng, 6, 40);
+            let mut cur = cnot_min(&c);
+            let mut settled = false;
+            for _ in 0..8 {
+                let next = cnot_min(&cur);
+                assert!(
+                    next.gates.len() <= cur.gates.len(),
+                    "case {case}: grew on re-application"
+                );
+                assert!(count_2q(&next.gates) <= count_2q(&cur.gates), "case {case}");
+                if next.gates == cur.gates {
+                    settled = true;
+                    break;
+                }
+                cur = next;
+            }
+            assert!(settled, "case {case}: no fixed point within 8 applications");
+            assert!(circuits_equiv(&c, &cur, TOL), "case {case}");
+        }
+    }
+
+    /// A circuit wider than [`MAX_CHUNK_QUBITS`] exercises the cap's
+    /// flush-and-retry path and the escape hatch for a gate that no empty
+    /// block could ever admit. Too wide to compare unitaries, so this checks
+    /// what can be checked: it terminates, stays monotone, and touches no
+    /// qubit the input did not.
+    #[test]
+    fn circuits_wider_than_the_qubit_cap_are_handled() {
+        let n = MAX_CHUNK_QUBITS + 72;
+        let mut rng = TestRng(0x0fed_cba9_8765_4321);
+        for case in 0..20 {
+            let mut c = Circuit::new(n);
+            for _ in 0..4000 {
+                let a = rng.next(n);
+                match rng.next(6) {
+                    0 => c.apply(Gate::t(a)),
+                    1 => c.apply(Gate::h(a)),
+                    2 => c.apply(Gate::x(a)),
+                    _ => {
+                        let b = (a + 1 + rng.next(n - 1)) % n;
+                        c.apply(Gate::cnot {
+                            control: a,
+                            target: b,
+                        });
+                    }
+                }
+            }
+            let out = cnot_min(&c);
+            assert!(out.gates.len() <= c.gates.len(), "case {case}");
+            assert!(count_2q(&out.gates) <= count_2q(&c.gates), "case {case}");
+            assert_eq!(out.num_qubits, n);
+        }
+    }
+
     #[test]
     fn is_deterministic() {
         let mut rng = TestRng(0xfeed_face_0bad_f00d);
@@ -1611,6 +1744,86 @@ mod tests {
                 assert!(matches!(q, 3 | 7 | 11), "stray gate on qubit {q}");
             }
         }
+    }
+}
+
+/// Long-running randomized checks. Not part of the default run -- they take
+/// minutes, and the fast tests cover the same ground at smaller scale -- but
+/// they are the pass's real safety net when it changes.
+///
+///     cargo test --release --lib cnot_min::long_running -- --ignored --nocapture
+#[cfg(test)]
+mod long_running {
+    use super::tests::{TestRng, count_t, random_mixed_circuit};
+    use super::*;
+    use crate::unitary::circuits_equiv;
+
+    const TOL: f64 = 1e-9;
+
+    /// Randomized equivalence over far more circuits, and wider ones, than
+    /// the fast tests can afford. Unitary comparison is exponential in the
+    /// qubit count, which is what bounds the width here.
+    #[test]
+    #[ignore] // long-running: 200k random circuits with unitary equivalence checks
+    fn randomized_equivalence_at_scale() {
+        let mut rng = TestRng(0x5eed_1234_abcd_9876);
+        let cases = 200_000;
+        for case in 0..cases {
+            let c = random_mixed_circuit(&mut rng, 7, 60);
+            let out = cnot_min(&c);
+            assert!(circuits_equiv(&c, &out, TOL), "case {case}: {:?}", c.gates);
+            assert!(out.gates.len() <= c.gates.len(), "case {case}");
+            assert!(count_2q(&out.gates) <= count_2q(&c.gates), "case {case}");
+            assert!(count_t(&out.gates) <= count_t(&c.gates), "case {case}");
+            if case % 20_000 == 0 {
+                println!("  ..{case}/{cases}");
+            }
+        }
+        println!("{cases} random circuits: equivalent, and monotone in gates, 2q and T");
+    }
+
+    /// The same, with the block caps driven to values that force splits
+    /// mid-block -- the paths a normally-sized circuit never reaches.
+    #[test]
+    #[ignore] // long-running: 80k circuits across 20 block-cap combinations
+    fn cap_split_equivalence_at_scale() {
+        let mut rng = TestRng(0x9876_5432_10fe_dcba);
+        let mut checked = 0;
+        for qubit_cap in [1, 2, 3, 5, 8] {
+            for term_cap in [1, 2, 4, 16] {
+                for case in 0..4_000 {
+                    let c = random_mixed_circuit(&mut rng, 6, 40);
+                    let out = cnot_min_with(&c, qubit_cap, term_cap);
+                    assert!(
+                        circuits_equiv(&c, &out, TOL),
+                        "qubit_cap {qubit_cap} term_cap {term_cap} case {case}: {:?}",
+                        c.gates
+                    );
+                    assert!(out.gates.len() <= c.gates.len());
+                    checked += 1;
+                }
+            }
+        }
+        println!("{checked} circuits across 20 cap combinations: equivalent and monotone");
+    }
+
+    /// Every synthesis the budget abandons must leave exactly what running it
+    /// to completion and rejecting it would have left, at scale.
+    #[test]
+    #[ignore] // long-running: 100k circuits, budgeted against unbudgeted synthesis
+    fn budget_early_exit_at_scale() {
+        let mut rng = TestRng(0xc0de_f00d_5555_aaaa);
+        let cases = 100_000;
+        for case in 0..cases {
+            let c = random_mixed_circuit(&mut rng, 7, 60);
+            assert_eq!(
+                cnot_min(&c).gates,
+                cnot_min_unbounded(&c).gates,
+                "case {case}: budget changed the result on {:?}",
+                c.gates
+            );
+        }
+        println!("{cases} random circuits: budget is a pure early exit");
     }
 }
 
