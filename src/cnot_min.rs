@@ -1343,6 +1343,85 @@ mod tests {
     /// can no longer win has to leave exactly the circuit that running it to
     /// completion and rejecting it would have left. If this ever diverges,
     /// the bound is changing results rather than just saving work.
+    /// Every multiple of pi/4 must come out as the Clifford+T gates that
+    /// realize it -- never as an `rz`, and never as more gates than the
+    /// angle needs. Rotations are the pass's whole output apart from CNOTs,
+    /// so a wrong entry here would be a silent miscompile, and an `rz` where
+    /// a `t` belongs would leak an Rz into a Clifford+T circuit.
+    #[test]
+    fn quarter_turn_angles_emit_clifford_t_gates() {
+        // Fewest gates realizing k*pi/4: 0 is identity; +-pi/4, +-pi/2 and pi
+        // are single gates; 3pi/4 and 5pi/4 are not any single gate in the
+        // basis, so they cost two.
+        let expected_len = [0, 1, 1, 2, 1, 2, 1, 1];
+        for k in 0..8u32 {
+            let angle = f64::from(k) * PI / 4.0;
+            let mut budget = unbounded();
+            assert!(emit_rotation(&mut budget, 0, angle), "k={k}");
+            assert_eq!(budget.gates.len(), expected_len[k as usize], "k={k}");
+            assert!(
+                !budget.gates.iter().any(|g| matches!(g, Gate::rz(..))),
+                "k={k} fell back to rz"
+            );
+
+            let mut got = Circuit::new(1);
+            for gate in &budget.gates {
+                got.apply(gate.clone());
+            }
+            let mut want = Circuit::new(1);
+            if k != 0 {
+                want.apply(Gate::rz(angle, 0));
+            }
+            assert!(circuits_equiv(&want, &got, TOL), "k={k} is the wrong gate");
+        }
+    }
+
+    /// The same angles reached the way the pass actually reaches them --
+    /// summed into a block's phase map -- rather than handed to
+    /// `emit_rotation` directly, so accumulated floating-point error is
+    /// covered too.
+    #[test]
+    fn accumulated_quarter_turns_stay_clifford_t() {
+        for k in 1..8usize {
+            // k T gates on one wire, wrapped in CNOTs so the block is worth
+            // re-synthesizing and the rotation is actually re-emitted.
+            let mut c = Circuit::new(2);
+            c.apply(Gate::cnot {
+                control: 0,
+                target: 1,
+            });
+            for _ in 0..k {
+                c.apply(Gate::t(1));
+            }
+            c.apply(Gate::cnot {
+                control: 0,
+                target: 1,
+            });
+            c.apply(Gate::cnot {
+                control: 0,
+                target: 1,
+            });
+            c.apply(Gate::cnot {
+                control: 0,
+                target: 1,
+            });
+            let out = cnot_min(&c);
+            assert!(circuits_equiv(&c, &out, TOL), "k={k}");
+            assert!(
+                !out.gates.iter().any(|g| matches!(g, Gate::rz(..))),
+                "k={k}: Clifford+T input produced an rz"
+            );
+        }
+    }
+
+    /// An angle that is genuinely not a multiple of pi/4 has to stay an `rz`.
+    #[test]
+    fn non_quarter_turn_angles_stay_rz() {
+        let mut budget = unbounded();
+        assert!(emit_rotation(&mut budget, 0, 0.37));
+        assert!(matches!(budget.gates.as_slice(), [Gate::rz(..)]));
+    }
+
     #[test]
     fn budget_is_a_pure_early_exit() {
         let mut rng = TestRng(0xc0ff_ee00_1234_5678);
