@@ -42,8 +42,7 @@ struct LivePhase {
 
 /// Merges T/Rz gates that act on the same linear parity of qubits, tracking
 /// parities as random 128-bit tags (linear-time, O(1) expected-false-positive
-/// rate) rather than exact symbolic expressions. See [`crate::phase_fold_global_expr`]
-/// for the exact variant.
+/// rate) rather than exact symbolic expressions.
 pub struct PhaseFoldRand;
 
 impl Pass for PhaseFoldRand {

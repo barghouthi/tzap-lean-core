@@ -79,7 +79,7 @@ Common keyword options are:
 
 Explicit pass names are the same as the CLI's `--passes` values:
 `DecomposeToffoli`, `DecomposeCz`, `DecomposeRz`, `CancelGates`, `SuperOpt`,
-and `PhaseFoldRand`.
+`PhaseFoldRand`, and `CnotMin`.
 
 For example:
 

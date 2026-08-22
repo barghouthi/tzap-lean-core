@@ -722,18 +722,6 @@ fn passes_conflicts_with_decompose_cz() {
 }
 
 #[test]
-fn passes_conflicts_with_expr() {
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join("in.qasm");
-    fs::write(&input, HHTT_QASM).unwrap();
-
-    let out = tzap_run(&[input.to_str().unwrap(), "--passes", "CancelGates", "--expr"]);
-    assert!(!out.status.success(), "should reject --passes with --expr");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("cannot be combined"), "got: {stderr}");
-}
-
-#[test]
 fn passes_unknown_name_errors_with_valid_list() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("in.qasm");
@@ -938,7 +926,7 @@ const ALL_PASS_NAMES: [&str; 7] = [
     "CancelGates",
     "SuperOpt",
     "PhaseFoldRand",
-    "PhaseFoldGlobalExpr",
+    "CnotMin",
 ];
 
 /// Exercises every decomposition pass: a Toffoli, a CZ, and an Rz rotation,
@@ -1156,16 +1144,6 @@ fn default_pipeline_with_fixpoint() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Converged after"), "got: {stderr}");
-    read_valid_qasm(&output);
-}
-
-#[test]
-fn expr_phase_folding_pipeline() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = dir.path().join("out.qasm");
-
-    let out = tzap_run(&[TEST_QASM, "-o", output.to_str().unwrap(), "--expr"]);
-    assert_success(&out, "--expr");
     read_valid_qasm(&output);
 }
 

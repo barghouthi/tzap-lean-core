@@ -75,7 +75,6 @@ fn parse_usize_arg(args: &[String], i: usize, flag_name: &str) -> usize {
 pub(crate) fn parse_args(args: &[String]) -> Opts {
     let mut input_path: Option<String> = None;
     let mut output_path: Option<String> = None;
-    let mut expr = false;
     let mut decompose_rz = false;
     let mut decompose_cz = false;
     let mut rz_epsilon: f64 = DEFAULT_RZ_EPSILON;
@@ -97,7 +96,6 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
                 println!("tzap {}", env!("CARGO_PKG_VERSION"));
                 process::exit(0);
             }
-            "--expr" => expr = true,
             "--decompose-rz" => decompose_rz = true,
             "--decompose-cz" => decompose_cz = true,
             "--epsilon" => {
@@ -196,7 +194,7 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
         arg_error(
             "missing required <input.qasm> argument\n\n  \
              Usage: tzap <input.qasm> [-o output.qasm] [-O1|-O2|-O3|-Osuper] \
-             [--decompose-cz] [--decompose-rz] [--expr] [--passes <list>] [--parallel] [--fixpoint]\n  \
+             [--decompose-cz] [--decompose-rz] [--passes <list>] [--parallel] [--fixpoint]\n  \
              Run `tzap --help` for the full option list.",
         );
     };
@@ -204,9 +202,9 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
     if optimization_level.is_some() && (passes.is_some() || fixpoint) {
         arg_error("-O1, -O2, -O3, and -Osuper cannot be combined with --passes or --fixpoint");
     }
-    if passes.is_some() && (expr || decompose_rz || decompose_cz) {
+    if passes.is_some() && (decompose_rz || decompose_cz) {
         arg_error(
-            "--passes cannot be combined with --decompose-rz, --decompose-cz, or --expr \
+            "--passes cannot be combined with --decompose-rz or --decompose-cz \
              — list DecomposeRz/DecomposeCz as pass names instead",
         );
     }
@@ -222,7 +220,6 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
             decompose_rz,
             decompose_cz,
             rz_epsilon,
-            expr,
             parallel,
             // Hidden (undocumented in `--help`) bounds overrides; `None` means
             // "use whichever preset the optimization level implies".
@@ -283,10 +280,7 @@ fn print_help() {
     println!("    \x1b[1m-v, --version\x1b[0m    Print the version");
     println!();
     println!("  \x1b[1;33mPASSES\x1b[0m (names for --passes)");
-    for (name, pass, desc) in PassName::ALL {
-        if matches!(pass, PassName::PhaseFoldGlobalExpr) {
-            continue;
-        }
+    for (name, _pass, desc) in PassName::ALL {
         println!("    \x1b[1m{name:<19}\x1b[0m  {desc}");
     }
     println!();

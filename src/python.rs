@@ -96,7 +96,6 @@ fn positive_bound(value: Option<usize>, name: &str) -> PyResult<Option<usize>> {
     decompose_rz = false,
     decompose_cz = false,
     rz_epsilon = crate::optimize::DEFAULT_RZ_EPSILON,
-    expr = false,
     parallel = false,
     superopt_qubits = None,
     superopt_window_gates = None,
@@ -112,7 +111,6 @@ fn _optimize_qasm(
     decompose_rz: bool,
     decompose_cz: bool,
     rz_epsilon: f64,
-    expr: bool,
     parallel: bool,
     superopt_qubits: Option<usize>,
     superopt_window_gates: Option<usize>,
@@ -125,9 +123,9 @@ fn _optimize_qasm(
     }
 
     let passes = parse_passes(passes)?;
-    if passes.is_some() && (decompose_rz || decompose_cz || expr) {
+    if passes.is_some() && (decompose_rz || decompose_cz) {
         return Err(PyValueError::new_err(
-            "passes cannot be combined with decompose_rz, decompose_cz, or expr; \
+            "passes cannot be combined with decompose_rz or decompose_cz; \
              include DecomposeRz or DecomposeCz in passes instead",
         ));
     }
@@ -139,7 +137,6 @@ fn _optimize_qasm(
         decompose_rz,
         decompose_cz,
         rz_epsilon,
-        expr,
         parallel,
         superopt: SuperOptBounds {
             qubits: positive_bound(superopt_qubits, "superopt_qubits")?,

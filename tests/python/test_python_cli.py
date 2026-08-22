@@ -159,7 +159,6 @@ def test_main_forwards_every_optimizer_flag(monkeypatch, tmp_path):
             "--decompose-cz",
             "--epsilon",
             "0.001",
-            "--expr",
             "--parallel",
         ]
     )
@@ -174,7 +173,6 @@ def test_main_forwards_every_optimizer_flag(monkeypatch, tmp_path):
             "decompose_rz": True,
             "decompose_cz": True,
             "rz_epsilon": 0.001,
-            "expr": True,
             "parallel": True,
         },
     }
