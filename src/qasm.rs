@@ -101,134 +101,135 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
             };
             match keyword {
                 "qreg" => {
-                if seen_gate {
-                    return Err(format!("line {line_num}: qreg declaration after gate"));
-                }
-                // parse "qreg name[size]"
-                let rest = rest.trim();
-                if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
-                    let name = rest[..bracket].trim().to_string();
-                    let size: usize = rest[bracket + 1..end]
-                        .parse()
-                        .map_err(|e| format!("line {line_num}: bad qreg size: {e}"))?;
-                    registers.push((name, num_qubits, size));
-                    num_qubits += size;
-                }
+                    if seen_gate {
+                        return Err(format!("line {line_num}: qreg declaration after gate"));
+                    }
+                    // parse "qreg name[size]"
+                    let rest = rest.trim();
+                    if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
+                        let name = rest[..bracket].trim().to_string();
+                        let size: usize = rest[bracket + 1..end]
+                            .parse()
+                            .map_err(|e| format!("line {line_num}: bad qreg size: {e}"))?;
+                        registers.push((name, num_qubits, size));
+                        num_qubits += size;
+                    }
                 }
                 "creg" => {
-                if seen_gate {
-                    return Err(format!("line {line_num}: creg declaration after gate"));
-                }
-                let rest = rest.trim();
-                if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
-                    let name = rest[..bracket].trim().to_string();
-                    let size: usize = rest[bracket + 1..end]
-                        .parse()
-                        .map_err(|e| format!("line {line_num}: bad creg size: {e}"))?;
-                    cregisters.push((name, num_cbits, size));
-                    num_cbits += size;
-                }
+                    if seen_gate {
+                        return Err(format!("line {line_num}: creg declaration after gate"));
+                    }
+                    let rest = rest.trim();
+                    if let (Some(bracket), Some(end)) = (rest.find('['), rest.find(']')) {
+                        let name = rest[..bracket].trim().to_string();
+                        let size: usize = rest[bracket + 1..end]
+                            .parse()
+                            .map_err(|e| format!("line {line_num}: bad creg size: {e}"))?;
+                        cregisters.push((name, num_cbits, size));
+                        num_cbits += size;
+                    }
                 }
                 "measure " => {
-                seen_gate = true;
-                for (qubit, cbit) in parse_measure(rest, &registers, &cregisters, line_num)? {
-                    gates.push(Gate::measure { qubit, cbit });
-                }
+                    seen_gate = true;
+                    for (qubit, cbit) in parse_measure(rest, &registers, &cregisters, line_num)? {
+                        gates.push(Gate::measure { qubit, cbit });
+                    }
                 }
                 "reset " => {
-                seen_gate = true;
-                for q in expand_qubit_operand(rest, &registers, line_num)? {
-                    gates.push(Gate::reset(q));
-                }
+                    seen_gate = true;
+                    for q in expand_qubit_operand(rest, &registers, line_num)? {
+                        gates.push(Gate::reset(q));
+                    }
                 }
                 "cx " => {
-                seen_gate = true;
-                let qubits = resolve_qubits(rest, &registers, line_num)?;
-                require_arity("cx", &qubits, 2, line_num)?;
-                gates.push(Gate::cnot {
-                    control: qubits[0],
-                    target: qubits[1],
-                });
+                    seen_gate = true;
+                    let qubits = resolve_qubits(rest, &registers, line_num)?;
+                    require_arity("cx", &qubits, 2, line_num)?;
+                    gates.push(Gate::cnot {
+                        control: qubits[0],
+                        target: qubits[1],
+                    });
                 }
                 "ccz " => {
-                seen_gate = true;
-                let qubits = resolve_qubits(rest, &registers, line_num)?;
-                require_arity("ccz", &qubits, 3, line_num)?;
-                gates.push(Gate::ccz {
-                    control1: qubits[0],
-                    control2: qubits[1],
-                    target: qubits[2],
-                });
+                    seen_gate = true;
+                    let qubits = resolve_qubits(rest, &registers, line_num)?;
+                    require_arity("ccz", &qubits, 3, line_num)?;
+                    gates.push(Gate::ccz {
+                        control1: qubits[0],
+                        control2: qubits[1],
+                        target: qubits[2],
+                    });
                 }
                 "ccx " => {
-                seen_gate = true;
-                let qubits = resolve_qubits(rest, &registers, line_num)?;
-                require_arity("ccx", &qubits, 3, line_num)?;
-                gates.push(Gate::ccx {
-                    control1: qubits[0],
-                    control2: qubits[1],
-                    target: qubits[2],
-                });
+                    seen_gate = true;
+                    let qubits = resolve_qubits(rest, &registers, line_num)?;
+                    require_arity("ccx", &qubits, 3, line_num)?;
+                    gates.push(Gate::ccx {
+                        control1: qubits[0],
+                        control2: qubits[1],
+                        target: qubits[2],
+                    });
                 }
                 "cz " => {
-                seen_gate = true;
-                let qubits = resolve_qubits(rest, &registers, line_num)?;
-                require_arity("cz", &qubits, 2, line_num)?;
-                gates.push(Gate::cz {
-                    control: qubits[0],
-                    target: qubits[1],
-                });
+                    seen_gate = true;
+                    let qubits = resolve_qubits(rest, &registers, line_num)?;
+                    require_arity("cz", &qubits, 2, line_num)?;
+                    gates.push(Gate::cz {
+                        control: qubits[0],
+                        target: qubits[1],
+                    });
                 }
                 "h " => {
-                seen_gate = true;
-                gates.push(Gate::h(resolve_single_qubit(
-                    "h", rest, &registers, line_num,
-                )?));
+                    seen_gate = true;
+                    gates.push(Gate::h(resolve_single_qubit(
+                        "h", rest, &registers, line_num,
+                    )?));
                 }
                 "x " => {
-                seen_gate = true;
-                gates.push(Gate::x(resolve_single_qubit(
-                    "x", rest, &registers, line_num,
-                )?));
+                    seen_gate = true;
+                    gates.push(Gate::x(resolve_single_qubit(
+                        "x", rest, &registers, line_num,
+                    )?));
                 }
                 "s " => {
-                seen_gate = true;
-                gates.push(Gate::s(resolve_single_qubit(
-                    "s", rest, &registers, line_num,
-                )?));
+                    seen_gate = true;
+                    gates.push(Gate::s(resolve_single_qubit(
+                        "s", rest, &registers, line_num,
+                    )?));
                 }
                 "tdg " => {
-                seen_gate = true;
-                gates.push(Gate::tdg(resolve_single_qubit(
-                    "tdg", rest, &registers, line_num,
-                )?));
+                    seen_gate = true;
+                    gates.push(Gate::tdg(resolve_single_qubit(
+                        "tdg", rest, &registers, line_num,
+                    )?));
                 }
                 "z " => {
-                seen_gate = true;
-                gates.push(Gate::z(resolve_single_qubit(
-                    "z", rest, &registers, line_num,
-                )?));
+                    seen_gate = true;
+                    gates.push(Gate::z(resolve_single_qubit(
+                        "z", rest, &registers, line_num,
+                    )?));
                 }
                 "sdg " => {
-                seen_gate = true;
-                gates.push(Gate::sdg(resolve_single_qubit(
-                    "sdg", rest, &registers, line_num,
-                )?));
+                    seen_gate = true;
+                    gates.push(Gate::sdg(resolve_single_qubit(
+                        "sdg", rest, &registers, line_num,
+                    )?));
                 }
                 "t " => {
-                seen_gate = true;
-                gates.push(Gate::t(resolve_single_qubit(
-                    "t", rest, &registers, line_num,
-                )?));
+                    seen_gate = true;
+                    gates.push(Gate::t(resolve_single_qubit(
+                        "t", rest, &registers, line_num,
+                    )?));
                 }
                 "rz(" => {
-                seen_gate = true;
-                let paren_end = find_matching_paren(rest)
-                    .ok_or_else(|| format!("line {line_num}: rz missing closing ')': {line}"))?;
-                let theta = parse_angle(&rest[..paren_end], line_num)?;
-                let qubit =
-                    resolve_single_qubit("rz", &rest[paren_end + 1..], &registers, line_num)?;
-                gates.push(Gate::rz(theta, qubit));
+                    seen_gate = true;
+                    let paren_end = find_matching_paren(rest).ok_or_else(|| {
+                        format!("line {line_num}: rz missing closing ')': {line}")
+                    })?;
+                    let theta = parse_angle(&rest[..paren_end], line_num)?;
+                    let qubit =
+                        resolve_single_qubit("rz", &rest[paren_end + 1..], &registers, line_num)?;
+                    gates.push(Gate::rz(theta, qubit));
                 }
                 _ => unreachable!("keyword came from the candidate list"),
             }

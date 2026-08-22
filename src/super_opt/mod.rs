@@ -86,9 +86,9 @@ pub use config::SuperOptTableConfig;
 pub use error::SuperOptError;
 
 use matrix::UnitaryMatrix;
-use matrix_cache::{CachedMatrix, GateCode, MatrixStore, gate_code};
 #[cfg(test)]
 use matrix_cache::compact_normalized_key;
+use matrix_cache::{CachedMatrix, GateCode, MatrixStore, gate_code};
 use table::{UnitaryCircuitTable, shared_synthesis_table};
 
 /// Whether a synthesis table matching `config` is already cached on disk —
@@ -493,8 +493,7 @@ impl SuperOpt {
                 // bridged-in qubit renumbers the support, so it cannot.
                 let appended = added_qubits.is_empty().then_some(()).and(gate_parts);
 
-                let at_gate_limit =
-                    arena.window(window_id).gate_indices.len() == self.window_gates;
+                let at_gate_limit = arena.window(window_id).gate_indices.len() == self.window_gates;
                 let selected = self.analyze_window(
                     circuit,
                     arena.window(window_id),
