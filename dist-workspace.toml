@@ -19,7 +19,10 @@ hosting = "github"
 install-updater = false
 # Homebrew tap repo to publish formula updates to
 tap = "qqq-wisc/homebrew-tap"
-# Publish the Homebrew formula and crates.io package as part of each release
-publish-jobs = ["homebrew", "./publish-crates-io", "./publish-pypi"]
+# Publish the Homebrew formula and the PyPI wheels as part of each release.
+# crates.io is NOT published here: `cargo release` uploads the crate from the
+# maintainer's machine before it pushes the tag, so a CI `cargo publish` would
+# always lose the race and fail with "already exists on crates.io index".
+publish-jobs = ["homebrew", "./publish-pypi"]
 # Name the formula after the "tzap" binary, not the "tzap-opt" crates.io package
 formula = "tzap"
