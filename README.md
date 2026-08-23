@@ -70,7 +70,7 @@ For example, using a benchmark in this repo:
 
 ```console
 $ tzap benchmarks/feynman/hwb12.qasm -o optimized.qasm
-⚡️ tzap v0.4.4
+⚡️ tzap v0.5.0
   Parsed benchmarks/feynman/hwb12.qasm (5.5 MB) in 0.080s
 	└─ 20 qubits · 514,412 gates
   Loaded superoptimizer table in 0.021s
