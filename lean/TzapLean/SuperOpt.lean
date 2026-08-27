@@ -83,6 +83,22 @@ def accepts {k : Nat} (target : ExactMat k) (cand : List Gate) : Bool :=
 /-- Rename a local circuit back to the window's physical wires. -/
 def globalizeGate (S : List Qubit) : Gate → Gate := mapQubits (fun i => S.getD i 0)
 
+/-- Whether the table might answer for this window.
+
+`trySynth` builds the window's matrix through `ExactMat`, which is indexed by a *function*, so
+every entry access walks the chain of gates applied so far — profiling put `Basis.get`,
+`Basis.set` and closure application at the top of the pass. That cost is worth paying once a
+replacement exists, and wasted on the overwhelming majority of windows that have none. This
+filter answers the same question on the flat representation the table itself is built with.
+
+It is unverified in both directions, and safe in both: a false negative costs an optimization,
+a false positive costs one wasted verified lookup. Nothing downstream trusts it — `trySynth`
+still computes the real matrix and `accepts` still compares exactly. -/
+def windowMayHold (tbl : SynthTable) (k : Nat) (fm : Option FlatMat) : Bool :=
+  match fm with
+  | none => false
+  | some M => tbl.mayHold k M
+
 /-- Look for a strictly shorter replacement for a window, verified before it is returned. -/
 def trySynth (tbl : SynthTable) (w : Win) : Option (List Gate) :=
   if w.members.length ≤ 1 then none
@@ -97,12 +113,24 @@ def trySynth (tbl : SynthTable) (w : Win) : Option (List Gate) :=
               some (cand.map (globalizeGate w.support))
             else none
 
+/-- `trySynth`, but skipping the expensive exact-matrix build when the filter says the table
+holds nothing for this window. Same answer whenever the filter is right, and a strictly
+verified answer either way. -/
+def trySynthFiltered (tbl : SynthTable) (fm : Option FlatMat) (w : Win) : Option (List Gate) :=
+  if windowMayHold tbl w.support.length fm then trySynth tbl w else none
+
+/-- The window's flat matrix after one more gate: extended in place when the support is
+unchanged, rebuilt when the gate brings a new wire in (at most `maxQubits` times per window). -/
+def extendFlat (sup : List Qubit) (fm : Option FlatMat) (w : Win) (g : Gate) : Option FlatMat :=
+  if sup.length == w.support.length then fm.bind (·.applyGate (localizeGate w.support g))
+  else FlatMat.ofGates sup.length (localizeGates sup (w.members ++ [g]))
+
 /-! ## The scan -/
 
 /-- Grow a window through the gates that follow it, rewriting at the first hit. The result
 replaces the whole consumed span *and* the gates after it. -/
-def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (w : Win) :
-    List Gate → Option (List Gate × List Gate × List Gate)
+def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (fm : Option FlatMat)
+    (w : Win) : List Gate → Option (List Gate × List Gate × List Gate)
   | [] => none
   | g :: rest =>
       if touches w.support g then
@@ -110,26 +138,28 @@ def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (w : Win) :
             (widen w.support g.qubitsOf).length ≤ cfg.maxQubits &&
             w.members.length + 1 ≤ cfg.maxWindow &&
             !w.skipped.any (fun s => touches (widen w.support g.qubitsOf) s) then
-          match trySynth tbl
+          -- The cheap filter first: only build the window's exact matrix when the table
+          -- might actually answer for it (see `windowMayHold`).
+          match trySynthFiltered tbl (extendFlat (widen w.support g.qubitsOf) fm w g)
               ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ with
           | some repl => some (repl, w.skipped, rest)
           | none =>
-              tryWindow cfg tbl n
+              tryWindow cfg tbl n (extendFlat (widen w.support g.qubitsOf) fm w g)
                 ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ rest
         else none
       else
-        tryWindow cfg tbl n ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ rest
+        tryWindow cfg tbl n fm ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ rest
 
 /-- The tail a rewrite leaves is a suffix of what the window was scanning, so a sweep that
 continues from it makes progress. -/
 theorem tryWindow_tail_le {cfg : SuperOptConfig} {tbl : SynthTable} {n : Nat} :
-    ∀ (rest : List Gate) (w : Win) (repl sk tail : List Gate),
-      tryWindow cfg tbl n w rest = some (repl, sk, tail) → tail.length ≤ rest.length := by
+    ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (repl sk tail : List Gate),
+      tryWindow cfg tbl n fm w rest = some (repl, sk, tail) → tail.length ≤ rest.length := by
   intro rest
   induction rest with
-  | nil => intro w repl sk tail h; rw [tryWindow] at h; exact absurd h (by simp)
+  | nil => intro fm w repl sk tail h; rw [tryWindow] at h; exact absurd h (by simp)
   | cons g rest ih =>
-      intro w repl sk tail h
+      intro fm w repl sk tail h
       rw [tryWindow] at h
       split at h
       · split at h
@@ -137,9 +167,9 @@ theorem tryWindow_tail_le {cfg : SuperOptConfig} {tbl : SynthTable} {n : Nat} :
           · rw [Option.some.injEq] at h
             obtain ⟨-, -, rfl⟩ := h
             simp
-          · exact le_trans (ih _ _ _ _ h) (by simp)
+          · exact le_trans (ih _ _ _ _ _ h) (by simp)
         · exact absurd h (by simp)
-      · exact le_trans (ih _ _ _ _ h) (by simp)
+      · exact le_trans (ih _ _ _ _ _ h) (by simp)
 
 /-- Whether a gate may anchor a window. -/
 def canAnchor (cfg : SuperOptConfig) (n : Nat) (g : Gate) : Bool :=
@@ -159,7 +189,9 @@ def sweepOnce (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : Nat → List
   | _ + 1, [] => []
   | fuel + 1, g :: rest =>
       if canAnchor cfg n g then
-        match tryWindow cfg tbl n (Win.start g) rest with
+        match tryWindow cfg tbl n
+            (FlatMat.ofGates (Win.start g).support.length
+              (localizeGates (Win.start g).support (Win.start g).members)) (Win.start g) rest with
         | some (repl, sk, tail) => repl ++ sk ++ sweepOnce cfg tbl n fuel tail
         | none => g :: sweepOnce cfg tbl n fuel rest
       else g :: sweepOnce cfg tbl n fuel rest

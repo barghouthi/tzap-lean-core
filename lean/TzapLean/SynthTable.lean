@@ -320,6 +320,26 @@ def applyLib (M : FlatMat) : LibGate → FlatMat
   | .tdg q => M.phaseMask (bit M.n q) 7
   | .cnot c tgt => M.xMask (bit M.n c) (bit M.n tgt)
 
+/-- One circuit gate, applied on the left — the same actions as `ExactMat.applyGate`, on the
+flat representation. `none` for the gates `SuperOpt` treats as window barriers. -/
+def applyGate (M : FlatMat) : Gate → Option FlatMat
+  | .x q => some (M.xMask 0 (bit M.n q))
+  | .h q => some (M.hadamard q)
+  | .s q => some (M.phaseMask (bit M.n q) 2)
+  | .sdg q => some (M.phaseMask (bit M.n q) 6)
+  | .z q => some (M.phaseMask (bit M.n q) 4)
+  | .t q => some (M.phaseMask (bit M.n q) 1)
+  | .tdg q => some (M.phaseMask (bit M.n q) 7)
+  | .cnot c tgt => some (M.xMask (bit M.n c) (bit M.n tgt))
+  | .ccx a b tgt => some (M.xMask (bit M.n a ||| bit M.n b) (bit M.n tgt))
+  | .cz c tgt => some (M.phaseMask (bit M.n c ||| bit M.n tgt) 4)
+  | .ccz a b tgt => some (M.phaseMask (bit M.n a ||| bit M.n b ||| bit M.n tgt) 4)
+  | _ => none
+
+/-- The matrix of a gate list on `k` wires. -/
+def ofGates (k : Nat) (gs : List Gate) : Option FlatMat :=
+  gs.foldl (fun acc g => acc.bind fun M => M.applyGate g) (some (FlatMat.id k))
+
 /-- Strip common factors of `√2`. -/
 def normalize (M : FlatMat) : FlatMat := Id.run do
   let mut d := M.den
@@ -434,6 +454,17 @@ deriving Inhabited
 def buildTable (cfg : SuperOptTableConfig) : SynthTable :=
   { widths := (Array.range (cfg.maxQubits + 1)).map fun k =>
       if k == 0 then default else buildWidth k cfg }
+
+/-- Whether the table holds anything for this fingerprint — the cheap pre-filter `SuperOpt`
+uses to decide whether the verified lookup is worth running at all. Unverified in both
+directions: a false negative costs an optimization, and a false positive costs one wasted
+verified lookup. -/
+def SynthTable.mayHold (tbl : SynthTable) (k : Nat) (M : FlatMat) : Bool :=
+  match tbl.widths[k]? with
+  | none => false
+  | some w =>
+      let N := M.normalize
+      (w.keys.get? (fingerprintFlat N.den N.data)).isSome
 
 /-- Look a unitary up. A hit is the shortest circuit the enumeration found for it; the
 caller still re-verifies before rewriting. -/

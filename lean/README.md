@@ -67,23 +67,35 @@ can lower. The front end says so at the door.
 
 On `benchmarks/feynman/gf2^8_mult.qasm` (24 qubits, 1,139 gates, pure Clifford+T) every level
 produces **byte-identical output** to the Rust optimizer — 1,139 → 709 gates, T/Tdg 448 → 264,
-depth 307 → 235. The timings differ:
+depth 307 → 235. The timings still differ, by roughly 50× at `-O3` (1.5 s against 0.03 s).
 
-| Level | Lean | Rust |
+Per pass, on the same input:
+
+| pass | Lean | Rust |
 |---|---|---|
-| `-O1` | 0.9 s | 0.001 s |
-| `-O3` | 1.8 s | 0.031 s |
-| `-Osuper` | 6.6 s | 16.4 s |
+| CnotMin | 0.019 s | 0.000 s |
+| CancelGates | 0.013 s | 0.000 s |
+| SuperOpt | 0.97 s | 0.012 s |
+| PhaseFoldRand | 0.14 s | 0.000 s |
 
-Almost all of the Lean time is `PhaseFoldRand`, and the reason is algorithmic rather than a
-constant factor: Rust makes **one forward pass**, keying a hash map from parity tag to
-rotation group, so it is `O(n)`. This port scans forward from each rotation looking for a
-later one on the same parity, so it is `O(n²)` — measured at 4× per doubling of gate count
-against Rust's flat 0.000 s. Closing that means restructuring the pass around the group map,
-which is a different correctness argument from the pairwise merge lemma proved here.
+Two of the four are already within a rounding error of Rust, which is the useful part of the
+comparison: the gap is not Lean's code generation, or boxing, or the verification. It is
+concentrated in the two passes that build and compare matrices.
 
-`-Osuper` is faster than Rust only because it does much less: Rust builds a 5,000,000-entry
-table across 5 wires, this builds 40,784 across 3.
+What is left in `SuperOpt` is the cost of `ExactMat` being indexed by a *function*: every
+entry access walks the chain of gates applied so far. Profiling the compiled binary puts the
+remainder in reference counting, closure application, and allocation inside that layer rather
+than in any one place, so closing it means giving the pass a flat matrix representation
+throughout — the builder already has one (`FlatMat`), and `windowMayHold` uses it as a filter,
+but the verified path still goes through `ExactMat` because that is what the proofs are stated
+about.
+
+`PhaseFoldRand` remains `O(n²)` in principle — it scans forward from each rotation for a later
+one on the same parity, where Rust makes one pass keyed by a parity-to-group hash map — but
+the constant is now small enough that it is no longer what dominates.
+
+`-Osuper` is faster than Rust (2.9 s against 16.4 s) only because it does much less: Rust
+builds a 5,000,000-entry table across 5 wires, this builds 800,000 across 4.
 
 **`-O1`–`-O3` use Rust's own `SuperOpt` bounds** — 3 wires, 25-gate windows, 200,000 entries,
 with the same `table_gates = window_gates - 1` mapping. `-Osuper` does not: Rust uses 5 wires

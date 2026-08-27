@@ -163,6 +163,14 @@ theorem accepts_spec {k : Nat} {target : ExactMat k} {cand : List Gate}
         | none => rw [hp] at hmat; exact absurd hmat (by simp)
         | some p => exact ⟨N, p, rfl, hp⟩
 
+/-- The filter only ever skips work: a replacement it returns is one `trySynth` returned. -/
+theorem trySynthFiltered_eq {tbl : SynthTable} {fm : Option FlatMat} {w : Win} {repl : List Gate}
+    (h : trySynthFiltered tbl fm w = some repl) : trySynth tbl w = some repl := by
+  rw [trySynthFiltered] at h
+  split at h
+  · exact h
+  · exact absurd h (by simp)
+
 /-! ## A verified replacement is equivalent to its window -/
 
 theorem trySynth_correct {n m : Nat} {tbl : SynthTable} {w : Win} {repl : List Gate}
@@ -272,15 +280,15 @@ theorem disjoint_of_notMem {g g' : Gate} (h : ∀ q ∈ g.qubitsOf, q ∉ g'.qub
   · exact absurd ((Gate.support_iff g' q).1 (by simp [hq'])) (h q ((Gate.support_iff g q).1 hq))
 
 theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
-    ∀ (rest : List Gate) (w : Win) (repl sk tail : List Gate), WinOk n m w →
-      (∀ g ∈ rest, g.Wf) → tryWindow cfg tbl n w rest = some (repl, sk, tail) →
+    ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (repl sk tail : List Gate), WinOk n m w →
+      (∀ g ∈ rest, g.Wf) → tryWindow cfg tbl n fm w rest = some (repl, sk, tail) →
       Equivalent n m (repl ++ sk ++ tail) (w.consumed ++ rest) ∧
         (∀ g ∈ repl, g.Wf) ∧ (∀ g ∈ sk, g.Wf) ∧ (∀ g ∈ tail, g.Wf) := by
   intro rest
   induction rest with
-  | nil => intro w repl sk tail _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
+  | nil => intro fm w repl sk tail _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
   | cons g rest ih =>
-      intro w repl sk tail hok hwfr h
+      intro fm w repl sk tail hok hwfr h
       rw [tryWindow] at h
       split at h
       · -- the gate touches the window
@@ -334,7 +342,8 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             obtain ⟨hr, hs, ht⟩ := h
             subst hr; subst hs; subst ht
             obtain ⟨heq, hwfrepl, -⟩ :=
-              trySynth_correct (m := m) hok'.nodup hok'.range hok'.sub hok'.wf hsynth
+              trySynth_correct (m := m) hok'.nodup hok'.range hok'.sub hok'.wf
+                (trySynthFiltered_eq hsynth)
             refine ⟨?_, hwfrepl, hok.wfsk, fun x hx => hwfr x (by simp [hx])⟩
             have e1 : Equivalent n m (repl₀ ++ w.skipped) ((w.members ++ [g]) ++ w.skipped) :=
               Equivalent.append_right w.skipped heq
@@ -344,7 +353,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             simpa using this
           · -- keep scanning
             obtain ⟨heq, h1, h2, h3⟩ :=
-              ih ⟨sup, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ repl sk tail hok'
+              ih _ ⟨sup, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ repl sk tail hok'
                 (fun x hx => hwfr x (by simp [hx])) h
             exact ⟨by simpa using heq, h1, h2, h3⟩
         · exact absurd h (by simp)
@@ -365,7 +374,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
           · have := Equivalent.append_right (n := n) (m := m) [g] hok.equiv
             simpa using this
         obtain ⟨heq, h1, h2, h3⟩ :=
-          ih ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ repl sk tail hok'
+          ih _ ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ repl sk tail hok'
             (fun x hx => hwfr x (by simp [hx])) h
         exact ⟨by simpa using heq, h1, h2, h3⟩
 
@@ -411,7 +420,7 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
                   exact isWindowGate_isUnitary hwin
                 · simpa [Win.start] using Equivalent.refl n m [g]
               obtain ⟨heq, hrepl, hsk, htail⟩ :=
-                tryWindow_correct rest (Win.start g) repl sk tail hok
+                tryWindow_correct rest _ (Win.start g) repl sk tail hok
                   (fun x hx => hwf x (by simp [hx])) hw
               obtain ⟨heqt, hwft⟩ := ih tail htail
               refine ⟨?_, ?_⟩
