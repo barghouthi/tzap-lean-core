@@ -24,46 +24,51 @@ open Form
 /-- The all-ones tag: the hash of the constant parity `1`, i.e. Rust's bitwise `!`. -/
 def ones (k : Nat) : BitString k := fun _ => 1
 
-/-- A tag, as the algorithm stores it: `k` bits in an array.
+/-- A tag, as the algorithm stores it: `k` bits in an array of `Bool`.
 
-The theory's tag is a *function* `Fin k → F₂` (`BitString k`), which is the right object for
-the collision bound but the wrong one to compute with: `x` and `cnot` build a new tag out of
-old ones, so a stored tag would be a closure over its predecessors, and reading one bit of a
-tag `d` gates deep costs `kᵈ`. Measured, that is exactly what happens — each `cnot` multiplies
-the cost of a tag read by `k`. An array has nothing to rebuild.
+Two departures from the theory's `BitString k = Fin k → F₂`, both forced by measurement:
 
-`bitsToArr` is the bridge, and `bitsToArr_inj` is what lets the proof read an equality of
-stored tags back as an equality of the functions they stand for. -/
-abbrev Tag := Array F₂
+* **An array, not a function.** `x` and `cnot` build a tag out of old ones, so a stored
+  function would be a closure over its predecessors and reading one bit of a tag `d` gates
+  deep would cost `kᵈ` — measured at exactly `k` per `cnot`. An array has nothing to rebuild.
+* **`Bool`, not `F₂`.** Arithmetic in `ZMod 2` goes through a ring instance that cannot be
+  specialized; one 64-entry XOR costs 43 µs against 0.07 µs for the same array of `Bool` —
+  about 600×, and the dominant cost of the whole pass.
+
+`bitsToArr` is the bridge to the theory, and `bitsToArr_inj` is what lets a proof read an
+equality of stored tags back as an equality of the functions they stand for. -/
+abbrev Tag := Array Bool
 
 /-- The array of a tag function's bits. -/
-def bitsToArr {k : Nat} (t : BitString k) : Tag := ((List.finRange k).map t).toArray
+def bitsToArr {k : Nat} (t : BitString k) : Tag :=
+  ((List.finRange k).map fun j => unbit (t j)).toArray
 
 @[simp] theorem size_bitsToArr {k : Nat} (t : BitString k) : (bitsToArr t).size = k := by
   simp [bitsToArr]
 
 @[simp] theorem getElem_bitsToArr {k : Nat} (t : BitString k) (j : Fin k) :
-    (bitsToArr t)[(j : Nat)]'(by simp) = t j := by
+    (bitsToArr t)[(j : Nat)]'(by simp) = unbit (t j) := by
   simp [bitsToArr]
 
 /-- Distinct tag functions have distinct arrays, so comparing arrays decides the functions. -/
 theorem bitsToArr_inj {k : Nat} {a b : BitString k} (h : bitsToArr a = bitsToArr b) : a = b := by
   funext j
+  refine unbit_inj ?_
   have hj : (bitsToArr a)[(j : Nat)]'(by simp) = (bitsToArr b)[(j : Nat)]'(by simp) := by
     simp only [h]
   simpa using hj
 
-/-- The all-ones tag: the array of `ones k`. -/
-def onesArr (k : Nat) : Tag := Array.replicate k 1
+/-- The all-ones tag. -/
+def onesArr (k : Nat) : Tag := Array.replicate k true
 
 theorem onesArr_eq (k : Nat) : onesArr k = bitsToArr (ones k) := by
   apply Array.ext
   · simp [onesArr]
   · intro i h1 h2
-    simp [onesArr, bitsToArr, ones]
+    simp [onesArr, bitsToArr, ones, unbit]
 
 /-- Bitwise XOR of two tags. -/
-def xorArr (a b : Tag) : Tag := (a.zip b).map fun p => p.1 + p.2
+def xorArr (a b : Tag) : Tag := (a.zip b).map fun p => p.1 ^^ p.2
 
 theorem xorArr_bitsToArr {k : Nat} (a b : BitString k) :
     xorArr (bitsToArr a) (bitsToArr b) = bitsToArr (a + b) := by
@@ -71,11 +76,11 @@ theorem xorArr_bitsToArr {k : Nat} (a b : BitString k) :
   · simp [xorArr]
   · intro i h1 h2
     have hi : i < k := by simpa using h2
-    have e : ∀ (t : BitString k), (bitsToArr t)[i]'(by simpa using hi) = t ⟨i, hi⟩ := by
+    have e : ∀ (t : BitString k), (bitsToArr t)[i]'(by simpa using hi) = unbit (t ⟨i, hi⟩) := by
       intro t
       simpa using getElem_bitsToArr t ⟨i, hi⟩
     simp only [xorArr, Array.getElem_map, Array.getElem_zip, e]
-    rfl
+    exact (unbit_add _ _).symm
 
 /-! ## Tag states -/
 

@@ -51,6 +51,21 @@ theorem bit_xor (a b : Bool) : bit (a != b) = bit a + bit b := by
   cases a <;> cases b <;> simp [bit]
   exact (CharTwo.add_self_eq_zero (1 : F₂)).symm
 
+/-- The inverse of `bit`: `𝔽₂` back to `Bool`. Arithmetic in `ZMod 2` goes through a ring
+instance that cannot be specialized, which costs ~600× what the corresponding `Bool`
+operation costs — measured. The algorithm therefore stores `Bool`s and uses these to talk to
+the theory. -/
+def unbit (x : F₂) : Bool := decide (x = 1)
+
+@[simp] theorem bit_unbit (x : F₂) : bit (unbit x) = x := by revert x; decide
+
+@[simp] theorem unbit_bit (b : Bool) : unbit (bit b) = b := by cases b <;> simp [unbit, bit]
+
+theorem unbit_add (x y : F₂) : unbit (x + y) = (unbit x ^^ unbit y) := by revert x y; decide
+
+theorem unbit_inj {x y : F₂} (h : unbit x = unbit y) : x = y := by
+  rw [← bit_unbit x, ← bit_unbit y, h]
+
 theorem bit_eq_iff (a b : Bool) : bit a = bit b ↔ a = b :=
   ⟨fun h => bit_injective h, fun h => by rw [h]⟩
 

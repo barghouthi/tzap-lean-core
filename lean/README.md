@@ -62,6 +62,42 @@ new — `PhaseFoldRand` is randomized, so a run is only reproducible if its tags
 gridsynth is not ported, so accepting an `rz` would mean carrying a gate nothing downstream
 can lower. The front end says so at the door.
 
+### Where this differs from Rust, measured
+
+On `benchmarks/feynman/gf2^8_mult.qasm` (24 qubits, 1,139 gates, pure Clifford+T) every level
+produces **byte-identical output** to the Rust optimizer — 1,139 → 709 gates, T/Tdg 448 → 264,
+depth 307 → 235. The timings differ:
+
+| Level | Lean | Rust |
+|---|---|---|
+| `-O1` | 0.9 s | 0.001 s |
+| `-O3` | 1.8 s | 0.031 s |
+| `-Osuper` | 6.6 s | 16.4 s |
+
+Almost all of the Lean time is `PhaseFoldRand`, and the reason is algorithmic rather than a
+constant factor: Rust makes **one forward pass**, keying a hash map from parity tag to
+rotation group, so it is `O(n)`. This port scans forward from each rotation looking for a
+later one on the same parity, so it is `O(n²)` — measured at 4× per doubling of gate count
+against Rust's flat 0.000 s. Closing that means restructuring the pass around the group map,
+which is a different correctness argument from the pairwise merge lemma proved here.
+
+`-Osuper` is faster than Rust only because it does much less: Rust builds a 5,000,000-entry
+table across 5 wires, this builds 40,784 across 3.
+
+**The `SuperOpt` presets are not Rust's.** The mapping is the same (`table_gates =
+window_gates - 1`), but the numbers are scaled down, because Rust caches its table to disk
+across runs and this builds one per run:
+
+| | Rust `-O3` | here | Rust `-Osuper` | here |
+|---|---|---|---|---|
+| qubits | 3 | 2 | 5 | 3 |
+| window gates | 25 | 6 | 40 | 10 |
+| table entries | 200,000 | 2,000 | 5,000,000 | 20,000 |
+
+On this benchmark the difference costs nothing — every level of both implementations reaches
+the same circuit — but it will matter on inputs where a wider window pays. `--superopt-qubits`,
+`--superopt-window-gates` and `--superopt-table-entries` override them.
+
 `-O3` is `-O2` run to a true fixpoint; Rust's `-O3` also ends with a one-shot Clifford
 re-synthesis, which is not ported. The synthesis table is built per run rather than cached to
 disk, so the level presets are scaled to keep a cold start near a tenth of a second
