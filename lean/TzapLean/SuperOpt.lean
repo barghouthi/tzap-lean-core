@@ -1,5 +1,6 @@
 import TzapLean.ExactMat
 import TzapLean.Locality
+import TzapLean.SynthTable
 
 /-!
 # `SuperOpt`: the Algorithm
@@ -9,16 +10,15 @@ wires — computes each window's exact matrix, and replaces it whenever a shorte
 the same matrix. Nothing is matched syntactically: any identity expressible in the search
 space is found without ever being written down.
 
-This is `src/super_opt/mod.rs`, with two deliberate departures.
+Candidates come from the precomputed synthesis table (`SynthTable.lean`): a window's matrix
+is canonicalized to a key and looked up, and a hit *is* the shortest circuit the enumeration
+found for that unitary. The table is unverified — its BFS, its prunes, its key, its reified
+matrices are all outside the proof — because every candidate is re-verified by `accepts`
+before it is taken. A wrong table costs optimization, never correctness.
 
-* **Where Rust looks up a precomputed synthesis table, this searches.** Rust builds a table of
-  shortest circuits per matrix once per configuration and caches it on disk; here the pass
-  enumerates candidate circuits shorter than the window and tests each. Same answer — the
-  first hit in increasing length is a shortest equivalent — and no table to persist, at the
-  price of doing the work per window. `maxSearch` caps the enumeration.
-* **Skipped gates move to just after the replacement** rather than staying interleaved. They
-  commute with every window gate, so this is invisible; it keeps the reconstruction to one
-  list splice.
+This is `src/super_opt/mod.rs`, with one deliberate departure: **skipped gates move to just
+after the replacement** rather than staying interleaved. They commute with every window gate,
+so this is invisible; it keeps the reconstruction to one list splice.
 
 Windows are subsequences, not slices: gates in between that share no wire with the window are
 simply skipped. The invariant that makes this sound — *no skipped gate touches the window's
@@ -34,8 +34,6 @@ structure SuperOptConfig where
   maxQubits : Nat := 2
   /-- Longest window, in gates. -/
   maxWindow : Nat := 6
-  /-- Longest replacement the search will consider. -/
-  maxSearch : Nat := 2
 deriving Repr
 
 /-- Gates a window may contain: `rz` is outside the exact Clifford+T domain, and
@@ -71,21 +69,7 @@ def Win.start (g : Gate) : Win where
   skipped := []
   consumed := [g]
 
-/-! ## The search for a shorter equivalent -/
-
-/-- The gate alphabet the search draws from, on `k` wires. -/
-def localAlphabet (k : Nat) : List Gate :=
-  (List.range k).flatMap
-      (fun q => [Gate.h q, Gate.s q, Gate.sdg q, Gate.t q, Gate.tdg q, Gate.x q, Gate.z q]) ++
-    (List.range k).flatMap (fun c =>
-      (List.range k).filterMap (fun t => if c == t then none else some (Gate.cnot c t))) ++
-    (List.range k).flatMap (fun c =>
-      (List.range k).filterMap (fun t => if c < t then some (Gate.cz c t) else none))
-
-/-- Every gate list of a given length over that alphabet. -/
-def seqs (k : Nat) : Nat → List (List Gate)
-  | 0 => [[]]
-  | len + 1 => (seqs k len).flatMap fun gs => (localAlphabet k).map fun g => gs ++ [g]
+/-! ## Proposing and verifying a replacement -/
 
 /-- Whether a candidate is usable *and* really has the window's matrix, up to global phase.
 This is the check the correctness proof consumes; the search that proposes candidates is
@@ -96,29 +80,17 @@ def accepts {k : Nat} (target : ExactMat k) (cand : List Gate) : Bool :=
      | none => false
      | some N => (ExactMat.phaseMatch target N.normalize).isSome)
 
-/-- The first candidate of length `len` that matches. -/
-def searchLen {k : Nat} (target : ExactMat k) (len : Nat) : Option (List Gate) :=
-  (seqs k len).find? (fun cand => accepts target cand)
-
-/-- The shortest candidate of length at most `bound` that matches. -/
-def search {k : Nat} (target : ExactMat k) : Nat → Option (List Gate)
-  | 0 => searchLen target 0
-  | bound + 1 =>
-      match search target bound with
-      | some cand => some cand
-      | none => searchLen target (bound + 1)
-
 /-- Rename a local circuit back to the window's physical wires. -/
 def globalizeGate (S : List Qubit) : Gate → Gate := mapQubits (fun i => S.getD i 0)
 
 /-- Look for a strictly shorter replacement for a window, verified before it is returned. -/
-def trySynth (cfg : SuperOptConfig) (w : Win) : Option (List Gate) :=
+def trySynth (tbl : SynthTable) (w : Win) : Option (List Gate) :=
   if w.members.length ≤ 1 then none
   else
     match ExactMat.matrixOf w.support.length (localizeGates w.support w.members) with
     | none => none
     | some M =>
-        match search M.normalize (min cfg.maxSearch (w.members.length - 1)) with
+        match tbl.synthesize w.support.length M.normalize with
         | none => none
         | some cand =>
             if accepts M.normalize cand && cand.length < w.members.length then
@@ -129,7 +101,7 @@ def trySynth (cfg : SuperOptConfig) (w : Win) : Option (List Gate) :=
 
 /-- Grow a window through the gates that follow it, rewriting at the first hit. The result
 replaces the whole consumed span *and* the gates after it. -/
-def tryWindow (cfg : SuperOptConfig) (n : Nat) (w : Win) : List Gate → Option (List Gate)
+def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (w : Win) : List Gate → Option (List Gate)
   | [] => none
   | g :: rest =>
       if touches w.support g then
@@ -137,41 +109,42 @@ def tryWindow (cfg : SuperOptConfig) (n : Nat) (w : Win) : List Gate → Option 
             (widen w.support g.qubitsOf).length ≤ cfg.maxQubits &&
             w.members.length + 1 ≤ cfg.maxWindow &&
             !w.skipped.any (fun s => touches (widen w.support g.qubitsOf) s) then
-          match trySynth cfg
+          match trySynth tbl
               ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ with
           | some repl => some (repl ++ w.skipped ++ rest)
           | none =>
-              tryWindow cfg n
+              tryWindow cfg tbl n
                 ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ rest
         else none
       else
-        tryWindow cfg n ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ rest
+        tryWindow cfg tbl n ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ rest
 
 /-- Find and apply the first rewrite anywhere in the list. -/
-def rewriteOnce (cfg : SuperOptConfig) (n : Nat) : List Gate → Option (List Gate)
+def rewriteOnce (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : List Gate → Option (List Gate)
   | [] => none
   | g :: rest =>
       if isWindowGate g && g.qubitsOf.length ≤ cfg.maxQubits &&
           g.qubitsOf.all (fun q => q < n) && decide g.Wf then
-        match tryWindow cfg n (Win.start g) rest with
+        match tryWindow cfg tbl n (Win.start g) rest with
         | some out => some out
-        | none => (rewriteOnce cfg n rest).map (g :: ·)
-      else (rewriteOnce cfg n rest).map (g :: ·)
+        | none => (rewriteOnce cfg tbl n rest).map (g :: ·)
+      else (rewriteOnce cfg tbl n rest).map (g :: ·)
 
 /-- Apply rewrites until none is found. -/
-def superOptAux (cfg : SuperOptConfig) (n : Nat) : Nat → List Gate → List Gate
+def superOptAux (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : Nat → List Gate → List Gate
   | 0, gs => gs
   | fuel + 1, gs =>
-      match rewriteOnce cfg n gs with
-      | some gs' => superOptAux cfg n fuel gs'
+      match rewriteOnce cfg tbl n gs with
+      | some gs' => superOptAux cfg tbl n fuel gs'
       | none => gs
 
 /-- Peephole superoptimization of a gate list over `n` wires. -/
-def superOptGates (cfg : SuperOptConfig) (n : Nat) (gs : List Gate) : List Gate :=
-  superOptAux cfg n gs.length gs
+def superOptGates (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : List Gate) :
+    List Gate :=
+  superOptAux cfg tbl n gs.length gs
 
 /-- Peephole superoptimization of a circuit. -/
-def superOpt (cfg : SuperOptConfig) (c : Circuit) : Circuit :=
-  { c with gates := superOptGates cfg c.numQubits c.gates }
+def superOpt (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) : Circuit :=
+  { c with gates := superOptGates cfg tbl c.numQubits c.gates }
 
 end TzapLean

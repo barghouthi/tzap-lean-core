@@ -375,9 +375,49 @@ theorem matrixOf_sound {n : Nat} {gs : List Gate} {M : ExactMat n} (hwf : ∀ g 
 
 /-! ## Normalizing the denominator -/
 
+/-- Every `Bool` vector of a given length. -/
+def boolVecs : Nat → List (List Bool)
+  | 0 => [[]]
+  | k + 1 => (boolVecs k).flatMap fun l => [false :: l, true :: l]
+
+theorem mem_boolVecs : ∀ l : List Bool, l ∈ boolVecs l.length
+  | [] => by simp [boolVecs]
+  | b :: l => by
+      refine List.mem_flatMap.2 ⟨l, mem_boolVecs l, ?_⟩
+      cases b <;> simp
+
+/-- Every basis state, in a fixed order. Deciding a property of a matrix by folding this
+list is far cheaper at runtime than deciding a quantifier over the function type, and
+`mem_basisList` makes the two interchangeable in proofs. -/
+def basisList (n : Nat) : List (Basis n) :=
+  (boolVecs n).map fun l => fun j => l.getD (j : Nat) false
+
+theorem mem_basisList {n : Nat} (b : Basis n) : b ∈ basisList n := by
+  have hlen : ((List.finRange n).map b).length = n := by simp
+  refine List.mem_map.2 ⟨(List.finRange n).map b, ?_, ?_⟩
+  · have := mem_boolVecs ((List.finRange n).map b)
+    rwa [hlen] at this
+  · funext j
+    rw [List.getD_eq_getElem?_getD, List.getElem?_map,
+      List.getElem?_eq_getElem (by simp)]
+    simp
+
+/-- The matrix's entries in row-major order. -/
+def entries {n : Nat} (M : ExactMat n) : List Cyc :=
+  (basisList n).flatMap fun r => (basisList n).map fun c => M.get r c
+
+theorem mem_entries {n : Nat} (M : ExactMat n) (out inp : Basis n) :
+    M.get out inp ∈ M.entries :=
+  List.mem_flatMap.2 ⟨out, mem_basisList out,
+    List.mem_map.2 ⟨inp, mem_basisList inp, rfl⟩⟩
+
 /-- Whether every entry is divisible by `√2`. -/
 def allDivisible {n : Nat} (M : ExactMat n) : Bool :=
-  decide (∀ out inp : Basis n, (M.get out inp).divisibleBySqrt2 = true)
+  M.entries.all fun x => x.divisibleBySqrt2
+
+theorem allDivisible_spec {n : Nat} {M : ExactMat n} (h : M.allDivisible = true)
+    (out inp : Basis n) : (M.get out inp).divisibleBySqrt2 = true :=
+  (List.all_eq_true.1 h) _ (mem_entries M out inp)
 
 /-- Strip common factors of `√2`, as Rust does after every Hadamard. -/
 def normalizeAux {n : Nat} : Nat → ExactMat n → ExactMat n
@@ -408,8 +448,7 @@ theorem interp_normalizeAux {n : Nat} : ∀ (fuel : Nat) (M : ExactMat n),
         · rename_i hdiv
           rw [ih]
           funext out inp
-          have hdiv' : (M.get out inp).divisibleBySqrt2 = true := by
-            simpa [allDivisible] using of_decide_eq_true hdiv out inp
+          have hdiv' : (M.get out inp).divisibleBySqrt2 = true := allDivisible_spec hdiv out inp
           have hspec : sq2 * (M.get out inp).divSqrt2.interp = (M.get out inp).interp :=
             Cyc.divSqrt2_spec hdiv'
           simp only [interp, hd]

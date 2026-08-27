@@ -165,11 +165,11 @@ theorem accepts_spec {k : Nat} {target : ExactMat k} {cand : List Gate}
 
 /-! ## A verified replacement is equivalent to its window -/
 
-theorem trySynth_correct {n m : Nat} {cfg : SuperOptConfig} {w : Win} {repl : List Gate}
+theorem trySynth_correct {n m : Nat} {tbl : SynthTable} {w : Win} {repl : List Gate}
     (hnd : w.support.Nodup) (hrange : ∀ q ∈ w.support, q < n)
     (hsub : ∀ g ∈ w.members, ∀ q ∈ g.qubitsOf, q ∈ w.support)
     (hwf : ∀ g ∈ w.members, g.Wf)
-    (h : trySynth cfg w = some repl) :
+    (h : trySynth tbl w = some repl) :
     Equivalent n m repl w.members ∧ (∀ g ∈ repl, g.Wf) ∧
       (∀ g ∈ repl, ∀ q ∈ g.qubitsOf, q ∈ w.support) := by
   set S := w.support with hS
@@ -271,9 +271,9 @@ theorem disjoint_of_notMem {g g' : Gate} (h : ∀ q ∈ g.qubitsOf, q ∉ g'.qub
   · rfl
   · exact absurd ((Gate.support_iff g' q).1 (by simp [hq'])) (h q ((Gate.support_iff g q).1 hq))
 
-theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} :
+theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
     ∀ (rest : List Gate) (w : Win) (out : List Gate), WinOk n m w → (∀ g ∈ rest, g.Wf) →
-      tryWindow cfg n w rest = some out →
+      tryWindow cfg tbl n w rest = some out →
       Equivalent n m out (w.consumed ++ rest) ∧ (∀ g ∈ out, g.Wf) := by
   intro rest
   induction rest with
@@ -379,8 +379,8 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} :
 
 /-! ## The pass -/
 
-theorem rewriteOnce_correct {n m : Nat} {cfg : SuperOptConfig} :
-    ∀ (gs out : List Gate), (∀ g ∈ gs, g.Wf) → rewriteOnce cfg n gs = some out →
+theorem rewriteOnce_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
+    ∀ (gs out : List Gate), (∀ g ∈ gs, g.Wf) → rewriteOnce cfg tbl n gs = some out →
       Equivalent n m out gs ∧ (∀ g ∈ out, g.Wf) := by
   intro gs
   induction gs with
@@ -425,10 +425,10 @@ theorem rewriteOnce_correct {n m : Nat} {cfg : SuperOptConfig} :
         · exact hwf x (by simp)
         · exact hwfout x hx
 
-theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} :
+theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
     ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) →
-      Equivalent n m (superOptAux cfg n fuel gs) gs ∧
-        (∀ g ∈ superOptAux cfg n fuel gs, g.Wf) := by
+      Equivalent n m (superOptAux cfg tbl n fuel gs) gs ∧
+        (∀ g ∈ superOptAux cfg tbl n fuel gs, g.Wf) := by
   intro fuel
   induction fuel with
   | zero => intro gs hwf; exact ⟨Equivalent.refl n m gs, hwf⟩
@@ -443,25 +443,26 @@ theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} :
       · exact ⟨Equivalent.refl n m gs, hwf⟩
 
 /-- **Superoptimization preserves meaning.** -/
-theorem superOptGates_correct {n m : Nat} (cfg : SuperOptConfig) (gs : List Gate)
-    (hwf : ∀ g ∈ gs, g.Wf) : Equivalent n m (superOptGates cfg n gs) gs :=
+theorem superOptGates_correct {n m : Nat} (cfg : SuperOptConfig) (tbl : SynthTable)
+    (gs : List Gate) (hwf : ∀ g ∈ gs, g.Wf) :
+    Equivalent n m (superOptGates cfg tbl n gs) gs :=
   (superOptAux_correct gs.length gs hwf).1
 
-theorem superOptGates_wf {n : Nat} (cfg : SuperOptConfig) (gs : List Gate)
-    (hwf : ∀ g ∈ gs, g.Wf) : ∀ g ∈ superOptGates cfg n gs, g.Wf :=
+theorem superOptGates_wf {n : Nat} (cfg : SuperOptConfig) (tbl : SynthTable) (gs : List Gate)
+    (hwf : ∀ g ∈ gs, g.Wf) : ∀ g ∈ superOptGates cfg tbl n gs, g.Wf :=
   (superOptAux_correct (n := n) (m := 0) gs.length gs hwf).2
 
 /-- `SuperOpt`, as a `Pass`: the rewrite is decided by exact matrix comparison, so the proof
 obligation is discharged by the check the pass already runs. -/
-def SuperOpt (cfg : SuperOptConfig) : Pass where
+def SuperOpt (cfg : SuperOptConfig) (tbl : SynthTable) : Pass where
   name := "Superoptimization"
-  run := superOpt cfg
+  run := superOpt cfg tbl
   numQubits_run _ := rfl
   numCbits_run _ := rfl
-  wf_run c hc := superOptGates_wf cfg c.gates hc
-  correct c hc := superOptGates_correct cfg c.gates hc
+  wf_run c hc := superOptGates_wf cfg tbl c.gates hc
+  correct c hc := superOptGates_correct cfg tbl c.gates hc
 
-@[simp] theorem SuperOpt_run (cfg : SuperOptConfig) (c : Circuit) :
-    (SuperOpt cfg).run c = superOpt cfg c := rfl
+@[simp] theorem SuperOpt_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
+    (SuperOpt cfg tbl).run c = superOpt cfg tbl c := rfl
 
 end TzapLean

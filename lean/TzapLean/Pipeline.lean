@@ -29,27 +29,29 @@ def CnotMinR : RandPass := Pass.toRand CnotMin
 
 /-- `SuperOpt` as a zero-error randomized pass: it verifies each rewrite by exact matrix
 comparison, so despite the search inside it there is nothing probabilistic about it. -/
-def SuperOptR (cfg : SuperOptConfig) : RandPass := Pass.toRand (SuperOpt cfg)
+def SuperOptR (cfg : SuperOptConfig) (tbl : SynthTable) : RandPass :=
+  Pass.toRand (SuperOpt cfg tbl)
 
 /-- tzap's deterministic pipeline, expressed in the randomized world. -/
 def detPipeline : RandPass := RandPass.pipeline [CancelGatesR, CnotMinR]
 
 /-- The deterministic pipeline with superoptimization at the end. -/
-def detPipelineSO (cfg : SuperOptConfig) : RandPass :=
-  RandPass.pipeline [CancelGatesR, CnotMinR, SuperOptR cfg]
+def detPipelineSO (cfg : SuperOptConfig) (tbl : SynthTable) : RandPass :=
+  RandPass.pipeline [CancelGatesR, CnotMinR, SuperOptR cfg tbl]
 
 @[simp] theorem CancelGatesR_error (c : Circuit) : CancelGatesR.error c = 0 := rfl
 @[simp] theorem CnotMinR_error (c : Circuit) : CnotMinR.error c = 0 := rfl
 
 /-- Superoptimization keeps the pipeline exact. -/
-theorem detPipelineSO_error (cfg : SuperOptConfig) (c : Circuit) :
-    (detPipelineSO cfg).error c = 0 :=
-  RandPass.pipeline_error_eq_zero [CancelGates, CnotMin, SuperOpt cfg] c
+theorem detPipelineSO_error (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
+    (detPipelineSO cfg tbl).error c = 0 :=
+  RandPass.pipeline_error_eq_zero [CancelGates, CnotMin, SuperOpt cfg tbl] c
 
-theorem detPipelineSO_correct (cfg : SuperOptConfig) (c : Circuit) (hc : c.Wf)
-    {s : (detPipelineSO cfg).Seed c} (hs : s ∈ ((detPipelineSO cfg).dist c).support) :
-    Equivalent c.numQubits c.numCbits ((detPipelineSO cfg).run c s).gates c.gates :=
-  RandPass.correct_of_error_eq_zero _ c hc (detPipelineSO_error cfg c) hs
+theorem detPipelineSO_correct (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit)
+    (hc : c.Wf) {s : (detPipelineSO cfg tbl).Seed c}
+    (hs : s ∈ ((detPipelineSO cfg tbl).dist c).support) :
+    Equivalent c.numQubits c.numCbits ((detPipelineSO cfg tbl).run c s).gates c.gates :=
+  RandPass.correct_of_error_eq_zero _ c hc (detPipelineSO_error cfg tbl c) hs
 
 /-- The pipeline's failure probability is zero. -/
 theorem detPipeline_error (c : Circuit) : detPipeline.error c = 0 :=

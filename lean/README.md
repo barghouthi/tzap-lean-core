@@ -33,6 +33,7 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/Cyclotomic.lean` | `ℤ[ω]`, `ω = e^{iπ/4}`: exact Clifford+T arithmetic, the eight global phases, and division by `√2 = ω − ω³`. |
 | `TzapLean/ExactMat.lean` | Exact `2ⁿ × 2ⁿ` matrices over that ring, gate by gate, with `matrixOf_sound`. |
 | `TzapLean/Locality.lean` | `pad`: an operator on a few wires is itself ⊗ identity. Products, scalars, and every gate. |
+| `TzapLean/SynthTable.lean` | The bounded synthesis table: canonical matrix keys, the library gate set, and the breadth-first build. |
 | `TzapLean/SuperOpt.lean` | `SuperOpt`: window scan and verified rewrite. |
 | `TzapLean/SuperOptProof.lean` | The window invariant, and the pass. |
 | `TzapLean/SemanticsCheck.lean` | Independent validation of the semantics: unitarity of every gate, trace preservation, concrete amplitudes, and the `src/unitary.rs` suite. |
@@ -159,19 +160,42 @@ re-emitted, which is sound because no skipped gate ever touches the window's sup
 invariant is maintained by re-checking every skipped gate when a new member widens the
 support, and it is exactly the hypothesis the proof consumes.
 
-Two deliberate departures from Rust:
+### The table
 
-* **Search instead of a table.** Rust precomputes shortest circuits per matrix, caches them on
-  disk, and looks windows up. This port enumerates candidates shorter than the window and
-  tests each, so there is no table to build or persist — at the cost of doing that work per
-  window. `maxSearch` caps it, so the Lean pass finds short replacements, not arbitrary ones.
-* **Skipped gates move to just after the replacement** rather than staying interleaved. They
-  commute with every window gate, so this is invisible.
+Candidates come from a precomputed synthesis table, as in `src/super_opt/table.rs`. It is
+built breadth-first, one gate at a time: because layers are visited in gate-count order, **the
+first circuit to reach a unitary is a smallest one**, so a table hit *is* the synthesis answer
+and lookup does no searching. Two prunes keep the frontier small without losing any unitary —
+a child never follows its parent's inverse, and among qubit-disjoint neighbours only the
+canonically ordered interleaving is expanded — and circuits are stored prefix-shared, each
+node recording just its last gate and its parent.
 
-Neither affects correctness, which rests on the check the pass runs before every rewrite:
-nothing about the search enters the proof. The identities in the test file — `h·z·h = x`,
-`h·cx·h = cz`, `x·cx·x = x⊗cx`, a `T` commuting through a `CNOT` control — are *discovered*,
-not listed.
+The enumeration needs a *key*, and that is what `ExactMat.key` is for: normalize the `√2`
+denominator, rotate to the canonical global phase (the power of `ω` making the first nonzero
+entry's coefficients lexicographically least — no division, no rounding), flatten the
+coefficients. Rust hashes this to 64 bits and re-compares matrices to guard against
+collisions; here the key is the exact coefficient list.
+
+The library the table draws from is deliberately **not** every gate the pass can read: `ccx`
+and `cz` are excluded, so superoptimization never *introduces* them — a Toffoli costs about
+seven `T` once the pipeline lowers it, and `cz` would leave the `H`/`X`/`Z`/`S`/`T`/`CX`
+emission basis. Windows *containing* those gates are still matched and simplified.
+
+**None of this is verified, and none of it needs to be.** The table's BFS, its prunes, its
+key, and the flat-array reification that makes the build tractable all sit outside the proof,
+because `accepts` re-derives every candidate's matrix from scratch and compares it exactly
+before a rewrite is taken. A wrong table costs optimization, never correctness — so it could
+be replaced by Rust's on-disk cache, or by a smarter enumeration, without touching a line of
+the proof. The identities in the test file — `h·z·h = x`, `x·cx·x = x⊗cx`, `(HS)³ = 1`, a `T`
+commuting through a `CNOT` control — are *discovered*, not listed.
+
+One deliberate departure from Rust: **skipped gates move to just after the replacement**
+rather than staying interleaved. They commute with every window gate, so this is invisible.
+
+Building the table is the one-time cost the design trades for: a depth-4 two-wire table is
+4,774 unitaries and a few seconds, after which each window lookup is a hash hit. There is no
+persistence — Rust caches tables under `~/.tzap/superopt-tables/`; here a table is a value,
+built once and passed to the pass.
 
 ## Two proof styles
 
@@ -184,10 +208,10 @@ not listed.
   its own output and keeps it only when the (proved-sound) analysis returns the same linear
   map and phase polynomial. Soundness rests on the analysis alone — a bug in the heuristic
   could cost optimization, never correctness. On every ported test the check passes, so the
-  output matches the Rust pass gate for gate. `SuperOpt` is the same idea with a wider
-  search: its candidate replacements come from an unverified enumeration and are accepted only
-  after an exact matrix comparison, so the search may be replaced wholesale — by Rust's
-  precomputed table, say — without touching a line of the proof.
+  output matches the Rust pass gate for gate. `SuperOpt` is the same idea at a larger scale:
+  its candidate replacements come from an unverified precomputed table and are accepted only
+  after an exact matrix comparison, so the whole table — enumeration, prunes, keys and all —
+  may be replaced without touching a line of the proof.
 
 ## Checking the semantics
 

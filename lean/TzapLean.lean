@@ -16,6 +16,7 @@ import TzapLean.PhaseFoldProof
 import TzapLean.Cyclotomic
 import TzapLean.ExactMat
 import TzapLean.Locality
+import TzapLean.SynthTable
 import TzapLean.SuperOpt
 import TzapLean.SuperOptProof
 import TzapLean.RandPass
