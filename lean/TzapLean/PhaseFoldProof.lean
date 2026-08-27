@@ -30,7 +30,7 @@ open Form
 /-- The tag state and the symbolic state agree, wire by wire. -/
 def Sim {k : Nat} (draws : Draws k) (st : AState) (ts : TState k) : Prop :=
   ts.tags.length = st.par.length ∧ ts.fresh = st.fresh ∧
-    ∀ q : Qubit, ts.tagOf q = bitsToArr (hash draws (st.parOf q))
+    ∀ q : Qubit, wordToBits (k := k) (ts.tagOf q) = hash draws (st.parOf q)
 
 theorem getD_map_range {α : Type*} (f : Nat → α) (n q : Nat) (d : α) :
     ((List.range n).map f).getD q d = if q < n then f q else d := by
@@ -51,18 +51,19 @@ theorem hash_flip {k : Nat} (draws : Draws k) (p : Form) :
     Form.add_constant, Form.add_coefficients, if_pos]
   ring_nf
 
-theorem sim_initial {k : Nat} (draws : Draws k) (n : Nat) :
-    Sim draws (AState.initial n) (TState.initial draws n) := by
+theorem sim_initial {k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
+    (hw : ∀ i, wordToBits (k := k) (wdraws i) = draws i) (n : Nat) :
+    Sim draws (AState.initial n) (TState.initial (k := k) wdraws n) := by
   refine ⟨by simp [TState.initial, AState.initial], rfl, fun q => ?_⟩
   rw [AState.initial_parOf, TState.tagOf, TState.initial, getD_map_range]
   by_cases hq : q < n
-  · rw [if_pos hq, if_pos hq, hash_var]
-  · rw [if_neg hq, if_neg hq, hash_const_false]
+  · rw [if_pos hq, if_pos hq, hw, hash_var]
+  · rw [if_neg hq, if_neg hq, wordToBits_zero, hash_const_false]
 
 /-- Writing one wire keeps the simulation, given the tag written is the parity's hash. -/
 theorem sim_set {k : Nat} {draws : Draws k} {st : AState} {ts : TState k}
-    (hsim : Sim draws st ts) (q : Qubit) (f : Form) (t : Tag) (ht : t = bitsToArr (hash draws f))
-    (fr fr' : Nat) (hfr : fr = fr') :
+    (hsim : Sim draws st ts) (q : Qubit) (f : Form) (t : Tag)
+    (ht : wordToBits (k := k) t = hash draws f) (fr fr' : Nat) (hfr : fr = fr') :
     Sim draws ⟨st.par.set q f, fr'⟩ ⟨ts.tags.set q t, fr⟩ := by
   obtain ⟨hlen, -, htag⟩ := hsim
   refine ⟨by simp [hlen], hfr, fun r => ?_⟩
@@ -71,37 +72,39 @@ theorem sim_set {k : Nat} {draws : Draws k} {st : AState} {ts : TState k}
   · subst hr
     by_cases hlt : r < ts.tags.length
     · rw [List.getD_eq_getElem?_getD, List.getElem?_set_self hlt,
-        AState.getD_set_self _ _ _ (hlen ▸ hlt), ht]
-      rfl
+        AState.getD_set_self _ _ _ (hlen ▸ hlt)]
+      exact ht
     · rw [List.getD_eq_getElem?_getD, List.getElem?_eq_none (by simpa using Nat.le_of_not_lt hlt),
         AState.getD_set_out _ _ _ (hlen ▸ hlt), hash_const_false]
-      rfl
+      exact wordToBits_zero
   · rw [List.getD_eq_getElem?_getD, List.getElem?_set, if_neg (by simpa using Ne.symm hr),
       ← List.getD_eq_getElem?_getD, AState.getD_set_ne _ _ hr]
     exact htag r
 
-theorem sim_step {k : Nat} {draws : Draws k} {st : AState} {ts : TState k}
-    (hsim : Sim draws st ts) (g : Gate) : Sim draws (st.step g) (ts.step draws g) := by
+theorem sim_step {k : Nat} {draws : Draws k} {wdraws : Nat → Tag} {st : AState} {ts : TState k}
+    (hw : ∀ i, wordToBits (k := k) (wdraws i) = draws i)
+    (hsim : Sim draws st ts) (g : Gate) : Sim draws (st.step g) (ts.step wdraws g) := by
   have hfresh : ts.fresh = st.fresh := hsim.2.1
   have htag := hsim.2.2
   cases g with
   | x q =>
       refine sim_set hsim q _ _ ?_ _ _ hfresh
-      rw [htag q, onesArr_eq, xorArr_bitsToArr, hash_flip]
+      rw [wordToBits_xor, htag q, wordToBits_onesTag, hash_flip]
   | cnot c t =>
       refine sim_set hsim t _ _ ?_ _ _ hfresh
-      rw [htag t, htag c, xorArr_bitsToArr, hash_add]
-  | h q => exact sim_set hsim q _ _ (by rw [hash_var, hfresh]) _ _ (by rw [hfresh])
-  | ccx c₁ c₂ t => exact sim_set hsim t _ _ (by rw [hash_var, hfresh]) _ _ (by rw [hfresh])
-  | reset q => exact sim_set hsim q _ _ (by rw [hash_var, hfresh]) _ _ (by rw [hfresh])
+      rw [wordToBits_xor, htag t, htag c, hash_add]
+  | h q => exact sim_set hsim q _ _ (by rw [hw, hash_var, hfresh]) _ _ (by rw [hfresh])
+  | ccx c₁ c₂ t => exact sim_set hsim t _ _ (by rw [hw, hash_var, hfresh]) _ _ (by rw [hfresh])
+  | reset q => exact sim_set hsim q _ _ (by rw [hw, hash_var, hfresh]) _ _ (by rw [hfresh])
   | _ => exact hsim
 
-theorem sim_steps {k : Nat} {draws : Draws k} {st : AState} {ts : TState k}
+theorem sim_steps {k : Nat} {draws : Draws k} {wdraws : Nat → Tag} {st : AState} {ts : TState k}
+    (hw : ∀ i, wordToBits (k := k) (wdraws i) = draws i)
     (hsim : Sim draws st ts) (gs : List Gate) :
-    Sim draws (st.steps gs) (ts.steps draws gs) := by
+    Sim draws (st.steps gs) (ts.steps wdraws gs) := by
   induction gs generalizing st ts with
   | nil => exact hsim
-  | cons g gs ih => exact ih (sim_step hsim g)
+  | cons g gs ih => exact ih (sim_step hw hsim g)
 
 /-! ## The forms a run compares -/
 
@@ -315,14 +318,14 @@ theorem emitAll_correct {n m : Nat} (gs : List Gate) : Equivalent n m (emitAll g
 
 /-! ## What a successful merge means -/
 
-theorem mergeInto_spec {k : Nat} (draws : Draws k) (tag : Tag) (θ : ℚ) :
-    ∀ (gs gs' : List Gate) (ts : TState k), mergeInto draws ts tag θ gs = some gs' →
+theorem mergeInto_spec {k : Nat} (wdraws : Nat → Tag) (tag : Tag) (θ : ℚ) :
+    ∀ (gs gs' : List Gate) (ts : TState k), mergeInto wdraws ts tag θ gs = some gs' →
       ∃ (M rest : List Gate) (g' : Gate) (φ : ℚ) (q' : Qubit) (sign : Bool),
         gs = M ++ g' :: rest ∧
         gs' = M ++ Gate.rz (φ + signedAngle sign θ) q' :: rest ∧
         (∀ g ∈ M, g.isUnitary = true) ∧
         rotAngle g' = some (φ, q') ∧
-        matchTag k tag ((ts.steps draws M).tagOf q') = some sign := by
+        matchTag k tag ((ts.steps wdraws M).tagOf q') = some sign := by
   intro gs
   induction gs with
   | nil => intro gs' ts h; simp [mergeInto] at h
@@ -356,14 +359,14 @@ theorem mergeInto_spec {k : Nat} (draws : Draws k) (tag : Tag) (θ : ℚ) :
 
 /-! ## Unfolding the fold -/
 
-@[simp] theorem foldFrom_nil {k : Nat} (draws : Draws k) (ts : TState k) :
-    foldFrom draws ts [] = [] := by
+@[simp] theorem foldFrom_nil {k : Nat} (wdraws : Nat → Tag) (ts : TState k) :
+    foldFrom wdraws ts [] = [] := by
   rw [foldFrom]
 
-theorem foldFrom_cons_merge {k : Nat} {draws : Draws k} {ts : TState k} {g : Gate}
+theorem foldFrom_cons_merge {k : Nat} {wdraws : Nat → Tag} {ts : TState k} {g : Gate}
     {θ : ℚ} {q : Qubit} {gs gs' : List Gate} (hrot : rotAngle g = some (θ, q))
-    (hm : mergeInto draws ts (ts.tagOf q) θ gs = some gs') :
-    foldFrom draws ts (g :: gs) = foldFrom draws ts gs' := by
+    (hm : mergeInto wdraws ts (ts.tagOf q) θ gs = some gs') :
+    foldFrom wdraws ts (g :: gs) = foldFrom wdraws ts gs' := by
   rw [foldFrom]
   simp only [hrot]
   split
@@ -375,16 +378,16 @@ theorem foldFrom_cons_merge {k : Nat} {draws : Draws k} {ts : TState k} {g : Gat
     rw [hm] at heq
     exact absurd heq (by simp)
 
-theorem foldFrom_cons_none {k : Nat} {draws : Draws k} {ts : TState k} {g : Gate}
+theorem foldFrom_cons_none {k : Nat} {wdraws : Nat → Tag} {ts : TState k} {g : Gate}
     {gs : List Gate} (hrot : rotAngle g = none) :
-    foldFrom draws ts (g :: gs) = g :: foldFrom draws (ts.step draws g) gs := by
+    foldFrom wdraws ts (g :: gs) = g :: foldFrom wdraws (ts.step wdraws g) gs := by
   rw [foldFrom]
   simp only [hrot]
 
-theorem foldFrom_cons_keep {k : Nat} {draws : Draws k} {ts : TState k} {g : Gate}
+theorem foldFrom_cons_keep {k : Nat} {wdraws : Nat → Tag} {ts : TState k} {g : Gate}
     {θ : ℚ} {q : Qubit} {gs : List Gate} (hrot : rotAngle g = some (θ, q))
-    (hm : mergeInto draws ts (ts.tagOf q) θ gs = none) :
-    foldFrom draws ts (g :: gs) = g :: foldFrom draws (ts.step draws g) gs := by
+    (hm : mergeInto wdraws ts (ts.tagOf q) θ gs = none) :
+    foldFrom wdraws ts (g :: gs) = g :: foldFrom wdraws (ts.step wdraws g) gs := by
   rw [foldFrom]
   simp only [hrot]
   split
@@ -439,11 +442,12 @@ theorem faithful_of_sub {k n : Nat} {draws : Draws k} {st st' : AState} {gs hs :
 
 /-- **The fold preserves meaning.** Under `Faithful` — no two distinct parities compared by
 this run hash alike — folding a gate list yields an equivalent one. -/
-theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
+theorem foldFrom_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
+    (hw : ∀ i, wordToBits (k := k) (wdraws i) = draws i) :
     ∀ (N : Nat) (gs : List Gate), gs.length ≤ N → ∀ (st : AState) (ts : TState k),
       Sim draws st ts → st.Bounded → st.par.length = n → AState.Generic n st →
       (∀ g ∈ gs, g.Wf) → Faithful draws (relevant n st gs) →
-      Equivalent n m (foldFrom draws ts gs) gs := by
+      Equivalent n m (foldFrom wdraws ts gs) gs := by
   intro N
   induction N with
   | zero =>
@@ -461,14 +465,14 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
             simp only [List.length_cons] at hlen'
             omega
           -- The two "keep the gate" branches share a proof.
-          have keep : foldFrom draws ts (g :: gs) = g :: foldFrom draws (ts.step draws g) gs →
-              Equivalent n m (foldFrom draws ts (g :: gs)) (g :: gs) := by
+          have keep : foldFrom wdraws ts (g :: gs) = g :: foldFrom wdraws (ts.step wdraws g) gs →
+              Equivalent n m (foldFrom wdraws ts (g :: gs)) (g :: gs) := by
             intro heq
             rw [heq]
             have hsub : ∀ p ∈ visited n (st.step g) gs, p ∈ visited n st (g :: gs) := by
               intro p hp
               exact List.mem_append.2 (Or.inr hp)
-            have := ih gs hlenN (st.step g) (ts.step draws g) (sim_step hsim g)
+            have := ih gs hlenN (st.step g) (ts.step wdraws g) (sim_step hw hsim g)
               (AState.bounded_step hbd g) (by rw [AState.length_step, hlen])
               (AState.generic_step hbd hlen hgen (hwf g (by simp)))
               (fun x hx => hwf x (by simp [hx])) (faithful_of_sub hfaith hsub)
@@ -477,14 +481,14 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
           | none => exact keep (foldFrom_cons_none hrot)
           | some p =>
               obtain ⟨θ, q⟩ := p
-              cases hm : mergeInto draws ts (ts.tagOf q) θ gs with
+              cases hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
               | none => exact keep (foldFrom_cons_keep hrot hm)
               | some gs' =>
                   obtain ⟨M, rest, g', φ, q', sign, hgseq, hgs'eq, hMu, hrot', hmatch⟩ :=
-                    mergeInto_spec draws (ts.tagOf q) θ gs gs' ts hm
+                    mergeInto_spec wdraws (ts.tagOf q) θ gs gs' ts hm
                   -- The recursive call sees the same state and a no-longer list.
                   have hlen'' : gs'.length ≤ N := by
-                    have := mergeInto_length draws (ts.tagOf q) θ gs gs' ts hm
+                    have := mergeInto_length wdraws (ts.tagOf q) θ gs gs' ts hm
                     omega
                   have hwf' : ∀ x ∈ gs', x.Wf := by
                     intro x hx
@@ -504,10 +508,10 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
                     intro r hr
                     rwa [visited_cons_rot (g := Gate.rz (φ + signedAngle sign θ) q')
                       (g' := g') rfl hrot'] at hr
-                  have hIH : Equivalent n m (foldFrom draws ts gs') gs' :=
+                  have hIH : Equivalent n m (foldFrom wdraws ts gs') gs' :=
                     ih gs' hlen'' st ts hsim hbd hlen hgen hwf' (faithful_of_sub hfaith hvis)
                   -- The parity condition, from the tag match and faithfulness.
-                  have hsimM : Sim draws (st.steps M) (ts.steps draws M) := sim_steps hsim M
+                  have hsimM : Sim draws (st.steps M) (ts.steps wdraws M) := sim_steps hw hsim M
                   have hmemq : st.parOf q ∈ visited n st (g :: gs) :=
                     mem_visited_of_parOf hlen q (g :: gs)
                   have hmemq' : (st.steps M).parOf q' ∈ visited n st (g :: gs) := by
@@ -525,9 +529,8 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
                       rw [if_neg (by simp)]
                       refine hfaith _ (List.mem_append.2 (Or.inl hmemq')) _
                         (List.mem_append.2 (Or.inl hmemq)) ?_
-                      refine bitsToArr_inj ?_
                       rw [← hsimM.2.2 q', ← hsim.2.2 q]
-                      simpa using heq
+                      exact wordToBits_congr (by simpa using heq)
                     · split at hmatch
                       · rename_i heq
                         have hsign : sign = true := by simpa using hmatch.symm
@@ -535,10 +538,9 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
                         rw [if_pos rfl]
                         refine hfaith _ (List.mem_append.2 (Or.inl hmemq')) _
                           (List.mem_append.2 (Or.inr (List.mem_map.2 ⟨_, hmemq, rfl⟩))) ?_
-                        refine bitsToArr_inj ?_
-                        rw [hash_flip, ← xorArr_bitsToArr, ← onesArr_eq,
-                          ← hsimM.2.2 q', ← hsim.2.2 q]
-                        simpa using heq
+                        rw [hash_flip, ← hsimM.2.2 q', ← hsim.2.2 q, ← wordToBits_onesTag k,
+                          ← wordToBits_xor]
+                        exact wordToBits_congr (by simpa using heq)
                       · exact absurd hmatch (by simp)
                   have hpath := path_of_generic hMu hbd hlen hgen hpar
                   -- The merge itself.
@@ -565,13 +567,15 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
                   exact hIH.trans hmerge
 
 /-- **Phase folding preserves meaning**, under `Faithful`. -/
-theorem phaseFoldGates_correct {n m k : Nat} (draws : Draws k) (gs : List Gate)
+theorem phaseFoldGates_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
+    (hw : ∀ i, wordToBits (k := k) (wdraws i) = draws i) (gs : List Gate)
     (hwf : ∀ g ∈ gs, g.Wf)
     (hf : Faithful draws (relevant n (AState.initial n) gs)) :
-    Equivalent n m (phaseFoldGates draws n gs) gs := by
+    Equivalent n m (phaseFoldGates k wdraws n gs) gs := by
   refine Equivalent.trans (emitAll_correct _) ?_
-  exact foldFrom_correct draws gs.length gs le_rfl (AState.initial n) (TState.initial draws n)
-    (sim_initial draws n) (AState.bounded_initial n) (length_initial_par n)
+  exact foldFrom_correct hw gs.length gs le_rfl (AState.initial n)
+    (TState.initial (k := k) wdraws n)
+    (sim_initial hw n) (AState.bounded_initial n) (length_initial_par n)
     (AState.generic_initial n) hwf hf
 
 end TzapLean

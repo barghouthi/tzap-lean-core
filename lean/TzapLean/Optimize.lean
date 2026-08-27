@@ -169,11 +169,11 @@ structure Step where
   run : Circuit → Circuit
 
 /-- Build the transformation for one pass name. -/
-def stepOf (draws : Draws 64) (cfg : SuperOptConfig) (tbl : SynthTable) : PassName → Step
+def stepOf (wdraws : Nat → Tag) (cfg : SuperOptConfig) (tbl : SynthTable) : PassName → Step
   | .CancelGates => ⟨"Gate cancellation", CancelGates.run⟩
   | .CnotMin => ⟨"CNOT minimization", CnotMin.run⟩
   | .SuperOpt => ⟨"Superoptimization", superOpt cfg tbl⟩
-  | .PhaseFoldRand => ⟨"Phase folding", phaseFold draws⟩
+  | .PhaseFoldRand => ⟨"Phase folding", phaseFold 63 wdraws⟩
 
 /-- The pipeline a level runs, when `--passes` is absent.
 
@@ -202,8 +202,8 @@ def fmtNum (n : Nat) : String :=
 /-- Seconds to three decimal places. -/
 def fmtSecs (nanos : Nat) : String :=
   let ms := nanos / 1000000
-  s!"{ms / 1000}.{String.mk ((toString (ms % 1000)).toList.reverse.take 3 |>.reverse)
-      |> fun x => (String.mk (List.replicate (3 - x.length) '0')) ++ x}"
+  s!"{ms / 1000}.{String.ofList ((toString (ms % 1000)).toList.reverse.take 3 |>.reverse)
+      |> fun x => (String.ofList (List.replicate (3 - x.length) '0')) ++ x}"
 
 /-- A percentage reduction from `before` to `after`, one decimal place. -/
 def fmtPct (before after : Nat) : String :=
@@ -300,8 +300,8 @@ def optimize (c : Circuit) (o : Options) : IO (Circuit × Report) := do
         let a ← IO.rand 0 (2 ^ 31 - 1)
         let b ← IO.rand 0 (2 ^ 31 - 1)
         pure (a * (2 ^ 31) + b)
-  let draws : Draws 64 := seedDraws seed
-  let steps := names.map (stepOf draws cfg tbl)
+  let wdraws : Nat → Tag := seedWords 63 seed
+  let steps := names.map (stepOf wdraws cfg tbl)
   let baseline := Metrics.of c
   let result ←
     if o.passes.isSome then

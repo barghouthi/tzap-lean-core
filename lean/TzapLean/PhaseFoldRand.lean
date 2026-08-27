@@ -58,9 +58,9 @@ theorem emitAll_wf {gs : List Gate} (h : ∀ g ∈ gs, g.Wf) : ∀ g ∈ emitAll
             exact h x (by simp)
       · exact ih (fun y hy => h y (by simp [hy])) g hg
 
-theorem foldFrom_wf {k : Nat} (draws : Draws k) :
+theorem foldFrom_wf {k : Nat} (wdraws : Nat → Tag) :
     ∀ (N : Nat) (gs : List Gate), gs.length ≤ N → ∀ (ts : TState k),
-      (∀ g ∈ gs, g.Wf) → ∀ g ∈ foldFrom draws ts gs, g.Wf := by
+      (∀ g ∈ gs, g.Wf) → ∀ g ∈ foldFrom (wdraws) ts gs, g.Wf := by
   intro N
   induction N with
   | zero =>
@@ -75,8 +75,8 @@ theorem foldFrom_wf {k : Nat} (draws : Draws k) :
           have hlenN : gs.length ≤ N := by
             simp only [List.length_cons] at hlen
             omega
-          have keep : foldFrom draws ts (x :: gs) = x :: foldFrom draws (ts.step draws x) gs →
-              ∀ g ∈ foldFrom draws ts (x :: gs), g.Wf := by
+          have keep : foldFrom (wdraws) ts (x :: gs) = x :: foldFrom (wdraws) (ts.step wdraws x) gs →
+              ∀ g ∈ foldFrom (wdraws) ts (x :: gs), g.Wf := by
             intro heq g hg
             rw [heq] at hg
             rcases List.mem_cons.1 hg with rfl | hg
@@ -86,13 +86,13 @@ theorem foldFrom_wf {k : Nat} (draws : Draws k) :
           | none => exact keep (foldFrom_cons_none hrot)
           | some p =>
               obtain ⟨θ, q⟩ := p
-              cases hm : mergeInto draws ts (ts.tagOf q) θ gs with
+              cases hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
               | none => exact keep (foldFrom_cons_keep hrot hm)
               | some gs' =>
                   obtain ⟨M, rest, g', φ, q', sign, hgseq, hgs'eq, -, -, -⟩ :=
-                    mergeInto_spec draws (ts.tagOf q) θ gs gs' ts hm
+                    mergeInto_spec wdraws (ts.tagOf q) θ gs gs' ts hm
                   have hlen'' : gs'.length ≤ N := by
-                    have := mergeInto_length draws (ts.tagOf q) θ gs gs' ts hm
+                    have := mergeInto_length wdraws (ts.tagOf q) θ gs gs' ts hm
                     omega
                   have hwf' : ∀ y ∈ gs', y.Wf := by
                     intro y hy
@@ -106,9 +106,9 @@ theorem foldFrom_wf {k : Nat} (draws : Draws k) :
                   rw [foldFrom_cons_merge hrot hm] at hg
                   exact ih gs' hlen'' ts hwf' g hg
 
-theorem phaseFoldGates_wf {k n : Nat} (draws : Draws k) {gs : List Gate}
-    (h : ∀ g ∈ gs, g.Wf) : ∀ g ∈ phaseFoldGates draws n gs, g.Wf :=
-  emitAll_wf (foldFrom_wf draws gs.length gs le_rfl _ h)
+theorem phaseFoldGates_wf {k n : Nat} (wdraws : Nat → Tag) {gs : List Gate}
+    (h : ∀ g ∈ gs, g.Wf) : ∀ g ∈ phaseFoldGates k wdraws n gs, g.Wf :=
+  emitAll_wf (foldFrom_wf (k := k) wdraws gs.length gs le_rfl _ h)
 
 /-! ## The compared parities are bounded -/
 
@@ -183,21 +183,21 @@ def PhaseFoldRand (k : Nat) : RandPass where
   name := "Phase folding"
   Seed := fun c => Sample (varBound c) k
   dist := fun _ => PMF.uniformOfFintype _
-  run := fun c s => phaseFold (liftSample s) c
+  run := fun c s => phaseFold k (wordsOf k (liftSample s)) c
   error := fun c => ((relevantForms c).length.choose 2 : ℝ≥0∞) * ((2 : ℝ≥0∞)⁻¹) ^ k
   numQubits_run _ _ := rfl
   numCbits_run _ _ := rfl
-  wf_run c s hc := phaseFoldGates_wf (liftSample s) hc
+  wf_run c s hc := phaseFoldGates_wf (wordsOf k (liftSample s)) hc
   correct c hc := by
     refine le_trans ((PMF.uniformOfFintype (Sample (varBound c) k)).toOuterMeasure_mono ?_)
       (collides_probability_le (relevantForms c) (bounded_relevantForms c))
     intro s hs
     by_contra hcol
-    exact hs.1 (phaseFoldGates_correct (liftSample s) c.gates hc
+    exact hs.1 (phaseFoldGates_correct (wordToBits_wordsOf k (liftSample s)) c.gates hc
       (faithful_of_not_collides hcol))
 
 @[simp] theorem PhaseFoldRand_run (k : Nat) (c : Circuit) (s : (PhaseFoldRand k).Seed c) :
-    (PhaseFoldRand k).run c s = phaseFold (liftSample s) c := rfl
+    (PhaseFoldRand k).run c s = phaseFold k (wordsOf k (liftSample s)) c := rfl
 
 /-- The failure bound in closed form: with `t` compared parities the pass is wrong with
 probability at most `C(t,2)·2⁻ᵏ`, so doubling the tag width squares the odds against it. -/

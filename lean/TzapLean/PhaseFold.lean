@@ -24,63 +24,90 @@ open Form
 /-- The all-ones tag: the hash of the constant parity `1`, i.e. Rust's bitwise `!`. -/
 def ones (k : Nat) : BitString k := fun _ => 1
 
-/-- A tag, as the algorithm stores it: `k` bits in an array of `Bool`.
+/-- A tag, as the algorithm stores it: `k` bits packed into a natural number.
 
-Two departures from the theory's `BitString k = Fin k → F₂`, both forced by measurement:
+The theory's tag is a *function* `Fin k → F₂` (`BitString k`), which is the right object for
+the collision bound and the wrong one to compute with. Two measurements drove this:
 
-* **An array, not a function.** `x` and `cnot` build a tag out of old ones, so a stored
-  function would be a closure over its predecessors and reading one bit of a tag `d` gates
-  deep would cost `kᵈ` — measured at exactly `k` per `cnot`. An array has nothing to rebuild.
-* **`Bool`, not `F₂`.** Arithmetic in `ZMod 2` goes through a ring instance that cannot be
-  specialized; one 64-entry XOR costs 43 µs against 0.07 µs for the same array of `Bool` —
-  about 600×, and the dominant cost of the whole pass.
+* a stored function is a closure over its predecessors, so reading one bit of a tag `d` gates
+  deep cost `kᵈ` — exactly `k` per `cnot`;
+* an array of `k` bits fixed that but still allocated and compared `k` cells per operation,
+  which was most of the pass's remaining time.
 
-`bitsToArr` is the bridge to the theory, and `bitsToArr_inj` is what lets a proof read an
-equality of stored tags back as an equality of the functions they stand for. -/
-abbrev Tag := Array Bool
+A packed number is one machine word: XOR and equality are single operations, and
+`Nat.testBit` gives the bridge back to the theory. This is what Rust does too, with `u128`. -/
+abbrev Tag := Nat
 
-/-- The array of a tag function's bits. -/
-def bitsToArr {k : Nat} (t : BitString k) : Tag :=
-  ((List.finRange k).map fun j => unbit (t j)).toArray
+/-- The bits of a packed tag. -/
+def wordToBits {k : Nat} (w : Tag) : BitString k := fun j => bit (w.testBit (j : Nat))
 
-@[simp] theorem size_bitsToArr {k : Nat} (t : BitString k) : (bitsToArr t).size = k := by
-  simp [bitsToArr]
+/-- Pack the low `j` bits of a bit function. -/
+def bitsToWordAux (t : Nat → Bool) : Nat → Tag
+  | 0 => 0
+  | j + 1 => bitsToWordAux t j ||| (if t j then 2 ^ j else 0)
 
-@[simp] theorem getElem_bitsToArr {k : Nat} (t : BitString k) (j : Fin k) :
-    (bitsToArr t)[(j : Nat)]'(by simp) = unbit (t j) := by
-  simp [bitsToArr]
+theorem testBit_bitsToWordAux (t : Nat → Bool) :
+    ∀ (j i : Nat), (bitsToWordAux t j).testBit i = (decide (i < j) && t i) := by
+  intro j
+  induction j with
+  | zero => intro i; simp [bitsToWordAux]
+  | succ j ih =>
+      intro i
+      rw [bitsToWordAux, Nat.testBit_or, ih]
+      cases htj : t j with
+      | false =>
+          simp only [htj, Bool.false_eq_true, if_false, Nat.zero_testBit, Bool.or_false]
+          by_cases hij : i < j
+          · simp [hij, Nat.lt_succ_of_lt hij]
+          · by_cases hje : i = j
+            · subst hje; simp [hij, htj]
+            · have : ¬ (i < j + 1) := by omega
+              simp [hij, this]
+      | true =>
+          simp only [htj, if_true, Nat.testBit_two_pow]
+          by_cases hij : i < j
+          · have hne : ¬ (j = i) := by omega
+            simp [hij, Nat.lt_succ_of_lt hij, hne]
+          · by_cases hje : i = j
+            · subst hje; simp [hij, htj]
+            · have : ¬ (i < j + 1) := by omega
+              have hne : ¬ (j = i) := by omega
+              simp [hij, this, hne]
 
-/-- Distinct tag functions have distinct arrays, so comparing arrays decides the functions. -/
-theorem bitsToArr_inj {k : Nat} {a b : BitString k} (h : bitsToArr a = bitsToArr b) : a = b := by
+/-- Pack a bit function into a tag. -/
+def bitsToWord {k : Nat} (t : BitString k) : Tag :=
+  bitsToWordAux (fun j => if h : j < k then unbit (t ⟨j, h⟩) else false) k
+
+/-- **Packing and unpacking are inverse.** This is what lets the theory read a stored tag as
+the function it stands for. -/
+@[simp] theorem wordToBits_bitsToWord {k : Nat} (t : BitString k) :
+    wordToBits (k := k) (bitsToWord t) = t := by
   funext j
-  refine unbit_inj ?_
-  have hj : (bitsToArr a)[(j : Nat)]'(by simp) = (bitsToArr b)[(j : Nat)]'(by simp) := by
-    simp only [h]
-  simpa using hj
+  have hj : (j : Nat) < k := j.isLt
+  simp only [wordToBits, bitsToWord, testBit_bitsToWordAux, hj, decide_true, Bool.true_and,
+    dif_pos hj]
+  simp
+
+/-- Distinct tag functions have distinct packings, so comparing tags decides the functions. -/
+theorem wordToBits_congr {k : Nat} {a b : Tag} (h : a = b) :
+    wordToBits (k := k) a = wordToBits (k := k) b := by rw [h]
+
+@[simp] theorem wordToBits_zero {k : Nat} : wordToBits (k := k) 0 = 0 := by
+  funext j; simp [wordToBits, bit]
+
+/-- XOR of tags is addition of the functions they stand for. -/
+@[simp] theorem wordToBits_xor {k : Nat} (a b : Tag) :
+    wordToBits (k := k) (a ^^^ b) = wordToBits (k := k) a + wordToBits (k := k) b := by
+  funext j
+  simp only [wordToBits, Nat.testBit_xor, Pi.add_apply]
+  exact bit_xor _ _
 
 /-- The all-ones tag. -/
-def onesArr (k : Nat) : Tag := Array.replicate k true
+def onesTag (k : Nat) : Tag := 2 ^ k - 1
 
-theorem onesArr_eq (k : Nat) : onesArr k = bitsToArr (ones k) := by
-  apply Array.ext
-  · simp [onesArr]
-  · intro i h1 h2
-    simp [onesArr, bitsToArr, ones, unbit]
-
-/-- Bitwise XOR of two tags. -/
-def xorArr (a b : Tag) : Tag := (a.zip b).map fun p => p.1 ^^ p.2
-
-theorem xorArr_bitsToArr {k : Nat} (a b : BitString k) :
-    xorArr (bitsToArr a) (bitsToArr b) = bitsToArr (a + b) := by
-  apply Array.ext
-  · simp [xorArr]
-  · intro i h1 h2
-    have hi : i < k := by simpa using h2
-    have e : ∀ (t : BitString k), (bitsToArr t)[i]'(by simpa using hi) = unbit (t ⟨i, hi⟩) := by
-      intro t
-      simpa using getElem_bitsToArr t ⟨i, hi⟩
-    simp only [xorArr, Array.getElem_map, Array.getElem_zip, e]
-    exact (unbit_add _ _).symm
+@[simp] theorem wordToBits_onesTag (k : Nat) : wordToBits (k := k) (onesTag k) = ones k := by
+  funext j
+  simp [wordToBits, onesTag, Nat.testBit_two_pow_sub_one, j.isLt, ones, bit]
 
 /-! ## Tag states -/
 
@@ -94,28 +121,27 @@ structure TState (k : Nat) where
 namespace TState
 
 /-- Wire `q`'s tag (the zero tag for a wire the state does not cover). -/
-def tagOf {k : Nat} (ts : TState k) (q : Qubit) : Tag :=
-  ts.tags.getD q (bitsToArr (0 : BitString k))
+def tagOf {k : Nat} (ts : TState k) (q : Qubit) : Tag := ts.tags.getD q 0
 
 /-- Wire `i` starts out tagged with the `i`-th draw. -/
-def initial {k : Nat} (draws : Draws k) (n : Nat) : TState k where
-  tags := (List.range n).map fun i => bitsToArr (draws i)
+def initial {k : Nat} (wdraws : Nat → Tag) (n : Nat) : TState k where
+  tags := (List.range n).map wdraws
   fresh := n
 
 /-- The Rust transfer functions, on tags. -/
-def step {k : Nat} (draws : Draws k) (ts : TState k) (g : Gate) : TState k :=
+def step {k : Nat} (wdraws : Nat → Tag) (ts : TState k) (g : Gate) : TState k :=
   match g with
-  | .x q => { ts with tags := ts.tags.set q (xorArr (ts.tagOf q) (onesArr k)) }
-  | .cnot c t => { ts with tags := ts.tags.set t (xorArr (ts.tagOf t) (ts.tagOf c)) }
-  | .h q => { tags := ts.tags.set q (bitsToArr (draws ts.fresh)), fresh := ts.fresh + 1 }
-  | .ccx _ _ t => { tags := ts.tags.set t (bitsToArr (draws ts.fresh)), fresh := ts.fresh + 1 }
-  | .reset q => { tags := ts.tags.set q (bitsToArr (draws ts.fresh)), fresh := ts.fresh + 1 }
+  | .x q => { ts with tags := ts.tags.set q (ts.tagOf q ^^^ onesTag k) }
+  | .cnot c t => { ts with tags := ts.tags.set t (ts.tagOf t ^^^ ts.tagOf c) }
+  | .h q => { tags := ts.tags.set q (wdraws ts.fresh), fresh := ts.fresh + 1 }
+  | .ccx _ _ t => { tags := ts.tags.set t (wdraws ts.fresh), fresh := ts.fresh + 1 }
+  | .reset q => { tags := ts.tags.set q (wdraws ts.fresh), fresh := ts.fresh + 1 }
   | _ => ts
 
 /-- The tag state after a gate list. -/
-def steps {k : Nat} (draws : Draws k) (ts : TState k) : List Gate → TState k
+def steps {k : Nat} (wdraws : Nat → Tag) (ts : TState k) : List Gate → TState k
   | [] => ts
-  | g :: gs => steps draws (ts.step draws g) gs
+  | g :: gs => steps wdraws (ts.step wdraws g) gs
 
 end TState
 
@@ -126,14 +152,14 @@ when the later wire carries the complementary parity (Rust's canonicalisation), 
 otherwise. -/
 def matchTag (k : Nat) (pending later : Tag) : Option Bool :=
   if later == pending then some false
-  else if later == xorArr pending (onesArr k) then some true
+  else if later == pending ^^^ onesTag k then some true
   else none
 
 /-! ## The fold -/
 
 /-- Scan forward for a rotation on the same parity, carrying the tag state. A gate that is
 not unitary stops the scan: this pass never folds across a `measure` or a `reset`. -/
-def mergeInto {k : Nat} (draws : Draws k) (ts : TState k) (tag : Tag) (θ : ℚ) :
+def mergeInto {k : Nat} (wdraws : Nat → Tag) (ts : TState k) (tag : Tag) (θ : ℚ) :
     List Gate → Option (List Gate)
   | [] => none
   | g :: gs =>
@@ -142,13 +168,13 @@ def mergeInto {k : Nat} (draws : Draws k) (ts : TState k) (tag : Tag) (θ : ℚ)
         | some (φ, q') =>
             match matchTag k tag (ts.tagOf q') with
             | some sign => some (Gate.rz (φ + signedAngle sign θ) q' :: gs)
-            | none => (mergeInto draws (ts.step draws g) tag θ gs).map (g :: ·)
-        | none => (mergeInto draws (ts.step draws g) tag θ gs).map (g :: ·)
+            | none => (mergeInto wdraws (ts.step wdraws g) tag θ gs).map (g :: ·)
+        | none => (mergeInto wdraws (ts.step wdraws g) tag θ gs).map (g :: ·)
       else none
 
 /-- Merging rewrites one rotation in place, so the list keeps its length. -/
-theorem mergeInto_length {k : Nat} (draws : Draws k) (tag : Tag) (θ : ℚ) :
-    ∀ (gs gs' : List Gate) (ts : TState k), mergeInto draws ts tag θ gs = some gs' →
+theorem mergeInto_length {k : Nat} (wdraws : Nat → Tag) (tag : Tag) (θ : ℚ) :
+    ∀ (gs gs' : List Gate) (ts : TState k), mergeInto wdraws ts tag θ gs = some gs' →
       gs'.length = gs.length := by
   intro gs
   induction gs with
@@ -170,20 +196,20 @@ theorem mergeInto_length {k : Nat} (draws : Draws k) (tag : Tag) (θ : ℚ) :
 
 /-- Fold a gate list: every rotation is pushed forward into the next rotation on its parity,
 if there is one. -/
-def foldFrom {k : Nat} (draws : Draws k) (ts : TState k) : List Gate → List Gate
+def foldFrom {k : Nat} (wdraws : Nat → Tag) (ts : TState k) : List Gate → List Gate
   | [] => []
   | g :: gs =>
       match rotAngle g with
       | some (θ, q) =>
-          match hm : mergeInto draws ts (ts.tagOf q) θ gs with
-          | some gs' => foldFrom draws ts gs'
-          | none => g :: foldFrom draws (ts.step draws g) gs
-      | none => g :: foldFrom draws (ts.step draws g) gs
+          match hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
+          | some gs' => foldFrom wdraws ts gs'
+          | none => g :: foldFrom wdraws (ts.step wdraws g) gs
+      | none => g :: foldFrom wdraws (ts.step wdraws g) gs
   termination_by gs => gs.length
   decreasing_by
     all_goals
       first
-        | (rw [mergeInto_length draws (ts.tagOf q) θ gs gs' ts hm]; simp)
+        | (rw [mergeInto_length wdraws (ts.tagOf q) θ gs gs' ts hm]; simp)
         | simp
 
 /-- Re-emit every rotation as Clifford+T where its angle allows, dropping those that
@@ -196,29 +222,31 @@ def emitAll : List Gate → List Gate
         | none => [g]) ++ emitAll gs
 
 /-- Phase folding on a gate list, with the draws supplied. -/
-def phaseFoldGates {k : Nat} (draws : Draws k) (n : Nat) (gs : List Gate) : List Gate :=
-  emitAll (foldFrom draws (TState.initial draws n) gs)
+def phaseFoldGates (k : Nat) (wdraws : Nat → Tag) (n : Nat) (gs : List Gate) : List Gate :=
+  emitAll (foldFrom (k := k) wdraws (TState.initial (k := k) wdraws n) gs)
 
 /-- Phase folding on a circuit. -/
-def phaseFold {k : Nat} (draws : Draws k) (c : Circuit) : Circuit where
+def phaseFold (k : Nat) (wdraws : Nat → Tag) (c : Circuit) : Circuit where
   numQubits := c.numQubits
   numCbits := c.numCbits
-  gates := phaseFoldGates draws c.numQubits c.gates
+  gates := phaseFoldGates k wdraws c.numQubits c.gates
 
-@[simp] theorem phaseFold_numQubits {k : Nat} (draws : Draws k) (c : Circuit) :
-    (phaseFold draws c).numQubits = c.numQubits := rfl
+@[simp] theorem phaseFold_numQubits (k : Nat) (wdraws : Nat → Tag) (c : Circuit) :
+    (phaseFold k wdraws c).numQubits = c.numQubits := rfl
 
-@[simp] theorem phaseFold_numCbits {k : Nat} (draws : Draws k) (c : Circuit) :
-    (phaseFold draws c).numCbits = c.numCbits := rfl
+@[simp] theorem phaseFold_numCbits (k : Nat) (wdraws : Nat → Tag) (c : Circuit) :
+    (phaseFold k wdraws c).numCbits = c.numCbits := rfl
 
 /-! ## Where the randomness comes from
 
-The pass is a pure function of `draws`, so entropy enters only here, at the boundary. A run
-draws exactly the object the correctness theorem quantifies over: one uniform `k`-bit tag per
-variable, `Sample (varBound c) k`. `padSample` is the executable copy of `liftSample` (which
-is noncomputable, living with the `Finsupp` machinery); the two are definitionally equal, as
-`padSample_eq` records, so `phaseFoldIO` runs the very distribution `PhaseFoldRand.correct`
-bounds — modulo the one thing no proof can supply, that `IO.rand` is uniform. -/
+The pass is a pure function of its word-draw stream, so entropy enters only here, at the
+boundary. The correctness theorem relates that stream to the theory's `Draws k` through
+`wordToBits`, which is why nothing in the inner loop ever touches an `F₂` function: the pass
+XORs machine words, and only the statement of the theorem talks about bits.
+
+`bitsToWord` converts a drawn `Sample` into that stream — once per variable, never per step —
+so `phaseFoldIO` runs the very distribution `PhaseFoldRand.correct` bounds, modulo the one
+thing no proof can supply: that `IO.rand` is uniform. -/
 
 /-- The number of variables a circuit's analysis can allocate: one per wire, plus at most one
 per gate (`h`, `ccx` and `reset` are the only allocating gates). -/
@@ -231,29 +259,39 @@ def padSample {m k : Nat} (sample : Sample m k) : Draws k :=
 theorem padSample_eq {m k : Nat} (sample : Sample m k) : padSample sample = liftSample sample :=
   rfl
 
-/-- A deterministic draw stream from a seed: splitmix64 bit mixing, one `k`-bit tag per
-variable. Used by the CLI, where a run is reproducible from `--seed`. -/
-def seedDraws {k : Nat} (seed : Nat) : Draws k := fun i =>
+/-- The packed word stream a bit-valued draw stream stands for. -/
+def wordsOf (k : Nat) (draws : Draws k) : Nat → Tag := fun i => bitsToWord (draws i)
+
+@[simp] theorem wordToBits_wordsOf (k : Nat) (draws : Draws k) (i : Nat) :
+    wordToBits (k := k) (wordsOf k draws i) = draws i := by
+  simp [wordsOf]
+
+/-- A deterministic word stream from a seed: splitmix64 bit mixing, one `k`-bit tag per
+variable. Used by the CLI, where a run is reproducible from `--seed`.
+
+Packed directly, never through a bit function: converting per step was measurably most of the
+pass's remaining cost. -/
+def seedWords (k : Nat) (seed : Nat) : Nat → Tag := fun i =>
   let x : UInt64 := (seed.toUInt64 + i.toUInt64 + 1) * 0x9E3779B97F4A7C15
   let x := (x ^^^ (x >>> 30)) * 0xBF58476D1CE4E5B9
   let x := (x ^^^ (x >>> 27)) * 0x94D049BB133111EB
   let x := x ^^^ (x >>> 31)
-  fun j => ((x >>> j.val.toUInt64).toNat % 2 : Nat)
+  x.toNat % 2 ^ k
 
 /-- Draw one uniform `k`-bit tag per variable from the runtime's generator. -/
-def randomSample (m k : Nat) : IO (Sample m k) := do
-  let mut rows : Array (Array (ZMod 2)) := #[]
+def randomWords (m k : Nat) : IO (Nat → Tag) := do
+  let mut rows : Array Nat := #[]
   for _ in [0:m] do
-    let mut bits : Array (ZMod 2) := #[]
-    for _ in [0:k] do
+    let mut w : Nat := 0
+    for j in [0:k] do
       let b ← IO.rand 0 1
-      bits := bits.push (b : ZMod 2)
-    rows := rows.push bits
-  return fun i j => (rows[i.val]!)[j.val]!
+      w := w ||| (if b == 1 then 2 ^ j else 0)
+    rows := rows.push w
+  return fun i => rows[i]!
 
 /-- Phase folding with freshly drawn tags: the pass as it would actually be run. -/
 def phaseFoldIO (k : Nat) (c : Circuit) : IO Circuit := do
-  let sample ← randomSample (varBound c) k
-  return phaseFold (padSample sample) c
+  let wdraws ← randomWords (varBound c) k
+  return phaseFold k wdraws c
 
 end TzapLean

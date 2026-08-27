@@ -82,7 +82,7 @@ theorem foldPipeline_error (k : Nat) (c : Circuit) :
 two deterministic passes. -/
 theorem foldPipeline_correct (k : Nat) (c : Circuit) (hc : c.Wf)
     (s : (foldPipeline k).Seed c) :
-    (foldPipeline k).run c s = CnotMin.run (CancelGates.run (phaseFold (liftSample s.1) c)) :=
+    (foldPipeline k).run c s = CnotMin.run (CancelGates.run (phaseFold k (wordsOf k (liftSample s.1)) c)) :=
   rfl
 
 end

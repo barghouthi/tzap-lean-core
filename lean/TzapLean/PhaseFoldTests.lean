@@ -20,16 +20,11 @@ namespace TzapLean
 
 open Gate
 
-/-- A fixed draw stream: splitmix64 bit mixing, one 64-bit tag per variable. -/
-def testDraws (k : Nat) : Draws k := fun i =>
-  let x : UInt64 := (i.toUInt64 + 1) * 0x9E3779B97F4A7C15
-  let x := (x ^^^ (x >>> 30)) * 0xBF58476D1CE4E5B9
-  let x := (x ^^^ (x >>> 27)) * 0x94D049BB133111EB
-  let x := x ^^^ (x >>> 31)
-  fun j => ((x >>> j.val.toUInt64).toNat % 2 : Nat)
+/-- A fixed draw stream: splitmix64 bit mixing, one 63-bit tag per variable. -/
+def testWords : Nat → Tag := seedWords 63 0
 
 /-- Phase folding with those draws. -/
-def pf (n : Nat) (gs : List Gate) : List Gate := phaseFoldGates (testDraws 64) n gs
+def pf (n : Nat) (gs : List Gate) : List Gate := phaseFoldGates 63 testWords n gs
 
 /-- Rust's `count_phase_gates`. -/
 def countPhaseGates (gs : List Gate) : Nat := (gs.filter fun g => (rotAngle g).isSome).length
