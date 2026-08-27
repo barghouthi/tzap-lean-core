@@ -112,4 +112,52 @@ def roundTrip (c : Circuit) : Bool :=
 #guard fmtPct 0 0 == "0.0"
 #guard fmtPct 3 3 == "0.0"
 
+/-! ## The table cache
+
+Round-trip through the on-disk format, and the rejections that make a bad file harmless. -/
+
+/-- A small table to serialize. -/
+def cacheCfg : SuperOptTableConfig := { maxQubits := 2, maxGates := 2, maxEntriesPerQubit := 500 }
+
+/-- Its bytes. -/
+def cacheBytes : ByteArray := TableCache.serialize cacheCfg (buildTable cacheCfg)
+
+/-- Reading back what was written gives the same widths, entries and circuits. -/
+def cacheRoundTrips : Bool :=
+  let orig := buildTable cacheCfg
+  match TableCache.deserialize cacheCfg cacheBytes with
+  | none => false
+  | some back =>
+      back.widths.size == orig.widths.size &&
+        (List.range orig.widths.size).all fun k =>
+          let a := orig.widths[k]!
+          let b := back.widths[k]!
+          a.size == b.size && a.nodes.size == b.nodes.size &&
+            a.saturated == b.saturated && a.depth == b.depth &&
+            -- every stored circuit survives the trip
+            (List.range a.nodes.size).all fun i => a.circuitOf i == b.circuitOf i
+
+#guard cacheRoundTrips
+
+-- A cache built for other bounds is rejected, not misread.
+#guard (TableCache.deserialize { cacheCfg with maxQubits := 3 } cacheBytes).isNone
+#guard (TableCache.deserialize { cacheCfg with maxGates := 3 } cacheBytes).isNone
+#guard (TableCache.deserialize { cacheCfg with maxEntriesPerQubit := 501 } cacheBytes).isNone
+-- Garbage, a truncated write, and a wrong magic are all rejected.
+#guard (TableCache.deserialize cacheCfg (ByteArray.mk #[71, 65, 82, 66])).isNone
+#guard (TableCache.deserialize cacheCfg (cacheBytes.extract 0 100)).isNone
+#guard (TableCache.deserialize cacheCfg ByteArray.empty).isNone
+
+-- A synthesized lookup survives the round trip: the cached table answers as the built one does.
+#guard
+  (let orig := buildTable cacheCfg
+   match TableCache.deserialize cacheCfg cacheBytes with
+   | none => false
+   | some back =>
+       [[Gate.h 0, Gate.h 0], [Gate.t 0, Gate.t 0], [Gate.x 0], [Gate.cnot 0 1]].all
+         fun gs =>
+           match ExactMat.matrixOf 2 gs with
+           | none => false
+           | some M => orig.synthesize 2 M.normalize == back.synthesize 2 M.normalize)
+
 end TzapLean

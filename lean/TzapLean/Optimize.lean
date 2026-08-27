@@ -1,6 +1,7 @@
 import TzapLean.SuperOptProof
 import TzapLean.PhaseFoldRand
 import TzapLean.Qasm
+import TzapLean.TableCache
 
 /-!
 # The Optimizer Driver
@@ -128,15 +129,19 @@ deriving Repr, Inhabited
 
 /-- The window/table bounds a level implies.
 
-Rust's defaults (3 wires, 25-gate windows, a 200,000-entry depth-8 table) assume a compiled,
-parallel table build. This port's builder is single-threaded Lean, so the defaults are scaled
-to keep a cold start to a few seconds; `--superopt-*` overrides them, and `-Osuper` trades
-build time for reach exactly as it does in Rust. -/
+`O1`–`O3` use Rust's own bounds: 3 wires, 25-gate windows, a 200,000-entry table. That table
+takes about 76 seconds to build here against Rust's parallel builder, which is affordable only
+because it is built once and cached (`TableCache`) — a warm run loads its 549,456 unitaries in
+0.07 s.
+
+`Osuper` is where this parts company with Rust, which uses 5 wires and 5,000,000 entries: at
+that size a single-threaded build is not worth waiting for. 4 wires and 200,000 entries is the
+widest tier that builds in a tolerable time — 800,000 unitaries in 70 s, then 0.12 s a run. -/
 def Level.bounds : Level → Nat × Nat × Nat
-  | .O1 => (2, 6, 2000)
-  | .O2 => (2, 6, 2000)
-  | .O3 => (2, 6, 2000)
-  | .Osuper => (3, 10, 20000)
+  | .O1 => (3, 25, 200000)
+  | .O2 => (3, 25, 200000)
+  | .O3 => (3, 25, 200000)
+  | .Osuper => (4, 40, 200000)
 
 /-- Resolve the bounds for a run: level preset, then any explicit override. -/
 def resolveBounds (o : Options) : SuperOptConfig × SuperOptTableConfig :=
@@ -270,14 +275,21 @@ def optimize (c : Circuit) (o : Options) : IO (Circuit × Report) := do
   -- Only pay for a table if some selected pass will consult it.
   let needsTable := names.contains .SuperOpt
   let tbl ← if needsTable then do
-      IO.eprintln "  🔧 Building superoptimizer table (one-time for this run)..."
+      -- Captured before the load below can create the file, so a cold run says so.
+      let cached ← TableCache.isCached tcfg
+      if cached then
+        IO.eprint "  Loading superoptimizer table..."
+      else
+        IO.eprintln "  🔧 Building superoptimizer table (one-time — cached for future use)..."
       let t0 ← IO.monoNanosNow
-      let tbl := buildTable tcfg
+      let (tbl, fromCache) ← TableCache.loadOrBuild tcfg
       let total := (List.range (tcfg.maxQubits + 1)).foldl
         (fun acc k => acc + (tbl.widths[k]?.map WidthTable.size |>.getD 0)) 0
       force fun _ => total
       let t1 ← IO.monoNanosNow
-      IO.eprintln s!"  Built superoptimizer table ({fmtNum total} unitaries) in \
+      let verb := if fromCache then "Loaded" else "Built"
+      if cached then IO.eprint "\r"
+      IO.eprintln s!"  {verb} superoptimizer table ({fmtNum total} unitaries) in \
                      {fmtSecs (t1 - t0)}s"
       IO.eprintln ""
       pure tbl

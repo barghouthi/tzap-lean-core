@@ -17,6 +17,7 @@ import TzapLean.Cyclotomic
 import TzapLean.ExactMat
 import TzapLean.Locality
 import TzapLean.SynthTable
+import TzapLean.TableCache
 import TzapLean.SuperOpt
 import TzapLean.SuperOptProof
 import TzapLean.RandPass

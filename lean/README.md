@@ -33,7 +33,8 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/Cyclotomic.lean` | `ℤ[ω]`, `ω = e^{iπ/4}`: exact Clifford+T arithmetic, the eight global phases, and division by `√2 = ω − ω³`. |
 | `TzapLean/ExactMat.lean` | Exact `2ⁿ × 2ⁿ` matrices over that ring, gate by gate, with `matrixOf_sound`. |
 | `TzapLean/Locality.lean` | `pad`: an operator on a few wires is itself ⊗ identity. Products, scalars, and every gate. |
-| `TzapLean/SynthTable.lean` | The bounded synthesis table: canonical matrix keys, the library gate set, and the breadth-first build. |
+| `TzapLean/SynthTable.lean` | The bounded synthesis table: flat builder matrices, fingerprints, the library gate set, and the breadth-first build. |
+| `TzapLean/TableCache.lean` | The on-disk table cache — the port of `table.rs`'s persistence. |
 | `TzapLean/SuperOpt.lean` | `SuperOpt`: window scan and verified rewrite. |
 | `TzapLean/SuperOptProof.lean` | The window invariant, and the pass. |
 | `TzapLean/SemanticsCheck.lean` | Independent validation of the semantics: unitarity of every gate, trace preservation, concrete amplitudes, and the `src/unitary.rs` suite. |
@@ -84,19 +85,12 @@ which is a different correctness argument from the pairwise merge lemma proved h
 `-Osuper` is faster than Rust only because it does much less: Rust builds a 5,000,000-entry
 table across 5 wires, this builds 40,784 across 3.
 
-**The `SuperOpt` presets are not Rust's.** The mapping is the same (`table_gates =
-window_gates - 1`), but the numbers are scaled down, because Rust caches its table to disk
-across runs and this builds one per run:
-
-| | Rust `-O3` | here | Rust `-Osuper` | here |
-|---|---|---|---|---|
-| qubits | 3 | 2 | 5 | 3 |
-| window gates | 25 | 6 | 40 | 10 |
-| table entries | 200,000 | 2,000 | 5,000,000 | 20,000 |
-
-On this benchmark the difference costs nothing — every level of both implementations reaches
-the same circuit — but it will matter on inputs where a wider window pays. `--superopt-qubits`,
-`--superopt-window-gates` and `--superopt-table-entries` override them.
+**`-O1`–`-O3` use Rust's own `SuperOpt` bounds** — 3 wires, 25-gate windows, 200,000 entries,
+with the same `table_gates = window_gates - 1` mapping. `-Osuper` does not: Rust uses 5 wires
+and 5,000,000 entries, which a single-threaded builder cannot reach in a sensible time, so it
+uses 4 wires and 200,000 entries (800,000 unitaries, 70 s to build, 0.12 s to load).
+`--superopt-qubits`, `--superopt-window-gates` and `--superopt-table-entries` override any of
+them.
 
 `-O3` is `-O2` run to a true fixpoint; Rust's `-O3` also ends with a one-shot Clifford
 re-synthesis, which is not ported. The synthesis table is built per run rather than cached to
@@ -254,10 +248,28 @@ commuting through a `CNOT` control — are *discovered*, not listed.
 One deliberate departure from Rust: **skipped gates move to just after the replacement**
 rather than staying interleaved. They commute with every window gate, so this is invisible.
 
-Building the table is the one-time cost the design trades for: a depth-4 two-wire table is
-4,774 unitaries and a few seconds, after which each window lookup is a hash hit. There is no
-persistence — Rust caches tables under `~/.tzap/superopt-tables/`; here a table is a value,
-built once and passed to the pass.
+### Persisting the table
+
+Building the table is the one-time cost the design trades for, so — as in Rust — it is written
+to disk and read back by later runs, under `~/.tzap-lean/superopt-tables/`. The layout follows
+`table.rs`: a magic number, a format version, the bounds the table was built for, then one
+fixed-width record per arena node — fingerprint, parent, and last gate. The
+fingerprint-to-node map is rebuilt on read, since nodes and fingerprints are one to one.
+
+Every read is validated against the bounds being asked for, and **any failure — missing file,
+truncated write, version bump, bounds mismatch — falls back to rebuilding**, so a bad cache
+file can waste a read but never produce a wrong table. Writes go to a temporary sibling and
+are renamed into place, so a reader never sees a partial file. The version is in the file name
+as well as its header, so a bump cannot collide with old files.
+
+The table is indexed by a 64-bit **fingerprint** of the canonical key rather than the key
+itself, again as in Rust. That is what makes the file small and the probe fast, and it is safe
+for the usual reason: a hit is only ever a candidate, and `accepts` recomputes the
+replacement's matrix and compares it exactly before any rewrite is taken. A collision costs a
+missed optimization, never a wrong one.
+
+Measured, at Rust's own `-O3` bounds (3 wires, 25-gate windows, 200,000 entries): 549,456
+unitaries, **24 s to build, 0.08 s to load**, 8.2 MB on disk.
 
 ## Two proof styles
 

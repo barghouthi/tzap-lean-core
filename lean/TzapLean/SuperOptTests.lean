@@ -50,6 +50,16 @@ or that canonicalized phase by dividing, could get either of these wrong. -/
 #guard eqUpToPhase 2 [t 0, cnot 0 1, tdg 0] [cnot 0 1]
 #guard eqUpToPhase 2 [cnot 0 1, cnot 1 0, cnot 0 1] [cnot 1 0, cnot 0 1, cnot 1 0]
 
+/-! ## The builder's fast paths agree with the definitions they replace -/
+
+/-- Sample coefficient tuples, including negatives and zeros. -/
+def sampleCycs : List Cyc :=
+  [⟨0,0,0,0⟩, ⟨1,0,0,0⟩, ⟨0,1,0,0⟩, ⟨0,0,1,0⟩, ⟨0,0,0,1⟩,
+   ⟨1,2,3,4⟩, ⟨-1,2,-3,4⟩, ⟨127,-127,3,-9⟩, ⟨-5,-6,-7,-8⟩]
+
+-- The one-step `ω^p` the table builder uses is the recursive one, for every `p` mod 8.
+#guard sampleCycs.all fun x => (List.range 24).all fun p => x.timesOmegaFast p == x.timesOmega p
+
 /-! ## The library gate set
 
 `library_gates(k)` has `7k` one-wire gates and `k(k−1)` `CNOT`s — Rust asserts exactly these
