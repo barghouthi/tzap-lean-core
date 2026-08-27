@@ -280,15 +280,16 @@ theorem disjoint_of_notMem {g g' : Gate} (h : ∀ q ∈ g.qubitsOf, q ∉ g'.qub
   · exact absurd ((Gate.support_iff g' q).1 (by simp [hq'])) (h q ((Gate.support_iff g q).1 hq))
 
 theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
-    ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (repl sk tail : List Gate), WinOk n m w →
-      (∀ g ∈ rest, g.Wf) → tryWindow cfg tbl n fm w rest = some (repl, sk, tail) →
+    ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (cnt : Nat)
+      (repl sk tail : List Gate) (k : Nat), WinOk n m w →
+      (∀ g ∈ rest, g.Wf) → tryWindow cfg tbl n fm w cnt rest = some (repl, sk, tail, k) →
       Equivalent n m (repl ++ sk ++ tail) (w.consumed ++ rest) ∧
         (∀ g ∈ repl, g.Wf) ∧ (∀ g ∈ sk, g.Wf) ∧ (∀ g ∈ tail, g.Wf) := by
   intro rest
   induction rest with
-  | nil => intro fm w repl sk tail _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
+  | nil => intro fm w cnt repl sk tail k _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
   | cons g rest ih =>
-      intro fm w repl sk tail hok hwfr h
+      intro fm w cnt repl sk tail k hok hwfr h
       rw [tryWindow] at h
       split at h
       · -- the gate touches the window
@@ -340,7 +341,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
           · -- a rewrite was found; the tail is what is left of `rest`
             rename_i repl₀ hsynth
             simp only [Option.some.injEq, Prod.mk.injEq] at h
-            obtain ⟨hr, hs, ht⟩ := h
+            obtain ⟨hr, hs, ht, -⟩ := h
             subst hr; subst hs; subst ht
             obtain ⟨heq, hwfrepl, -⟩ :=
               trySynth_correct (m := m) hok'.nodup hok'.range hok'.sub hok'.wf
@@ -355,7 +356,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             simpa using this
           · -- keep scanning
             obtain ⟨heq, h1, h2, h3⟩ :=
-              ih _ ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ repl sk tail hok'
+              ih _ ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ _ repl sk tail k hok'
                 (fun x hx => hwfr x (by simp [hx])) h
             exact ⟨by simpa using heq, h1, h2, h3⟩
         · exact absurd h (by simp)
@@ -379,26 +380,30 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             have := Equivalent.append_right (n := n) (m := m) [g] hok.equiv
             simpa using this
         obtain ⟨heq, h1, h2, h3⟩ :=
-          ih _ ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ repl sk tail hok'
+          ih _ ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ _ repl sk tail k hok'
             (fun x hx => hwfr x (by simp [hx])) h
         exact ⟨by simpa using heq, h1, h2, h3⟩
 
 /-! ## The pass -/
 
-theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
-    ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) →
-      Equivalent n m (sweepOnce cfg tbl n fuel gs) gs ∧ (∀ g ∈ sweepOnce cfg tbl n fuel gs, g.Wf) := by
+theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
+    (arr : Array Gate) (tracks : Array (Array Nat)) :
+    ∀ (fuel at_ : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) →
+      Equivalent n m (sweepOnce cfg tbl n arr tracks fuel at_ gs) gs ∧
+        (∀ g ∈ sweepOnce cfg tbl n arr tracks fuel at_ gs, g.Wf) := by
   intro fuel
   induction fuel with
-  | zero => intro gs hwf; exact ⟨Equivalent.refl n m gs, hwf⟩
+  | zero => intro at_ gs hwf; exact ⟨Equivalent.refl n m gs, hwf⟩
   | succ fuel ih =>
-      intro gs hwf
+      intro at_ gs hwf
       cases gs with
       | nil => exact ⟨Equivalent.refl n m [], by simp [sweepOnce]⟩
       | cons g rest =>
-          have keep : Equivalent n m (g :: sweepOnce cfg tbl n fuel rest) (g :: rest) ∧
-              (∀ x ∈ g :: sweepOnce cfg tbl n fuel rest, x.Wf) := by
-            obtain ⟨heq, hwf'⟩ := ih rest (fun x hx => hwf x (by simp [hx]))
+          have keep : ∀ k : Nat,
+              Equivalent n m (g :: sweepOnce cfg tbl n arr tracks fuel k rest) (g :: rest) ∧
+              (∀ x ∈ g :: sweepOnce cfg tbl n arr tracks fuel k rest, x.Wf) := by
+            intro k
+            obtain ⟨heq, hwf'⟩ := ih k rest (fun x hx => hwf x (by simp [hx]))
             refine ⟨by simpa using Equivalent.append_left [g] heq, ?_⟩
             intro x hx
             rcases List.mem_cons.1 hx with rfl | hx
@@ -409,9 +414,9 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
           · rename_i hanchor
             simp only [canAnchor, Bool.and_eq_true, decide_eq_true_eq,
               List.all_eq_true] at hanchor
-            obtain ⟨⟨⟨hwin, -⟩, hrangeg⟩, hwfg⟩ := hanchor
+            obtain ⟨⟨⟨⟨hwin, -⟩, hrangeg⟩, hwfg⟩, -⟩ := hanchor
             split
-            · rename_i repl sk tail hw
+            · rename_i repl sk tail consumed hw
               -- the window's own invariant, at the anchor
               have hok : WinOk n m (Win.start g) := by
                 refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, ?_, by simp, by simp, ?_⟩
@@ -424,12 +429,14 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
                   exact isWindowGate_isUnitary hwin
                 · simpa [Win.start] using Equivalent.refl n m [g]
               obtain ⟨heq, hrepl, hsk, htail⟩ :=
-                tryWindow_correct rest _ (Win.start g) repl sk tail hok
+                tryWindow_correct rest _ (Win.start g) 0 repl sk tail consumed hok
                   (fun x hx => hwf x (by simp [hx])) hw
-              obtain ⟨heqt, hwft⟩ := ih tail htail
+              obtain ⟨heqt, hwft⟩ := ih (at_ + 1 + consumed) tail htail
               refine ⟨?_, ?_⟩
               · -- rewrite here, then whatever the rest of the sweepOnce does
-                have hcont : Equivalent n m (repl ++ sk ++ sweepOnce cfg tbl n fuel tail)
+                have hcont : Equivalent n m
+                    (repl ++ sk ++ sweepOnce cfg tbl n arr tracks fuel
+                      (at_ + 1 + consumed) tail)
                     (repl ++ sk ++ tail) := by
                   have := Equivalent.append_left (n := n) (m := m) sk heqt
                   simpa using Equivalent.append_left (n := n) (m := m) repl this
@@ -440,8 +447,8 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
                   · exact hrepl x hx
                   · exact hsk x hx
                 · exact hwft x hx
-            · exact keep
-          · exact keep
+            · exact keep _
+          · exact keep _
 
 theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
     ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) →
@@ -452,7 +459,8 @@ theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable
   | zero => intro gs hwf; exact ⟨Equivalent.refl n m gs, hwf⟩
   | succ fuel ih =>
       intro gs hwf
-      obtain ⟨heq, hwf'⟩ := sweep_correct (m := m) gs.length gs hwf
+      obtain ⟨heq, hwf'⟩ :=
+        sweep_correct (m := m) gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hwf
       rw [superOptAux]
       split
       · obtain ⟨heq', hwf''⟩ := ih _ hwf'

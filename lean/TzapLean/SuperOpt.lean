@@ -132,6 +132,13 @@ def windowMayHold (tbl : SynthTable) (k : Nat) (fm : Option FlatMat) : Bool :=
   | none => false
   | some M => tbl.mayHold k M
 
+/-- Whether the table holds a replacement for this window strictly shorter than it — the
+question `trySynth` will go on to answer exactly. -/
+def windowHasShorter (tbl : SynthTable) (k : Nat) (fm : Option FlatMat) (len : Nat) : Bool :=
+  match fm with
+  | none => false
+  | some M => tbl.hasShorter k M len
+
 /-- Look for a strictly shorter replacement for a window, verified before it is returned. -/
 def trySynth (tbl : SynthTable) (w : Win) : Option (List Gate) :=
   if w.members.length ≤ 1 then none
@@ -158,12 +165,106 @@ def extendFlat (sup : List Qubit) (fm : Option FlatMat) (w : Win) (g : Gate) : O
   if sup.length == w.support.length then fm.bind (·.applyGate (localizeGate w.support g))
   else FlatMat.ofGates sup.length (localizeGates sup (w.members ++ [g]))
 
+/-! ## The per-qubit index
+
+`tryWindow` walks the gate list one gate at a time, and most gates it walks touch none of the
+window's wires. The expected distance to the next gate on a given wire is `gates/qubit`, so a
+window that accepts `maxWindow` members walks about `maxWindow × gates/qubit` gates — on
+`gf2^16` that is ~2,300 gates per anchor, and it is where the pass spent its time.
+
+Rust does not scan for the gates it cares about, it looks them up: `tracks[q]` holds the
+indices of the gates touching wire `q`, so a lookahead visits only those. This is that index,
+used to answer one question cheaply — *would this anchor produce a rewrite at all?* — before
+the verified scan runs.
+
+**Everything in this section is unverified, and safe in both directions.** A false negative
+skips an anchor that had a rewrite, costing an optimization; a false positive costs one
+wasted verified scan. `tryWindow` still produces every rewrite that is taken, and
+`tryWindow_correct` still proves it. -/
+
+/-- Per-wire gate indices, ascending. -/
+def buildTracks (n : Nat) (gs : Array Gate) : Array (Array Nat) := Id.run do
+  let mut tr : Array (Array Nat) := Array.replicate n #[]
+  for h : i in [0 : gs.size] do
+    for q in gs[i].qubitsOf do
+      if q < n then tr := tr.modify q (·.push i)
+  return tr
+
+/-- Index of the first entry of a sorted array strictly greater than `x`. -/
+def upperBoundIdx (a : Array Nat) (x : Nat) : Nat :=
+  go a.size 0 a.size
+where
+  /-- Binary search, with the interval width as fuel. -/
+  go : Nat → Nat → Nat → Nat
+  | 0, lo, _ => lo
+  | fuel + 1, lo, hi =>
+      if lo < hi then
+        let mid := (lo + hi) / 2
+        if a[mid]! ≤ x then go fuel (mid + 1) hi else go fuel lo mid
+      else lo
+
+/-- The first gate on wire `q` strictly after index `i`. -/
+def nextOn (tracks : Array (Array Nat)) (q i : Nat) : Option Nat :=
+  match tracks[q]? with
+  | none => none
+  | some a =>
+      let j := upperBoundIdx a i
+      if j < a.size then some a[j]! else none
+
+/-- Is any gate on wire `q` strictly between `lo` and `hi`? -/
+def anyOn (tracks : Array (Array Nat)) (q lo hi : Nat) : Bool :=
+  match nextOn tracks q lo with
+  | none => false
+  | some j => j < hi
+
+/-- The first gate after `i` touching any wire of `S`. -/
+def nextTouching (tracks : Array (Array Nat)) (S : List Qubit) (i : Nat) : Option Nat :=
+  S.foldl (fun best q =>
+    match nextOn tracks q i with
+    | none => best
+    | some j => some (match best with | none => j | some b => min b j)) none
+
+/-- Would the window anchored at `i` reach a rewrite? Replays `tryWindow`'s growth through
+the index, visiting only gates that touch the window — never the gaps between them.
+
+The one subtle check is `tryWindow`'s "no skipped gate touches the widened support": a skipped
+gate is one in the span that misses the current support, so it can only touch the *new* wire a
+gate brings in, and the index answers that directly. -/
+def anchorMayFire (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : Array Gate)
+    (tracks : Array (Array Nat)) (anchor : Nat) : Bool :=
+  let a := gs[anchor]!
+  go (cfg.maxWindow + 1) a.qubitsOf [a] 1
+    (FlatMat.ofGates a.qubitsOf.length (localizeGates a.qubitsOf [a])) anchor
+where
+  /-- Walk the window's own gates, widest-first, until it fires or dies. The window's matrix
+  is carried and extended in place, rebuilt only when a gate brings a new wire in — rebuilding
+  it per step made the filter quadratic in the window's length. -/
+  go : Nat → List Qubit → List Gate → Nat → Option FlatMat → Nat → Bool
+  | 0, _, _, _, _, _ => false
+  | fuel + 1, sup, members, count, fm, i =>
+      match nextTouching tracks sup i with
+      | none => false
+      | some j =>
+          let g := gs[j]!
+          let sup' := widen sup g.qubitsOf
+          if !isWindowGate g || !g.qubitsOf.all (fun q => q < n) || !decide g.Wf
+              || sup'.length > cfg.maxQubits || count + 1 > cfg.maxWindow then false
+          else if (sup'.filter (fun q => !sup.contains q)).any
+              (fun w => anyOn tracks w anchor j) then false
+          else
+            let members' := members ++ [g]
+            let fm' :=
+              if sup'.length == sup.length then fm.bind (·.applyGate (localizeGate sup g))
+              else FlatMat.ofGates sup'.length (localizeGates sup' members')
+            if windowHasShorter tbl sup'.length fm' (count + 1) then true
+            else go fuel sup' members' (count + 1) fm' j
+
 /-! ## The scan -/
 
 /-- Grow a window through the gates that follow it, rewriting at the first hit. The result
 replaces the whole consumed span *and* the gates after it. -/
 def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (fm : Option FlatMat)
-    (w : Win) : List Gate → Option (List Gate × List Gate × List Gate)
+    (w : Win) (cnt : Nat) : List Gate → Option (List Gate × List Gate × List Gate × Nat)
   | [] => none
   | g :: rest =>
       if touches w.support g then
@@ -176,26 +277,28 @@ def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (fm : Option F
           match trySynthFiltered tbl (extendFlat (widen w.support g.qubitsOf) fm w g)
               ⟨widen w.support g.qubitsOf, w.members ++ [g], w.revSkipped,
                 g :: w.revConsumed⟩ with
-          | some repl => some (repl, w.skipped, rest)
+          | some repl => some (repl, w.skipped, rest, cnt + 1)
           | none =>
               tryWindow cfg tbl n (extendFlat (widen w.support g.qubitsOf) fm w g)
                 ⟨widen w.support g.qubitsOf, w.members ++ [g], w.revSkipped,
-                  g :: w.revConsumed⟩ rest
+                  g :: w.revConsumed⟩ (cnt + 1) rest
         else none
       else
         tryWindow cfg tbl n fm
-          ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ rest
+          ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ (cnt + 1) rest
 
 /-- The tail a rewrite leaves is a suffix of what the window was scanning, so a sweep that
 continues from it makes progress. -/
 theorem tryWindow_tail_le {cfg : SuperOptConfig} {tbl : SynthTable} {n : Nat} :
-    ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (repl sk tail : List Gate),
-      tryWindow cfg tbl n fm w rest = some (repl, sk, tail) → tail.length ≤ rest.length := by
+    ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (cnt : Nat)
+      (repl sk tail : List Gate) (k : Nat),
+      tryWindow cfg tbl n fm w cnt rest = some (repl, sk, tail, k) →
+        tail.length ≤ rest.length := by
   intro rest
   induction rest with
-  | nil => intro fm w repl sk tail h; rw [tryWindow] at h; exact absurd h (by simp)
+  | nil => intro fm w cnt repl sk tail k h; rw [tryWindow] at h; exact absurd h (by simp)
   | cons g rest ih =>
-      intro fm w repl sk tail h
+      intro fm w cnt repl sk tail k h
       rw [tryWindow] at h
       split at h
       · split at h
@@ -203,9 +306,9 @@ theorem tryWindow_tail_le {cfg : SuperOptConfig} {tbl : SynthTable} {n : Nat} :
           · rw [Option.some.injEq] at h
             obtain ⟨-, -, rfl⟩ := h
             simp
-          · exact le_trans (ih _ _ _ _ _ h) (by simp)
+          · exact le_trans (ih _ _ _ _ _ _ _ h) (by simp)
         · exact absurd h (by simp)
-      · exact le_trans (ih _ _ _ _ _ h) (by simp)
+      · exact le_trans (ih _ _ _ _ _ _ _ h) (by simp)
 
 /-- Whether a gate may anchor a window. -/
 def canAnchor (cfg : SuperOptConfig) (n : Nat) (g : Gate) : Bool :=
@@ -220,24 +323,31 @@ The old shape found a single rewrite and re-scanned the circuit from the top, wh
 Rust collects every non-overlapping rewrite in one scan and applies them together; continuing
 from the tail a rewrite leaves is the same idea, and each rewrite is still justified on its own
 by `tryWindow_correct`, so the correctness argument composes by transitivity. -/
-def sweepOnce (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : Nat → List Gate → List Gate
-  | 0, gs => gs
-  | _ + 1, [] => []
-  | fuel + 1, g :: rest =>
-      if canAnchor cfg n g then
+def sweepOnce (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : Array Gate)
+    (tracks : Array (Array Nat)) : Nat → Nat → List Gate → List Gate
+  | 0, _, gs => gs
+  | _ + 1, _, [] => []
+  | fuel + 1, at_, g :: rest =>
+      if canAnchor cfg n g && anchorMayFire cfg tbl n gs tracks at_ then
         match tryWindow cfg tbl n
             (FlatMat.ofGates (Win.start g).support.length
-              (localizeGates (Win.start g).support (Win.start g).members)) (Win.start g) rest with
-        | some (repl, sk, tail) => repl ++ sk ++ sweepOnce cfg tbl n fuel tail
-        | none => g :: sweepOnce cfg tbl n fuel rest
-      else g :: sweepOnce cfg tbl n fuel rest
+              (localizeGates (Win.start g).support (Win.start g).members))
+            (Win.start g) 0 rest with
+        -- `tryWindow` hands back how many gates it consumed, so the index advances in `O(1)`.
+        -- Recovering it from `tail.length` instead cost a walk of the whole remaining list on
+        -- every rewrite, which was quadratic on its own.
+        | some (repl, sk, tail, consumed) =>
+            repl ++ sk ++ sweepOnce cfg tbl n gs tracks fuel (at_ + 1 + consumed) tail
+        | none => g :: sweepOnce cfg tbl n gs tracks fuel (at_ + 1) rest
+      else g :: sweepOnce cfg tbl n gs tracks fuel (at_ + 1) rest
 
 /-- Sweep until a sweep changes nothing. One sweepOnce already takes every rewrite it can see; a
 second is only needed because a rewrite can expose a new window. -/
 def superOptAux (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : Nat → List Gate → List Gate
   | 0, gs => gs
   | fuel + 1, gs =>
-      let gs' := sweepOnce cfg tbl n gs.length gs
+      let arr := gs.toArray
+      let gs' := sweepOnce cfg tbl n arr (buildTracks n arr) gs.length 0 gs
       if gs'.length < gs.length then superOptAux cfg tbl n fuel gs' else gs'
 
 /-- Peephole superoptimization of a gate list over `n` wires. -/

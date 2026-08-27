@@ -114,7 +114,24 @@ distance to the next gate on a given wire is `gates/qubit`, so a sweep costs
 `O(gates × gates/qubit)`: quadratic in gates at fixed width, and exactly the doubling seen
 above as the ratio doubles.
 
-Rust does not pay this. It keeps **per-qubit tracks** — for each wire, the indices of the
+`SuperOpt` now has the index (`buildTracks`, `nextOn`, `anchorMayFire`), used as an
+*unverified filter*: it replays the window's growth through the index, visiting only the gates
+that touch the window, and answers "would this anchor produce a rewrite?" before the verified
+scan runs. Measured on `gf2^16` it is exact — 1,057 fires, 1,057 real, zero false positives —
+and safe in both directions by construction: a false negative would cost an optimization, a
+false positive one wasted scan. The whole correctness proof is untouched by it.
+
+That took `SuperOpt` on `gf2^16` from 12.2 s to 5.7 s, and `-O3` on the same circuit from
+7.2 s to 2.6 s, but it did **not** make the pass linear, and the reason is worth recording
+because it is not the one that motivated the index. `superOptAux` re-sweeps while the circuit
+keeps shrinking, and the number of sweeps grows with the circuit: 6 for `gf2^8`, 14 for
+`gf2^16`. Rust needs 2. Its scan keeps every live window open at once and collects all
+non-overlapping rewrites in a single pass (`RewriteSet`, `windows_by_qubit`), where this port
+anchors one window at a time and jumps past each rewrite it takes — so it finds fewer rewrites
+per sweep and needs more sweeps. Closing that means the simultaneous-window scan, and a proof
+that a *set* of disjoint rewrites composes rather than one rewrite at a time.
+
+The other passes still pay the full scan. Rust keeps **per-qubit tracks** — for each wire, the indices of the
 gates touching it — so a lookahead visits only gates on the two wires it cares about and
 skips the rest without looking at them (`cancel_commuting_pairs_pass`), and the window scan
 finds the windows a gate touches through the same index rather than by scanning

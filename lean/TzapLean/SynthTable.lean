@@ -466,6 +466,20 @@ def SynthTable.mayHold (tbl : SynthTable) (k : Nat) (M : FlatMat) : Bool :=
       let N := M.normalize
       (w.keys.get? (fingerprintFlat N.den N.data)).isSome
 
+/-- Does the table hold a circuit for this unitary *strictly shorter* than `len`?
+
+The question `SuperOpt` actually needs answered before paying for a verified lookup. Asking
+only whether the table holds the unitary at all is useless: it holds essentially every short
+Clifford+T circuit, so the answer is almost always yes. -/
+def SynthTable.hasShorter (tbl : SynthTable) (k : Nat) (M : FlatMat) (len : Nat) : Bool :=
+  match tbl.widths[k]? with
+  | none => false
+  | some w =>
+      let N := M.normalize
+      match w.keys.get? (fingerprintFlat N.den N.data) with
+      | none => false
+      | some node => (w.circuitOf node).length < len
+
 /-- Look a unitary up. A hit is the shortest circuit the enumeration found for it; the
 caller still re-verifies before rewriting. -/
 def SynthTable.synthesize (tbl : SynthTable) (k : Nat) (M : ExactMat k) : Option (List Gate) :=
