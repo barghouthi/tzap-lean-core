@@ -98,6 +98,7 @@ def printHelp : IO Unit := do
   IO.println "                     (see PASSES)"
   IO.println "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
   IO.println "    \x1b[1m--seed\x1b[0m <n>       Seed PhaseFoldRand's tags (default: drawn from the OS)"
+  IO.println "    \x1b[1m--verbose\x1b[0m        Report every pass of every round, not just the result"
   IO.println "    \x1b[1m-O1\x1b[0m              Fastest: phase folding + gate cancellation only"
   IO.println "    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1 (2 rounds)"
   IO.println "    \x1b[1m-O3\x1b[0m              Runs -O2 to a fixpoint (default)"
@@ -123,6 +124,7 @@ partial def parseArgs (args : List String) : IO Opts := do
   let mut fixpoint := false
   let mut level : Option Level := none
   let mut seed : Option Nat := none
+  let mut verbose := false
   let mut soQubits : Option Nat := none
   let mut soWindow : Option Nat := none
   let mut soEntries : Option Nat := none
@@ -133,6 +135,7 @@ partial def parseArgs (args : List String) : IO Opts := do
     | "--help" | "-h" => printHelp; IO.Process.exit 0
     | "--version" | "-v" => IO.println "tzap-lean 0.1.0"; IO.Process.exit 0
     | "--fixpoint" => fixpoint := true
+    | "--verbose" => verbose := true
     | "--passes" =>
         i := i + 1
         let some first := args[i]? |
@@ -185,7 +188,7 @@ partial def parseArgs (args : List String) : IO Opts := do
   if level.isSome && (passes.isSome || fixpoint) then
     argError "-O1, -O2, -O3, and -Osuper cannot be combined with --passes or --fixpoint"
   return { inputPath := inPath, outputPath,
-           options := { level := level.getD .O3, passes, fixpoint, seed,
+           options := { level := level.getD .O3, passes, fixpoint, seed, verbose,
                         superopt := ⟨soQubits, soWindow, soEntries⟩ } }
 
 /-! ## The run -/
@@ -196,7 +199,7 @@ def resultRow (label : String) (before after : Nat) : String :=
   s!"    {label}{pad}  {fmtNum before} → {fmtNum after}  ({fmtPct before after}% reduction)"
 
 /-- Read and parse the input, exiting with Rust's message shape on failure. -/
-def readCircuit (path : String) : IO Circuit := do
+def readCircuit (verbose : Bool) (path : String) : IO Circuit := do
   let t0 ← IO.monoNanosNow
   let source ← try IO.FS.readFile path
     catch e => do
@@ -209,17 +212,18 @@ def readCircuit (path : String) : IO Circuit := do
   | .ok c => do
       force fun _ => c.gates.length + c.numQubits
       let t1 ← IO.monoNanosNow
-      IO.eprintln s!"  Parsed {path} in {fmtSecs (t1 - t0)}s"
-      IO.eprintln s!"\t└─ {fmtNum c.numQubits} qubits · {fmtNum c.gates.length} gates"
-      IO.eprintln ""
+      if verbose then
+        IO.eprintln s!"  Parsed {path} in {fmtSecs (t1 - t0)}s"
+        IO.eprintln s!"\t└─ {fmtNum c.numQubits} qubits · {fmtNum c.gates.length} gates"
+        IO.eprintln ""
       return c
 
 /-- The entry point. -/
 def main (argv : List String) : IO UInt32 := do
   let t0 ← IO.monoNanosNow
   let opts ← parseArgs argv
-  IO.eprintln "\x1b[1m⚡️ tzap-lean\x1b[0m"
-  let circuit ← readCircuit opts.inputPath
+  if opts.options.verbose then IO.eprintln "\x1b[1m⚡️ tzap-lean\x1b[0m"
+  let circuit ← readCircuit opts.options.verbose opts.inputPath
   let (result, report) ← optimize circuit opts.options
   let t1 ← IO.monoNanosNow
   IO.eprintln s!"  \x1b[1mResult\x1b[0m  ({fmtSecs (t1 - t0)}s)"

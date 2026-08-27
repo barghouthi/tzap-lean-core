@@ -53,7 +53,12 @@ lake build tzap-lean
 ./.lake/build/bin/tzap-lean circuit.qasm -o out.qasm -O3
 ```
 
-Flags keep Rust's names and meanings, so a command line transfers between the two. What is
+By default a run prints only its final result. Rust narrates every pass of every round; on a
+fixpoint run that is a dozen or more lines of intermediate counts, and the per-pass timings
+were only ever useful while tuning the passes themselves. `--verbose` restores them. A cold
+synthesis-table build is announced either way, since it takes tens of seconds.
+
+Flags otherwise keep Rust's names and meanings, so a command line transfers between the two. What is
 absent says so when asked for, rather than reporting an unknown flag: `--parallel`
 (deliberately not ported), `--decompose-rz` / `--decompose-cz` / `--epsilon`, and the
 `DecomposeToffoli` / `DecomposeCz` / `DecomposeRz` / `CliffordResynth` pass names. `--seed` is

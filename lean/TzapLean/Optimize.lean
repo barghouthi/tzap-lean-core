@@ -125,6 +125,9 @@ structure Options where
   superopt : SuperOptBounds := {}
   /-- Seed for `PhaseFoldRand`; `none` draws from the OS. -/
   seed : Option Nat := none
+  /-- Narrate every pass of every round, as the Rust CLI does. Off by default: the final
+  result is what a run is usually for. -/
+  verbose : Bool := false
 deriving Repr, Inhabited
 
 /-- The window/table bounds a level implies.
@@ -225,8 +228,15 @@ def force (n : Unit → Nat) : IO Unit := do
   let _ ← IO.lazyPure n
   pure ()
 
-/-- Run one pass, printing the line Rust's `pass_done` prints. -/
-def runStep (st : Step) (c : Circuit) : IO Circuit := do
+/-- Run one pass.
+
+Rust narrates every pass of every round; this reports only the final result. On a fixpoint
+run that is a dozen or more lines of intermediate counts replaced by one summary, and the
+per-pass timing was only ever useful while tuning the passes themselves — `--verbose` still
+prints it. -/
+def runStep (verbose : Bool) (st : Step) (c : Circuit) : IO Circuit := do
+  if !verbose then
+    return st.run c
   let t0 ← IO.monoNanosNow
   let out := st.run c
   let m := Metrics.of out
@@ -241,18 +251,19 @@ def runStep (st : Step) (c : Circuit) : IO Circuit := do
   return out
 
 /-- Run every pass once, in order. -/
-def runPipeline (steps : List Step) (c : Circuit) : IO Circuit :=
-  steps.foldlM (fun acc st => runStep st acc) c
+def runPipeline (verbose : Bool) (steps : List Step) (c : Circuit) : IO Circuit :=
+  steps.foldlM (fun acc st => runStep verbose st acc) c
 
 /-- Repeat the pipeline until the gate count stops decreasing, or `maxRounds` rounds have
 run. -/
-def runToFixpoint (steps : List Step) (c : Circuit) (maxRounds : Option Nat) : IO Circuit := do
+def runToFixpoint (verbose : Bool) (steps : List Step) (c : Circuit) (maxRounds : Option Nat) :
+    IO Circuit := do
   let mut current := c
   let mut round := 0
   repeat
     let before := current.gates.length
-    IO.eprintln s!"  ── round {round + 1} ──"
-    current ← runPipeline steps current
+    if verbose then IO.eprintln s!"  ── round {round + 1} ──"
+    current ← runPipeline verbose steps current
     round := round + 1
     let reduced := current.gates.length < before
     if !reduced then break
@@ -277,9 +288,9 @@ def optimize (c : Circuit) (o : Options) : IO (Circuit × Report) := do
   let tbl ← if needsTable then do
       -- Captured before the load below can create the file, so a cold run says so.
       let cached ← TableCache.isCached tcfg
-      if cached then
-        IO.eprint "  Loading superoptimizer table..."
-      else
+      -- A cold build takes tens of seconds, so it is announced even quietly; a warm load is
+      -- fast enough to stay silent unless asked for.
+      if !cached then
         IO.eprintln "  🔧 Building superoptimizer table (one-time — cached for future use)..."
       let t0 ← IO.monoNanosNow
       let (tbl, fromCache) ← TableCache.loadOrBuild tcfg
@@ -287,11 +298,11 @@ def optimize (c : Circuit) (o : Options) : IO (Circuit × Report) := do
         (fun acc k => acc + (tbl.widths[k]?.map WidthTable.size |>.getD 0)) 0
       force fun _ => total
       let t1 ← IO.monoNanosNow
-      let verb := if fromCache then "Loaded" else "Built"
-      if cached then IO.eprint "\r"
-      IO.eprintln s!"  {verb} superoptimizer table ({fmtNum total} unitaries) in \
-                     {fmtSecs (t1 - t0)}s"
-      IO.eprintln ""
+      if o.verbose || !fromCache then
+        let verb := if fromCache then "Loaded" else "Built"
+        IO.eprintln s!"  {verb} superoptimizer table ({fmtNum total} unitaries) in \
+                       {fmtSecs (t1 - t0)}s"
+        IO.eprintln ""
       pure tbl
     else pure default
   let seed ← match o.seed with
@@ -305,11 +316,12 @@ def optimize (c : Circuit) (o : Options) : IO (Circuit × Report) := do
   let baseline := Metrics.of c
   let result ←
     if o.passes.isSome then
-      if o.fixpoint then runToFixpoint steps c none else runPipeline steps c
+      if o.fixpoint then runToFixpoint o.verbose steps c none
+      else runPipeline o.verbose steps c
     else if o.level.usesSuperOpt then
-      runToFixpoint steps c o.level.maxRounds
-    else if o.fixpoint then runToFixpoint steps c none
-    else runPipeline steps c
+      runToFixpoint o.verbose steps c o.level.maxRounds
+    else if o.fixpoint then runToFixpoint o.verbose steps c none
+    else runPipeline o.verbose steps c
   return (result, ⟨baseline, Metrics.of result⟩)
 
 end TzapLean
