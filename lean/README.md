@@ -95,6 +95,39 @@ throughout — the builder already has one (`FlatMat`), and `windowMayHold` uses
 but the verified path still goes through `ExactMat` because that is what the proofs are stated
 about.
 
+### Scaling
+
+The `gf2^k_mult` family is the useful stress test, because gate count grows quadratically in
+`k` while qubit count grows linearly — so *gates per qubit* doubles at every step:
+
+| circuit | qubits | gates | gates/qubit | `-O3` |
+|---|---|---|---|---|
+| `gf2^4` | 12 | 292 | 24 | 0.46 s |
+| `gf2^8` | 24 | 1,142 | 47 | 0.81 s |
+| `gf2^16` | 48 | 4,462 | 92 | 3.9 s |
+| `gf2^32` | 96 | 17,661 | 183 | 45 s |
+
+That is not linear, and the shape says why. Every pass here walks the gate list, and a
+lookahead — for a `CNOT`'s twin, for the next rotation on a parity, for a window's next
+member — walks *every* gate in between, most of which are on other wires. The expected
+distance to the next gate on a given wire is `gates/qubit`, so a sweep costs
+`O(gates × gates/qubit)`: quadratic in gates at fixed width, and exactly the doubling seen
+above as the ratio doubles.
+
+Rust does not pay this. It keeps **per-qubit tracks** — for each wire, the indices of the
+gates touching it — so a lookahead visits only gates on the two wires it cares about and
+skips the rest without looking at them (`cancel_commuting_pairs_pass`), and the window scan
+finds the windows a gate touches through the same index rather than by scanning
+(`windows_by_qubit`). That is what makes its passes linear, and it is the one structural
+thing this port does not have. Adding it means giving each pass an index alongside the gate
+list and re-proving the sweeps against it — the correctness arguments are unaffected in
+substance (they are about what a rewrite does, not how it was found), but every sweep's
+statement changes shape.
+
+Parsing *was* quadratic for the same family of reason — `Circuit.apply` appends with
+`gates ++ [g]`, so folding it copied the list per gate — and is now linear: `gf2^32` went
+from 3.2 s to 0.065 s, and `gf2^64` parses in 0.28 s.
+
 `PhaseFoldRand` remains `O(n²)` in principle — it scans forward from each rotation for a later
 one on the same parity, where Rust makes one pass keyed by a parity-to-group hash map — but
 the constant is now small enough that it is no longer what dominates.

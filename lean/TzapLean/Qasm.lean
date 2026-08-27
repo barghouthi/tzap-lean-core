@@ -156,8 +156,10 @@ structure St where
   numQubits : Nat := 0
   /-- Total classical bits. -/
   numCbits : Nat := 0
-  /-- Gates in order. -/
-  gates : List Gate := []
+  /-- Gates so far, **most recent first** — `parse` reverses once at the end. Appending with
+  `gates ++ [g]` copies the list per gate, which made parsing quadratic: gf2^32's 17,661 gates
+  took 3.1 s to parse and gf2^256's 1.1 M were hopeless. -/
+  revGates : List Gate := []
   /-- Whether a gate has been seen — declarations may not follow one. -/
   seenGate : Bool := false
 
@@ -213,11 +215,11 @@ def parseStatement (line : String) (st : St) (lineNum : Nat) : Except String St 
     | .error s!"line {lineNum}: unsupported: {line}"
   let one (mk : Qubit → Gate) (name : String) : Except String St := do
     let q ← resolveSingle name rest st.regs lineNum
-    return { st with gates := st.gates ++ [mk q], seenGate := true }
+    return { st with revGates := mk q :: st.revGates, seenGate := true }
   let many (name : String) (arity : Nat) (mk : List Nat → Gate) : Except String St := do
     let qs ← resolveIdx "qubit" rest st.regs lineNum
     requireArity name qs arity lineNum
-    return { st with gates := st.gates ++ [mk qs], seenGate := true }
+    return { st with revGates := mk qs :: st.revGates, seenGate := true }
   match kw with
   | "qreg" =>
       if st.seenGate then .error s!"line {lineNum}: qreg declaration after gate"
@@ -237,11 +239,13 @@ def parseStatement (line : String) (st : St) (lineNum : Nat) : Except String St 
                              numCbits := st.numCbits + size }
   | "measure " =>
       let pairs ← parseMeasure rest st lineNum
-      return { st with gates := st.gates ++ pairs.map fun (q, c) => Gate.measure q c,
-                       seenGate := true }
+      return { st with
+                 revGates := (pairs.map fun (q, c) => Gate.measure q c).reverse ++ st.revGates,
+                 seenGate := true }
   | "reset " =>
       let qs ← expandOperand "qubit" rest st.regs lineNum
-      return { st with gates := st.gates ++ qs.map Gate.reset, seenGate := true }
+      return { st with revGates := (qs.map Gate.reset).reverse ++ st.revGates,
+                       seenGate := true }
   | "cx " => many "cx" 2 fun qs => .cnot (qs.getD 0 0) (qs.getD 1 0)
   | "cz " => many "cz" 2 fun qs => .cz (qs.getD 0 0) (qs.getD 1 0)
   | "ccx " => many "ccx" 3 fun qs => .ccx (qs.getD 0 0) (qs.getD 1 0) (qs.getD 2 0)
@@ -273,7 +277,7 @@ def parse (source : String) : Except String Circuit := do
         | none => piece
       if line ≠ "" then
         st ← parseStatement line st lineNum
-  return Circuit.ofGates st.numQubits st.numCbits st.gates
+  return Circuit.ofGates st.numQubits st.numCbits st.revGates.reverse
 
 /-! ## Serializing -/
 

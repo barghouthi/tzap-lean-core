@@ -178,9 +178,19 @@ def apply (c : Circuit) (g : Gate) : Circuit :=
     hasCcz := c.hasCcz || g.isCcz
     hasMeasurement := c.hasMeasurement || g.isMeasurement }
 
-/-- Build a circuit by applying `gs` in order to the empty `n`-qubit, `m`-cbit circuit. -/
-def ofGates (n m : Nat) (gs : List Gate) : Circuit :=
-  gs.foldl Circuit.apply (withCbits n m)
+/-- Build a circuit by applying `gs` in order to the empty `n`-qubit, `m`-cbit circuit.
+
+Written directly rather than as `gs.foldl Circuit.apply (withCbits n m)`, which is what it
+means but not what it should cost: `apply` appends one gate with `c.gates ++ [g]`, so folding
+it over `n` gates copies the list `n` times. Parsing gf2^32 spent 3.1 s of its 3.2 s here.
+`ofGates_eq_foldl` records that the two agree. -/
+def ofGates (n m : Nat) (gs : List Gate) : Circuit where
+  numQubits := n
+  numCbits := m
+  gates := gs
+  hasToffoli := gs.any Gate.isToffoli
+  hasCcz := gs.any Gate.isCcz
+  hasMeasurement := gs.any Gate.isMeasurement
 
 /-- Number of gates. -/
 def size (c : Circuit) : Nat := c.gates.length
@@ -224,37 +234,37 @@ Stated for `ofGates`, i.e. for circuits built the way the Rust API builds them. 
 theorem flags_ofGates (n m : Nat) (gs : List Gate) :
     (ofGates n m gs).hasToffoli = gs.any Gate.isToffoli ∧
     (ofGates n m gs).hasCcz = gs.any Gate.isCcz ∧
-    (ofGates n m gs).hasMeasurement = gs.any Gate.isMeasurement := by
+    (ofGates n m gs).hasMeasurement = gs.any Gate.isMeasurement :=
+  ⟨rfl, rfl, rfl⟩
+
+/-- Gate list of `ofGates`: the gates, in order. -/
+@[simp] theorem gates_ofGates (n m : Nat) (gs : List Gate) : (ofGates n m gs).gates = gs := rfl
+
+@[simp] theorem numQubits_ofGates (n m : Nat) (gs : List Gate) :
+    (ofGates n m gs).numQubits = n := rfl
+
+@[simp] theorem numCbits_ofGates (n m : Nat) (gs : List Gate) :
+    (ofGates n m gs).numCbits = m := rfl
+
+/-- **Building directly is building by `apply`.** The efficient definition above denotes what
+the Rust API's incremental construction denotes. -/
+theorem ofGates_eq_foldl (n m : Nat) (gs : List Gate) :
+    ofGates n m gs = gs.foldl Circuit.apply (withCbits n m) := by
   have key : ∀ (gs : List Gate) (c : Circuit),
-      (gs.foldl Circuit.apply c).hasToffoli = (c.hasToffoli || gs.any Gate.isToffoli) ∧
-      (gs.foldl Circuit.apply c).hasCcz = (c.hasCcz || gs.any Gate.isCcz) ∧
-      (gs.foldl Circuit.apply c).hasMeasurement =
-        (c.hasMeasurement || gs.any Gate.isMeasurement) := by
+      gs.foldl Circuit.apply c =
+        { numQubits := c.numQubits, numCbits := c.numCbits, gates := c.gates ++ gs,
+          hasToffoli := c.hasToffoli || gs.any Gate.isToffoli,
+          hasCcz := c.hasCcz || gs.any Gate.isCcz,
+          hasMeasurement := c.hasMeasurement || gs.any Gate.isMeasurement } := by
     intro gs
     induction gs with
     | nil => intro c; simp
     | cons g gs ih =>
         intro c
-        obtain ⟨h₁, h₂, h₃⟩ := ih (c.apply g)
-        simp only [List.foldl_cons]
-        refine ⟨?_, ?_, ?_⟩
-        · rw [h₁, hasToffoli_apply, List.any_cons, Bool.or_assoc]
-        · rw [h₂, hasCcz_apply, List.any_cons, Bool.or_assoc]
-        · rw [h₃, hasMeasurement_apply, List.any_cons, Bool.or_assoc]
-  obtain ⟨h₁, h₂, h₃⟩ := key gs (withCbits n m)
-  exact ⟨by simpa [ofGates, withCbits] using h₁,
-         by simpa [ofGates, withCbits] using h₂,
-         by simpa [ofGates, withCbits] using h₃⟩
-
-/-- Gate list of `ofGates`: the gates, in order. -/
-theorem gates_ofGates (n m : Nat) (gs : List Gate) : (ofGates n m gs).gates = gs := by
-  have key : ∀ (gs : List Gate) (c : Circuit),
-      (gs.foldl Circuit.apply c).gates = c.gates ++ gs := by
-    intro gs
-    induction gs with
-    | nil => intro c; simp
-    | cons g gs ih => intro c; simp [ih (c.apply g)]
-  simpa [ofGates, withCbits] using key gs (withCbits n m)
+        rw [List.foldl_cons, ih]
+        simp [Circuit.apply, List.any_cons, Bool.or_assoc]
+  rw [key gs (withCbits n m)]
+  simp [ofGates, withCbits]
 
 end Circuit
 

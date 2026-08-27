@@ -303,7 +303,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
           have hdisj' : ∀ s ∈ w.skipped, ∀ q ∈ s.qubitsOf, q ∉ sup := by
             intro s hs
             exact touches_false (by simpa using hskip s hs)
-          have hok' : WinOk n m ⟨sup, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ := by
+          have hok' : WinOk n m ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ := by
             refine ⟨nodup_widen _ _ hok.nodup, ?_, ?_, ?_, ?_, hok.wfsk, hdisj', ?_⟩
             · intro q hq
               rcases mem_widen _ _ hq with hq' | hq'
@@ -322,7 +322,8 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
               rcases List.mem_append.1 hx with hx | hx
               · exact hok.unit x hx
               · rw [List.mem_singleton.1 hx]; exact hu
-            · have hgd : ∀ s ∈ w.skipped, Wires.Disjoint g.support s.support := by
+            · simp only [Win.skipped_extend, Win.consumed_extend]
+              have hgd : ∀ s ∈ w.skipped, Wires.Disjoint g.support s.support := by
                 intro s hs
                 refine disjoint_of_notMem ?_
                 intro q hq hq'
@@ -347,34 +348,38 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             refine ⟨?_, hwfrepl, hok.wfsk, fun x hx => hwfr x (by simp [hx])⟩
             have e1 : Equivalent n m (repl₀ ++ w.skipped) ((w.members ++ [g]) ++ w.skipped) :=
               Equivalent.append_right w.skipped heq
-            have e2 : Equivalent n m (repl₀ ++ w.skipped) (w.consumed ++ [g]) :=
-              e1.trans hok'.equiv
+            have e2 : Equivalent n m (repl₀ ++ w.skipped) (w.consumed ++ [g]) := by
+              refine e1.trans ?_
+              simpa using hok'.equiv
             have := Equivalent.append_right (n := n) (m := m) rest e2
             simpa using this
           · -- keep scanning
             obtain ⟨heq, h1, h2, h3⟩ :=
-              ih _ ⟨sup, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ repl sk tail hok'
+              ih _ ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ repl sk tail hok'
                 (fun x hx => hwfr x (by simp [hx])) h
             exact ⟨by simpa using heq, h1, h2, h3⟩
         · exact absurd h (by simp)
       · -- the gate misses the window: skip it
         rename_i htouch
         have hmiss : ∀ q ∈ g.qubitsOf, q ∉ w.support := touches_false (by simpa using htouch)
-        have hok' : WinOk n m ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ := by
+        have hok' : WinOk n m ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ := by
           refine ⟨hok.nodup, hok.range, hok.sub, hok.wf, hok.unit, ?_, ?_, ?_⟩
-          · intro x hx
+          · simp only [Win.skipped_skip]
+            intro x hx
             rcases List.mem_append.1 hx with hx | hx
             · exact hok.wfsk x hx
             · rw [List.mem_singleton.1 hx]; exact hwfr g (by simp)
-          · intro x hx q hq
+          · simp only [Win.skipped_skip]
+            intro x hx q hq
             rcases List.mem_append.1 hx with hx | hx
             · exact hok.disj x hx q hq
             · rw [List.mem_singleton.1 hx] at hq
               exact hmiss q hq
-          · have := Equivalent.append_right (n := n) (m := m) [g] hok.equiv
+          · simp only [Win.skipped_skip, Win.consumed_skip]
+            have := Equivalent.append_right (n := n) (m := m) [g] hok.equiv
             simpa using this
         obtain ⟨heq, h1, h2, h3⟩ :=
-          ih _ ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ repl sk tail hok'
+          ih _ ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ repl sk tail hok'
             (fun x hx => hwfr x (by simp [hx])) h
         exact ⟨by simpa using heq, h1, h2, h3⟩
 
@@ -409,8 +414,7 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
             · rename_i repl sk tail hw
               -- the window's own invariant, at the anchor
               have hok : WinOk n m (Win.start g) := by
-                refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, ?_, by simp [Win.start], by
-                  simp [Win.start], ?_⟩
+                refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, ?_, by simp, by simp, ?_⟩
                 · intro x hx q hq
                   rw [List.mem_singleton.1 hx] at hq
                   exact hq

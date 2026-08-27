@@ -51,23 +51,56 @@ def widen (S : List Qubit) : List Qubit → List Qubit
   | [] => S
   | q :: qs => widen (if S.contains q then S else S ++ [q]) qs
 
-/-- A window under construction. -/
+/-- A window under construction.
+
+The skipped and consumed lists are stored **most recent first**. They grow once per gate the
+scan passes, and `xs ++ [g]` copies the whole list each time, so keeping them forward-ordered
+made a single window's scan quadratic in its span — the dominant cost of the pass. Cons is
+`O(1)`; the two derived accessors below reverse once, and only where the order is actually
+needed. Members are capped at `maxWindow`, so they stay forward-ordered. -/
 structure Win where
   /-- The wires the window covers. -/
   support : List Qubit
   /-- The window's gates, in order. -/
   members : List Gate
-  /-- Gates of the span that the window skipped, in order. -/
-  skipped : List Gate
-  /-- The whole span consumed so far, in order — the gates a rewrite replaces. -/
-  consumed : List Gate
+  /-- Gates of the span that the window skipped, most recent first. -/
+  revSkipped : List Gate
+  /-- The whole span consumed so far, most recent first — the gates a rewrite replaces. -/
+  revConsumed : List Gate
+
+/-- Gates of the span that the window skipped, in order. -/
+def Win.skipped (w : Win) : List Gate := w.revSkipped.reverse
+
+/-- The whole span consumed so far, in order. -/
+def Win.consumed (w : Win) : List Gate := w.revConsumed.reverse
+
+@[simp] theorem Win.skipped_extend (w : Win) (sup : List Qubit) (mem : List Gate) (g : Gate) :
+    (Win.mk sup mem w.revSkipped (g :: w.revConsumed)).skipped = w.skipped := rfl
+
+@[simp] theorem Win.consumed_extend (w : Win) (sup : List Qubit) (mem : List Gate) (g : Gate) :
+    (Win.mk sup mem w.revSkipped (g :: w.revConsumed)).consumed = w.consumed ++ [g] := by
+  simp [Win.consumed]
+
+@[simp] theorem Win.skipped_skip (w : Win) (g : Gate) :
+    (Win.mk w.support w.members (g :: w.revSkipped) (g :: w.revConsumed)).skipped
+      = w.skipped ++ [g] := by
+  simp [Win.skipped]
+
+@[simp] theorem Win.consumed_skip (w : Win) (g : Gate) :
+    (Win.mk w.support w.members (g :: w.revSkipped) (g :: w.revConsumed)).consumed
+      = w.consumed ++ [g] := by
+  simp [Win.consumed]
 
 /-- The window an anchor gate starts. -/
 def Win.start (g : Gate) : Win where
   support := g.qubitsOf
   members := [g]
-  skipped := []
-  consumed := [g]
+  revSkipped := []
+  revConsumed := [g]
+
+@[simp] theorem Win.skipped_start (g : Gate) : (Win.start g).skipped = [] := rfl
+
+@[simp] theorem Win.consumed_start (g : Gate) : (Win.start g).consumed = [g] := rfl
 
 /-! ## Proposing and verifying a replacement -/
 
@@ -141,14 +174,17 @@ def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (fm : Option F
           -- The cheap filter first: only build the window's exact matrix when the table
           -- might actually answer for it (see `windowMayHold`).
           match trySynthFiltered tbl (extendFlat (widen w.support g.qubitsOf) fm w g)
-              ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ with
+              ⟨widen w.support g.qubitsOf, w.members ++ [g], w.revSkipped,
+                g :: w.revConsumed⟩ with
           | some repl => some (repl, w.skipped, rest)
           | none =>
               tryWindow cfg tbl n (extendFlat (widen w.support g.qubitsOf) fm w g)
-                ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ rest
+                ⟨widen w.support g.qubitsOf, w.members ++ [g], w.revSkipped,
+                  g :: w.revConsumed⟩ rest
         else none
       else
-        tryWindow cfg tbl n fm ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ rest
+        tryWindow cfg tbl n fm
+          ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ rest
 
 /-- The tail a rewrite leaves is a suffix of what the window was scanning, so a sweep that
 continues from it makes progress. -/
