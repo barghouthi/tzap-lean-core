@@ -24,4 +24,8 @@ import TzapLean.PhaseFoldRand
 import TzapLean.Pipeline
 import TzapLean.Tests
 import TzapLean.PhaseFoldTests
+import TzapLean.Qasm
+import TzapLean.Optimize
+import TzapLean.Cli
 import TzapLean.SuperOptTests
+import TzapLean.QasmTests

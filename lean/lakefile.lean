@@ -9,3 +9,6 @@ require "leanprover-community" / "mathlib" @ git "v4.30.0"
 @[default_target]
 lean_lib TzapLean where
   roots := #[`TzapLean]
+
+@[default_target] lean_exe «tzap-lean» where
+  root := `Main

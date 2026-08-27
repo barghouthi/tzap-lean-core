@@ -40,6 +40,32 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/Tests.lean` | The Rust test suites of `circuit.rs`, `pass.rs`, `cancel.rs` and `cnot_min.rs`, as `#guard` checks. |
 | `TzapLean/PhaseFoldTests.lean` | The `phase_fold_rand.rs` suite: 108 `#guard` checks. |
 | `TzapLean/SuperOptTests.lean` | The behavioural half of the `super_opt` suite, as `#guard` checks. |
+| `TzapLean/Qasm.lean` | OpenQASM 2.0 parser and serializer — the port of `src/qasm.rs`. |
+| `TzapLean/Optimize.lean` | Levels, pass names, the fixpoint driver, and the reported metrics. |
+| `TzapLean/Cli.lean` | Flags, `--help`, and the run banner — `src/cli.rs` and `src/main.rs`. |
+| `TzapLean/QasmTests.lean` | The parser suite and the option plumbing, as `#guard` checks. |
+
+## The executable
+
+```sh
+lake build tzap-lean
+./.lake/build/bin/tzap-lean circuit.qasm -o out.qasm -O3
+```
+
+Flags keep Rust's names and meanings, so a command line transfers between the two. What is
+absent says so when asked for, rather than reporting an unknown flag: `--parallel`
+(deliberately not ported), `--decompose-rz` / `--decompose-cz` / `--epsilon`, and the
+`DecomposeToffoli` / `DecomposeCz` / `DecomposeRz` / `CliffordResynth` pass names. `--seed` is
+new — `PhaseFoldRand` is randomized, so a run is only reproducible if its tags are.
+
+**`rz` is rejected by the parser.** Angles here are exact rationals in units of `π`, and
+gridsynth is not ported, so accepting an `rz` would mean carrying a gate nothing downstream
+can lower. The front end says so at the door.
+
+`-O3` is `-O2` run to a true fixpoint; Rust's `-O3` also ends with a one-shot Clifford
+re-synthesis, which is not ported. The synthesis table is built per run rather than cached to
+disk, so the level presets are scaled to keep a cold start near a tenth of a second
+(`-Osuper` trades that for reach, as in Rust).
 
 ## The obligation
 

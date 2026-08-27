@@ -24,31 +24,87 @@ open Form
 /-- The all-ones tag: the hash of the constant parity `1`, i.e. Rust's bitwise `!`. -/
 def ones (k : Nat) : BitString k := fun _ => 1
 
+/-- A tag, as the algorithm stores it: `k` bits in an array.
+
+The theory's tag is a *function* `Fin k → F₂` (`BitString k`), which is the right object for
+the collision bound but the wrong one to compute with: `x` and `cnot` build a new tag out of
+old ones, so a stored tag would be a closure over its predecessors, and reading one bit of a
+tag `d` gates deep costs `kᵈ`. Measured, that is exactly what happens — each `cnot` multiplies
+the cost of a tag read by `k`. An array has nothing to rebuild.
+
+`bitsToArr` is the bridge, and `bitsToArr_inj` is what lets the proof read an equality of
+stored tags back as an equality of the functions they stand for. -/
+abbrev Tag := Array F₂
+
+/-- The array of a tag function's bits. -/
+def bitsToArr {k : Nat} (t : BitString k) : Tag := ((List.finRange k).map t).toArray
+
+@[simp] theorem size_bitsToArr {k : Nat} (t : BitString k) : (bitsToArr t).size = k := by
+  simp [bitsToArr]
+
+@[simp] theorem getElem_bitsToArr {k : Nat} (t : BitString k) (j : Fin k) :
+    (bitsToArr t)[(j : Nat)]'(by simp) = t j := by
+  simp [bitsToArr]
+
+/-- Distinct tag functions have distinct arrays, so comparing arrays decides the functions. -/
+theorem bitsToArr_inj {k : Nat} {a b : BitString k} (h : bitsToArr a = bitsToArr b) : a = b := by
+  funext j
+  have hj : (bitsToArr a)[(j : Nat)]'(by simp) = (bitsToArr b)[(j : Nat)]'(by simp) := by
+    simp only [h]
+  simpa using hj
+
+/-- The all-ones tag: the array of `ones k`. -/
+def onesArr (k : Nat) : Tag := Array.replicate k 1
+
+theorem onesArr_eq (k : Nat) : onesArr k = bitsToArr (ones k) := by
+  apply Array.ext
+  · simp [onesArr]
+  · intro i h1 h2
+    simp [onesArr, bitsToArr, ones]
+
+/-- Bitwise XOR of two tags. -/
+def xorArr (a b : Tag) : Tag := (a.zip b).map fun p => p.1 + p.2
+
+theorem xorArr_bitsToArr {k : Nat} (a b : BitString k) :
+    xorArr (bitsToArr a) (bitsToArr b) = bitsToArr (a + b) := by
+  apply Array.ext
+  · simp [xorArr]
+  · intro i h1 h2
+    have hi : i < k := by simpa using h2
+    have e : ∀ (t : BitString k), (bitsToArr t)[i]'(by simpa using hi) = t ⟨i, hi⟩ := by
+      intro t
+      simpa using getElem_bitsToArr t ⟨i, hi⟩
+    simp only [xorArr, Array.getElem_map, Array.getElem_zip, e]
+    rfl
+
+/-! ## Tag states -/
+
 /-- Per-wire tags, plus the index of the next unused draw. -/
 structure TState (k : Nat) where
   /-- One tag per wire. -/
-  tags : List (BitString k)
+  tags : List Tag
   /-- The next unused draw index. -/
   fresh : Nat
 
 namespace TState
 
 /-- Wire `q`'s tag (the zero tag for a wire the state does not cover). -/
-def tagOf {k : Nat} (ts : TState k) (q : Qubit) : BitString k := ts.tags.getD q 0
+def tagOf {k : Nat} (ts : TState k) (q : Qubit) : Tag :=
+  ts.tags.getD q (bitsToArr (0 : BitString k))
 
 /-- Wire `i` starts out tagged with the `i`-th draw. -/
 def initial {k : Nat} (draws : Draws k) (n : Nat) : TState k where
-  tags := (List.range n).map draws
+  tags := (List.range n).map fun i => bitsToArr (draws i)
   fresh := n
 
 /-- The Rust transfer functions, on tags. -/
 def step {k : Nat} (draws : Draws k) (ts : TState k) (g : Gate) : TState k :=
   match g with
-  | .x q => { ts with tags := ts.tags.set q (ts.tagOf q + ones k) }
-  | .cnot c t => { ts with tags := ts.tags.set t (ts.tagOf t + ts.tagOf c) }
-  | .h q => { tags := ts.tags.set q (draws ts.fresh), fresh := ts.fresh + 1 }
-  | .ccx _ _ t => { tags := ts.tags.set t (draws ts.fresh), fresh := ts.fresh + 1 }
-  | .reset q => { tags := ts.tags.set q (draws ts.fresh), fresh := ts.fresh + 1 }
+  | .x q => { ts with tags := ts.tags.set q (xorArr (ts.tagOf q) (onesArr k)) }
+  | .cnot c t => { ts with tags := ts.tags.set t (xorArr (ts.tagOf t) (ts.tagOf c)) }
+  | .h q => { tags := ts.tags.set q (bitsToArr (draws ts.fresh)), fresh := ts.fresh + 1 }
+  | .ccx _ _ t => { tags := ts.tags.set t (bitsToArr (draws ts.fresh)), fresh := ts.fresh + 1 }
+  | .reset q => { tags := ts.tags.set q (bitsToArr (draws ts.fresh)), fresh := ts.fresh + 1 }
   | _ => ts
 
 /-- The tag state after a gate list. -/
@@ -63,30 +119,30 @@ end TState
 /-- Compare a later site's tag with a pending one: `some false` when they agree, `some true`
 when the later wire carries the complementary parity (Rust's canonicalisation), `none`
 otherwise. -/
-def matchTag {k : Nat} (pending later : BitString k) : Option Bool :=
-  if later = pending then some false
-  else if later = pending + ones k then some true
+def matchTag (k : Nat) (pending later : Tag) : Option Bool :=
+  if later == pending then some false
+  else if later == xorArr pending (onesArr k) then some true
   else none
 
 /-! ## The fold -/
 
 /-- Scan forward for a rotation on the same parity, carrying the tag state. A gate that is
 not unitary stops the scan: this pass never folds across a `measure` or a `reset`. -/
-def mergeInto {k : Nat} (draws : Draws k) (ts : TState k) (tag : BitString k) (θ : ℚ) :
+def mergeInto {k : Nat} (draws : Draws k) (ts : TState k) (tag : Tag) (θ : ℚ) :
     List Gate → Option (List Gate)
   | [] => none
   | g :: gs =>
       if g.isUnitary then
         match rotAngle g with
         | some (φ, q') =>
-            match matchTag tag (ts.tagOf q') with
+            match matchTag k tag (ts.tagOf q') with
             | some sign => some (Gate.rz (φ + signedAngle sign θ) q' :: gs)
             | none => (mergeInto draws (ts.step draws g) tag θ gs).map (g :: ·)
         | none => (mergeInto draws (ts.step draws g) tag θ gs).map (g :: ·)
       else none
 
 /-- Merging rewrites one rotation in place, so the list keeps its length. -/
-theorem mergeInto_length {k : Nat} (draws : Draws k) (tag : BitString k) (θ : ℚ) :
+theorem mergeInto_length {k : Nat} (draws : Draws k) (tag : Tag) (θ : ℚ) :
     ∀ (gs gs' : List Gate) (ts : TState k), mergeInto draws ts tag θ gs = some gs' →
       gs'.length = gs.length := by
   intro gs
@@ -169,6 +225,15 @@ def padSample {m k : Nat} (sample : Sample m k) : Draws k :=
 
 theorem padSample_eq {m k : Nat} (sample : Sample m k) : padSample sample = liftSample sample :=
   rfl
+
+/-- A deterministic draw stream from a seed: splitmix64 bit mixing, one `k`-bit tag per
+variable. Used by the CLI, where a run is reproducible from `--seed`. -/
+def seedDraws {k : Nat} (seed : Nat) : Draws k := fun i =>
+  let x : UInt64 := (seed.toUInt64 + i.toUInt64 + 1) * 0x9E3779B97F4A7C15
+  let x := (x ^^^ (x >>> 30)) * 0xBF58476D1CE4E5B9
+  let x := (x ^^^ (x >>> 27)) * 0x94D049BB133111EB
+  let x := x ^^^ (x >>> 31)
+  fun j => ((x >>> j.val.toUInt64).toNat % 2 : Nat)
 
 /-- Draw one uniform `k`-bit tag per variable from the runtime's generator. -/
 def randomSample (m k : Nat) : IO (Sample m k) := do

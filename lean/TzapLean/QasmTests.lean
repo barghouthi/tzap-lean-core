@@ -1,0 +1,115 @@
+import TzapLean.Qasm
+import TzapLean.Optimize
+
+/-!
+# QASM and CLI tests
+
+The parser half of `src/qasm.rs`'s suite, plus the option plumbing. Every error message is
+checked against the Rust text it is ported from, since a parser's error messages are most of
+its user interface.
+-/
+
+namespace TzapLean
+
+open Qasm
+
+/-- Parse and render compactly: qubit count, cbit count, gates. -/
+def render (r : Except String Circuit) : String :=
+  match r with
+  | .error e => s!"ERR {e}"
+  | .ok c =>
+      s!"{c.numQubits}q {c.numCbits}c [{String.intercalate ", " (c.gates.map Gate.toString)}]"
+
+/-! ## Gates -/
+
+#guard render (parse "qreg q[1];\nz q[0];") == "1q 0c [z q0]"
+#guard render (parse "qreg q[1];\nsdg q[0];") == "1q 0c [sdg q0]"
+#guard render (parse "qreg q[1];\ntdg q[0];\nt q[0];") == "1q 0c [tdg q0, t q0]"
+#guard render (parse "qreg q[1];\nsdg q[0];\ns q[0];") == "1q 0c [sdg q0, s q0]"
+#guard render (parse "qreg q[3];\nh q[0];\ncx q[0],q[1];\nccx q[0],q[1],q[2];\ncz q[1],q[2];")
+  == "3q 0c [h q0, cnot q0, q1, ccx q0, q1, q2, cz q1, q2]"
+#guard render (parse "qreg q[3];\nccz q[0],q[1],q[2];") == "3q 0c [ccz q0, q1, q2]"
+
+/-! ## Registers -/
+
+-- Two registers share one flat index space, in declaration order.
+#guard render (parse "qreg a[2];\nqreg b[2];\ncx a[1],b[0];") == "4q 0c [cnot q1, q2]"
+-- `measure q[i] -> c[j];` and the register-broadcast form `measure q -> c;`.
+#guard render (parse "qreg q[2];\ncreg c[2];\nmeasure q[0] -> c[0];")
+  == "2q 2c [measure q0 -> c0]"
+#guard render (parse "qreg q[2];\ncreg c[2];\nmeasure q -> c;")
+  == "2q 2c [measure q0 -> c0, measure q1 -> c1]"
+#guard render (parse "qreg q[3];\nreset q;") == "3q 0c [reset q0, reset q1, reset q2]"
+
+/-! ## Lexical -/
+
+#guard render (parse "qreg q[1];\nh q[0]; // trailing") == "1q 0c [h q0]"
+#guard render (parse "qreg q[1];\n/* skip\nme */\nh q[0];") == "1q 0c [h q0]"
+#guard render (parse "qreg q[1]; h q[0]; t q[0];") == "1q 0c [h q0, t q0]"
+#guard render (parse "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nbarrier q;\nh q[0];")
+  == "1q 0c [h q0]"
+
+/-! ## Errors
+
+Each message is the Rust one, with `rz` the single deliberate difference. -/
+
+#guard render (parse "qreg q[1];\nfoo q[0];") == "ERR line 2: unsupported: foo q[0]"
+#guard render (parse "qreg q[1];\nh q[0];\nqreg r[1];") == "ERR line 3: qreg declaration after gate"
+#guard render (parse "qreg q[1];\nh q[5];")
+  == "ERR line 2: index 5 out of range for register 'q' (size 1)"
+#guard render (parse "qreg q[1];\nh r[0];") == "ERR line 2: unknown register 'r'"
+#guard render (parse "qreg q[2];\ncx q[0];") == "ERR line 2: cx expects 2 qubit operands, got 1"
+#guard render (parse "qreg q[2];\ncreg c[1];\nmeasure q -> c;")
+  == "ERR line 3: measure operand size mismatch (2 qubits, 1 cbits)"
+#guard render (parse "qreg q[1];\ncreg c[1];\nmeasure q[0] c[0];")
+  == "ERR line 3: measure missing '->' (got 'q[0] c[0]')"
+-- `rz` is rejected rather than silently dropped.
+#guard (parse "qreg q[1];\nrz(pi/4) q[0];").isOk == false
+
+/-! ## Serializing -/
+
+/-- A circuit, its QASM, and the circuit that QASM parses back to. -/
+def roundTrip (c : Circuit) : Bool :=
+  match parse (serialize c) with
+  | .error _ => false
+  | .ok c' => c'.gates == c.gates && c'.numQubits == c.numQubits && c'.numCbits == c.numCbits
+
+#guard roundTrip (Circuit.ofGates 2 1
+  [.h 0, .cnot 0 1, .t 1, .ccx 0 1 1, .cz 0 1, .measure 0 0, .reset 1])
+#guard roundTrip (Circuit.ofGates 3 0 [.x 0, .z 1, .s 2, .sdg 0, .tdg 1, .ccz 0 1 2])
+#guard serialize (Circuit.ofGates 1 0 [.h 0]) ==
+  "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nh q[0];\n"
+
+/-! ## Options -/
+
+#guard (PassName.parse "CancelGates").isSome
+#guard (PassName.parse "SuperOpt").isSome
+#guard (PassName.parse "DecomposeRz").isNone
+#guard (PassName.parse "nonsense").isNone
+#guard PassName.all.length == 4
+-- Only `PhaseFoldRand` carries a probabilistic bound rather than an unconditional proof.
+#guard (PassName.all.filter (fun p => !p.2.1.verified)).map (·.1) == ["PhaseFoldRand"]
+-- `O1` is the only level that skips the table.
+#guard !Level.O1.usesSuperOpt
+#guard Level.O2.usesSuperOpt && Level.O3.usesSuperOpt && Level.Osuper.usesSuperOpt
+-- `O2` is the bounded tier.
+#guard Level.O2.maxRounds == some 2
+#guard Level.O3.maxRounds == none
+-- `CnotMin` leads the superoptimizing sweep.
+#guard Level.O3.pipeline.head? == some PassName.CnotMin
+#guard Level.O1.pipeline == [PassName.CancelGates, PassName.PhaseFoldRand]
+
+/-! ## Metrics and formatting -/
+
+#guard (Metrics.of (Circuit.ofGates 2 0 [.t 0, .tdg 1, .cnot 0 1, .h 0])).t == 2
+#guard (Metrics.of (Circuit.ofGates 2 0 [.t 0, .tdg 1, .cnot 0 1, .h 0])).twoQubit == 1
+#guard (Metrics.of (Circuit.ofGates 2 0 [.t 0, .tdg 1, .cnot 0 1, .h 0])).gates == 4
+#guard fmtNum 0 == "0"
+#guard fmtNum 999 == "999"
+#guard fmtNum 1000 == "1,000"
+#guard fmtNum 1234567 == "1,234,567"
+#guard fmtPct 100 25 == "75.0"
+#guard fmtPct 0 0 == "0.0"
+#guard fmtPct 3 3 == "0.0"
+
+end TzapLean

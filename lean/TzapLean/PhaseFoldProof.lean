@@ -30,7 +30,7 @@ open Form
 /-- The tag state and the symbolic state agree, wire by wire. -/
 def Sim {k : Nat} (draws : Draws k) (st : AState) (ts : TState k) : Prop :=
   ts.tags.length = st.par.length ∧ ts.fresh = st.fresh ∧
-    ∀ q : Qubit, ts.tagOf q = hash draws (st.parOf q)
+    ∀ q : Qubit, ts.tagOf q = bitsToArr (hash draws (st.parOf q))
 
 theorem getD_map_range {α : Type*} (f : Nat → α) (n q : Nat) (d : α) :
     ((List.range n).map f).getD q d = if q < n then f q else d := by
@@ -61,7 +61,7 @@ theorem sim_initial {k : Nat} (draws : Draws k) (n : Nat) :
 
 /-- Writing one wire keeps the simulation, given the tag written is the parity's hash. -/
 theorem sim_set {k : Nat} {draws : Draws k} {st : AState} {ts : TState k}
-    (hsim : Sim draws st ts) (q : Qubit) (f : Form) (t : BitString k) (ht : t = hash draws f)
+    (hsim : Sim draws st ts) (q : Qubit) (f : Form) (t : Tag) (ht : t = bitsToArr (hash draws f))
     (fr fr' : Nat) (hfr : fr = fr') :
     Sim draws ⟨st.par.set q f, fr'⟩ ⟨ts.tags.set q t, fr⟩ := by
   obtain ⟨hlen, -, htag⟩ := hsim
@@ -87,10 +87,10 @@ theorem sim_step {k : Nat} {draws : Draws k} {st : AState} {ts : TState k}
   cases g with
   | x q =>
       refine sim_set hsim q _ _ ?_ _ _ hfresh
-      rw [hash_flip, htag q]
+      rw [htag q, onesArr_eq, xorArr_bitsToArr, hash_flip]
   | cnot c t =>
       refine sim_set hsim t _ _ ?_ _ _ hfresh
-      simp only [hash_add, htag]
+      rw [htag t, htag c, xorArr_bitsToArr, hash_add]
   | h q => exact sim_set hsim q _ _ (by rw [hash_var, hfresh]) _ _ (by rw [hfresh])
   | ccx c₁ c₂ t => exact sim_set hsim t _ _ (by rw [hash_var, hfresh]) _ _ (by rw [hfresh])
   | reset q => exact sim_set hsim q _ _ (by rw [hash_var, hfresh]) _ _ (by rw [hfresh])
@@ -315,14 +315,14 @@ theorem emitAll_correct {n m : Nat} (gs : List Gate) : Equivalent n m (emitAll g
 
 /-! ## What a successful merge means -/
 
-theorem mergeInto_spec {k : Nat} (draws : Draws k) (tag : BitString k) (θ : ℚ) :
+theorem mergeInto_spec {k : Nat} (draws : Draws k) (tag : Tag) (θ : ℚ) :
     ∀ (gs gs' : List Gate) (ts : TState k), mergeInto draws ts tag θ gs = some gs' →
       ∃ (M rest : List Gate) (g' : Gate) (φ : ℚ) (q' : Qubit) (sign : Bool),
         gs = M ++ g' :: rest ∧
         gs' = M ++ Gate.rz (φ + signedAngle sign θ) q' :: rest ∧
         (∀ g ∈ M, g.isUnitary = true) ∧
         rotAngle g' = some (φ, q') ∧
-        matchTag tag ((ts.steps draws M).tagOf q') = some sign := by
+        matchTag k tag ((ts.steps draws M).tagOf q') = some sign := by
   intro gs
   induction gs with
   | nil => intro gs' ts h; simp [mergeInto] at h
@@ -525,7 +525,9 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
                       rw [if_neg (by simp)]
                       refine hfaith _ (List.mem_append.2 (Or.inl hmemq')) _
                         (List.mem_append.2 (Or.inl hmemq)) ?_
-                      rw [← hsimM.2.2 q', ← hsim.2.2 q, heq]
+                      refine bitsToArr_inj ?_
+                      rw [← hsimM.2.2 q', ← hsim.2.2 q]
+                      simpa using heq
                     · split at hmatch
                       · rename_i heq
                         have hsign : sign = true := by simpa using hmatch.symm
@@ -533,7 +535,10 @@ theorem foldFrom_correct {n m k : Nat} (draws : Draws k) :
                         rw [if_pos rfl]
                         refine hfaith _ (List.mem_append.2 (Or.inl hmemq')) _
                           (List.mem_append.2 (Or.inr (List.mem_map.2 ⟨_, hmemq, rfl⟩))) ?_
-                        rw [← hsimM.2.2 q', hash_flip, ← hsim.2.2 q, heq]
+                        refine bitsToArr_inj ?_
+                        rw [hash_flip, ← xorArr_bitsToArr, ← onesArr_eq,
+                          ← hsimM.2.2 q', ← hsim.2.2 q]
+                        simpa using heq
                       · exact absurd hmatch (by simp)
                   have hpath := path_of_generic hMu hbd hlen hgen hpar
                   -- The merge itself.
