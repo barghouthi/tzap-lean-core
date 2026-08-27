@@ -101,7 +101,8 @@ def trySynth (tbl : SynthTable) (w : Win) : Option (List Gate) :=
 
 /-- Grow a window through the gates that follow it, rewriting at the first hit. The result
 replaces the whole consumed span *and* the gates after it. -/
-def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (w : Win) : List Gate → Option (List Gate)
+def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (w : Win) :
+    List Gate → Option (List Gate × List Gate × List Gate)
   | [] => none
   | g :: rest =>
       if touches w.support g then
@@ -111,7 +112,7 @@ def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (w : Win) : Li
             !w.skipped.any (fun s => touches (widen w.support g.qubitsOf) s) then
           match trySynth tbl
               ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ with
-          | some repl => some (repl ++ w.skipped ++ rest)
+          | some repl => some (repl, w.skipped, rest)
           | none =>
               tryWindow cfg tbl n
                 ⟨widen w.support g.qubitsOf, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ rest
@@ -119,24 +120,57 @@ def tryWindow (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (w : Win) : Li
       else
         tryWindow cfg tbl n ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ rest
 
-/-- Find and apply the first rewrite anywhere in the list. -/
-def rewriteOnce (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : List Gate → Option (List Gate)
-  | [] => none
-  | g :: rest =>
-      if isWindowGate g && g.qubitsOf.length ≤ cfg.maxQubits &&
-          g.qubitsOf.all (fun q => q < n) && decide g.Wf then
-        match tryWindow cfg tbl n (Win.start g) rest with
-        | some out => some out
-        | none => (rewriteOnce cfg tbl n rest).map (g :: ·)
-      else (rewriteOnce cfg tbl n rest).map (g :: ·)
+/-- The tail a rewrite leaves is a suffix of what the window was scanning, so a sweep that
+continues from it makes progress. -/
+theorem tryWindow_tail_le {cfg : SuperOptConfig} {tbl : SynthTable} {n : Nat} :
+    ∀ (rest : List Gate) (w : Win) (repl sk tail : List Gate),
+      tryWindow cfg tbl n w rest = some (repl, sk, tail) → tail.length ≤ rest.length := by
+  intro rest
+  induction rest with
+  | nil => intro w repl sk tail h; rw [tryWindow] at h; exact absurd h (by simp)
+  | cons g rest ih =>
+      intro w repl sk tail h
+      rw [tryWindow] at h
+      split at h
+      · split at h
+        · split at h
+          · rw [Option.some.injEq] at h
+            obtain ⟨-, -, rfl⟩ := h
+            simp
+          · exact le_trans (ih _ _ _ _ h) (by simp)
+        · exact absurd h (by simp)
+      · exact le_trans (ih _ _ _ _ h) (by simp)
 
-/-- Apply rewrites until none is found. -/
+/-- Whether a gate may anchor a window. -/
+def canAnchor (cfg : SuperOptConfig) (n : Nat) (g : Gate) : Bool :=
+  isWindowGate g && g.qubitsOf.length ≤ cfg.maxQubits &&
+    g.qubitsOf.all (fun q => q < n) && decide g.Wf
+
+/-- One sweep: rewrite every window that claims a replacement, **continuing past each one**
+rather than restarting.
+
+The old shape found a single rewrite and re-scanned the circuit from the top, which is
+`O(rewrites × gates)` — measured at 25 s on a circuit with 256 of them, against Rust's 0.012 s.
+Rust collects every non-overlapping rewrite in one scan and applies them together; continuing
+from the tail a rewrite leaves is the same idea, and each rewrite is still justified on its own
+by `tryWindow_correct`, so the correctness argument composes by transitivity. -/
+def sweepOnce (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : Nat → List Gate → List Gate
+  | 0, gs => gs
+  | _ + 1, [] => []
+  | fuel + 1, g :: rest =>
+      if canAnchor cfg n g then
+        match tryWindow cfg tbl n (Win.start g) rest with
+        | some (repl, sk, tail) => repl ++ sk ++ sweepOnce cfg tbl n fuel tail
+        | none => g :: sweepOnce cfg tbl n fuel rest
+      else g :: sweepOnce cfg tbl n fuel rest
+
+/-- Sweep until a sweep changes nothing. One sweepOnce already takes every rewrite it can see; a
+second is only needed because a rewrite can expose a new window. -/
 def superOptAux (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : Nat → List Gate → List Gate
   | 0, gs => gs
   | fuel + 1, gs =>
-      match rewriteOnce cfg tbl n gs with
-      | some gs' => superOptAux cfg tbl n fuel gs'
-      | none => gs
+      let gs' := sweepOnce cfg tbl n gs.length gs
+      if gs'.length < gs.length then superOptAux cfg tbl n fuel gs' else gs'
 
 /-- Peephole superoptimization of a gate list over `n` wires. -/
 def superOptGates (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : List Gate) :

@@ -272,28 +272,26 @@ theorem disjoint_of_notMem {g g' : Gate} (h : ∀ q ∈ g.qubitsOf, q ∉ g'.qub
   · exact absurd ((Gate.support_iff g' q).1 (by simp [hq'])) (h q ((Gate.support_iff g q).1 hq))
 
 theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
-    ∀ (rest : List Gate) (w : Win) (out : List Gate), WinOk n m w → (∀ g ∈ rest, g.Wf) →
-      tryWindow cfg tbl n w rest = some out →
-      Equivalent n m out (w.consumed ++ rest) ∧ (∀ g ∈ out, g.Wf) := by
+    ∀ (rest : List Gate) (w : Win) (repl sk tail : List Gate), WinOk n m w →
+      (∀ g ∈ rest, g.Wf) → tryWindow cfg tbl n w rest = some (repl, sk, tail) →
+      Equivalent n m (repl ++ sk ++ tail) (w.consumed ++ rest) ∧
+        (∀ g ∈ repl, g.Wf) ∧ (∀ g ∈ sk, g.Wf) ∧ (∀ g ∈ tail, g.Wf) := by
   intro rest
   induction rest with
-  | nil => intro w out _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
+  | nil => intro w repl sk tail _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
   | cons g rest ih =>
-      intro w out hok hwfr h
+      intro w repl sk tail hok hwfr h
       rw [tryWindow] at h
       split at h
       · -- the gate touches the window
         rename_i htouch
         split at h
         · rename_i hchecks
-          -- unpack the guard
           simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, Bool.not_eq_true',
             List.any_eq_false] at hchecks
           obtain ⟨⟨⟨⟨⟨hwin, hrangeg⟩, hwfg⟩, -⟩, -⟩, hskip⟩ := hchecks
-          have hrangeg' : ∀ q ∈ g.qubitsOf, q < n := hrangeg
           have hu : g.isUnitary = true := isWindowGate_isUnitary hwin
           set sup := widen w.support g.qubitsOf with hsup
-          -- the skipped gates still miss the widened support
           have hdisj' : ∀ s ∈ w.skipped, ∀ q ∈ s.qubitsOf, q ∉ sup := by
             intro s hs
             exact touches_false (by simpa using hskip s hs)
@@ -302,7 +300,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             · intro q hq
               rcases mem_widen _ _ hq with hq' | hq'
               · exact hok.range q hq'
-              · exact hrangeg' q hq'
+              · exact hrangeg q hq'
             · intro x hx q hq
               rcases List.mem_append.1 hx with hx | hx
               · exact subset_widen _ _ (hok.sub x hx q hq)
@@ -316,8 +314,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
               rcases List.mem_append.1 hx with hx | hx
               · exact hok.unit x hx
               · rw [List.mem_singleton.1 hx]; exact hu
-            · -- the new member moves to the front of the skipped block
-              have hgd : ∀ s ∈ w.skipped, Wires.Disjoint g.support s.support := by
+            · have hgd : ∀ s ∈ w.skipped, Wires.Disjoint g.support s.support := by
                 intro s hs
                 refine disjoint_of_notMem ?_
                 intro q hq hq'
@@ -331,30 +328,25 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
                 simpa using this
               exact e2.trans e1
           split at h
-          · -- a rewrite was found
-            rename_i repl hsynth
-            rw [Option.some.injEq] at h
-            subst h
+          · -- a rewrite was found; the tail is what is left of `rest`
+            rename_i repl₀ hsynth
+            simp only [Option.some.injEq, Prod.mk.injEq] at h
+            obtain ⟨hr, hs, ht⟩ := h
+            subst hr; subst hs; subst ht
             obtain ⟨heq, hwfrepl, -⟩ :=
               trySynth_correct (m := m) hok'.nodup hok'.range hok'.sub hok'.wf hsynth
-            constructor
-            · have e1 : Equivalent n m (repl ++ w.skipped) ((w.members ++ [g]) ++ w.skipped) :=
-                Equivalent.append_right w.skipped heq
-              have e2 : Equivalent n m (repl ++ w.skipped) (w.consumed ++ [g]) :=
-                e1.trans hok'.equiv
-              have := Equivalent.append_right (n := n) (m := m) rest e2
-              simpa using this
-            · intro x hx
-              rcases List.mem_append.1 hx with hx | hx
-              · rcases List.mem_append.1 hx with hx | hx
-                · exact hwfrepl x hx
-                · exact hok.wfsk x hx
-              · exact hwfr x (by simp [hx])
+            refine ⟨?_, hwfrepl, hok.wfsk, fun x hx => hwfr x (by simp [hx])⟩
+            have e1 : Equivalent n m (repl₀ ++ w.skipped) ((w.members ++ [g]) ++ w.skipped) :=
+              Equivalent.append_right w.skipped heq
+            have e2 : Equivalent n m (repl₀ ++ w.skipped) (w.consumed ++ [g]) :=
+              e1.trans hok'.equiv
+            have := Equivalent.append_right (n := n) (m := m) rest e2
+            simpa using this
           · -- keep scanning
-            obtain ⟨heq, hwfout⟩ :=
-              ih ⟨sup, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ out hok'
+            obtain ⟨heq, h1, h2, h3⟩ :=
+              ih ⟨sup, w.members ++ [g], w.skipped, w.consumed ++ [g]⟩ repl sk tail hok'
                 (fun x hx => hwfr x (by simp [hx])) h
-            exact ⟨by simpa using heq, hwfout⟩
+            exact ⟨by simpa using heq, h1, h2, h3⟩
         · exact absurd h (by simp)
       · -- the gate misses the window: skip it
         rename_i htouch
@@ -372,58 +364,71 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
               exact hmiss q hq
           · have := Equivalent.append_right (n := n) (m := m) [g] hok.equiv
             simpa using this
-        obtain ⟨heq, hwfout⟩ :=
-          ih ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ out hok'
+        obtain ⟨heq, h1, h2, h3⟩ :=
+          ih ⟨w.support, w.members, w.skipped ++ [g], w.consumed ++ [g]⟩ repl sk tail hok'
             (fun x hx => hwfr x (by simp [hx])) h
-        exact ⟨by simpa using heq, hwfout⟩
+        exact ⟨by simpa using heq, h1, h2, h3⟩
 
 /-! ## The pass -/
 
-theorem rewriteOnce_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
-    ∀ (gs out : List Gate), (∀ g ∈ gs, g.Wf) → rewriteOnce cfg tbl n gs = some out →
-      Equivalent n m out gs ∧ (∀ g ∈ out, g.Wf) := by
-  intro gs
-  induction gs with
-  | nil => intro out _ h; rw [rewriteOnce] at h; exact absurd h (by simp)
-  | cons g rest ih =>
-      intro out hwf h
-      rw [rewriteOnce] at h
-      split at h
-      · rename_i hguard
-        simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true] at hguard
-        obtain ⟨⟨⟨hwin, -⟩, hrangeg⟩, hwfg⟩ := hguard
-        split at h
-        · rename_i outw hw
-          rw [Option.some.injEq] at h
-          subst h
-          have hok : WinOk n m (Win.start g) := by
-            refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, ?_, by simp [Win.start], by
-              simp [Win.start], ?_⟩
-            · intro x hx q hq
-              rw [List.mem_singleton.1 hx] at hq
-              exact hq
-            · intro x hx; rw [List.mem_singleton.1 hx]; exact hwfg
-            · intro x hx
-              rw [List.mem_singleton.1 hx]
-              exact isWindowGate_isUnitary hwin
-            · simpa [Win.start] using Equivalent.refl n m [g]
-          obtain ⟨heq, hwfout⟩ :=
-            tryWindow_correct rest (Win.start g) outw hok (fun x hx => hwf x (by simp [hx])) hw
-          exact ⟨by simpa [Win.start] using heq, hwfout⟩
-        · rcases Option.map_eq_some_iff.1 h with ⟨out', hout', rfl⟩
-          obtain ⟨heq, hwfout⟩ := ih out' (fun x hx => hwf x (by simp [hx])) hout'
-          refine ⟨by simpa using Equivalent.append_left [g] heq, ?_⟩
-          intro x hx
-          rcases List.mem_cons.1 hx with rfl | hx
-          · exact hwf x (by simp)
-          · exact hwfout x hx
-      · rcases Option.map_eq_some_iff.1 h with ⟨out', hout', rfl⟩
-        obtain ⟨heq, hwfout⟩ := ih out' (fun x hx => hwf x (by simp [hx])) hout'
-        refine ⟨by simpa using Equivalent.append_left [g] heq, ?_⟩
-        intro x hx
-        rcases List.mem_cons.1 hx with rfl | hx
-        · exact hwf x (by simp)
-        · exact hwfout x hx
+theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
+    ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) →
+      Equivalent n m (sweepOnce cfg tbl n fuel gs) gs ∧ (∀ g ∈ sweepOnce cfg tbl n fuel gs, g.Wf) := by
+  intro fuel
+  induction fuel with
+  | zero => intro gs hwf; exact ⟨Equivalent.refl n m gs, hwf⟩
+  | succ fuel ih =>
+      intro gs hwf
+      cases gs with
+      | nil => exact ⟨Equivalent.refl n m [], by simp [sweepOnce]⟩
+      | cons g rest =>
+          have keep : Equivalent n m (g :: sweepOnce cfg tbl n fuel rest) (g :: rest) ∧
+              (∀ x ∈ g :: sweepOnce cfg tbl n fuel rest, x.Wf) := by
+            obtain ⟨heq, hwf'⟩ := ih rest (fun x hx => hwf x (by simp [hx]))
+            refine ⟨by simpa using Equivalent.append_left [g] heq, ?_⟩
+            intro x hx
+            rcases List.mem_cons.1 hx with rfl | hx
+            · exact hwf x (by simp)
+            · exact hwf' x hx
+          rw [sweepOnce]
+          split
+          · rename_i hanchor
+            simp only [canAnchor, Bool.and_eq_true, decide_eq_true_eq,
+              List.all_eq_true] at hanchor
+            obtain ⟨⟨⟨hwin, -⟩, hrangeg⟩, hwfg⟩ := hanchor
+            split
+            · rename_i repl sk tail hw
+              -- the window's own invariant, at the anchor
+              have hok : WinOk n m (Win.start g) := by
+                refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, ?_, by simp [Win.start], by
+                  simp [Win.start], ?_⟩
+                · intro x hx q hq
+                  rw [List.mem_singleton.1 hx] at hq
+                  exact hq
+                · intro x hx; rw [List.mem_singleton.1 hx]; exact hwfg
+                · intro x hx
+                  rw [List.mem_singleton.1 hx]
+                  exact isWindowGate_isUnitary hwin
+                · simpa [Win.start] using Equivalent.refl n m [g]
+              obtain ⟨heq, hrepl, hsk, htail⟩ :=
+                tryWindow_correct rest (Win.start g) repl sk tail hok
+                  (fun x hx => hwf x (by simp [hx])) hw
+              obtain ⟨heqt, hwft⟩ := ih tail htail
+              refine ⟨?_, ?_⟩
+              · -- rewrite here, then whatever the rest of the sweepOnce does
+                have hcont : Equivalent n m (repl ++ sk ++ sweepOnce cfg tbl n fuel tail)
+                    (repl ++ sk ++ tail) := by
+                  have := Equivalent.append_left (n := n) (m := m) sk heqt
+                  simpa using Equivalent.append_left (n := n) (m := m) repl this
+                exact hcont.trans (by simpa [Win.start] using heq)
+              · intro x hx
+                rcases List.mem_append.1 hx with hx | hx
+                · rcases List.mem_append.1 hx with hx | hx
+                  · exact hrepl x hx
+                  · exact hsk x hx
+                · exact hwft x hx
+            · exact keep
+          · exact keep
 
 theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
     ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) →
@@ -434,13 +439,12 @@ theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable
   | zero => intro gs hwf; exact ⟨Equivalent.refl n m gs, hwf⟩
   | succ fuel ih =>
       intro gs hwf
+      obtain ⟨heq, hwf'⟩ := sweep_correct (m := m) gs.length gs hwf
       rw [superOptAux]
       split
-      · rename_i gs' hstep
-        obtain ⟨heq, hwf'⟩ := rewriteOnce_correct (m := m) gs gs' hwf hstep
-        obtain ⟨heq', hwf''⟩ := ih gs' hwf'
+      · obtain ⟨heq', hwf''⟩ := ih _ hwf'
         exact ⟨heq'.trans heq, hwf''⟩
-      · exact ⟨Equivalent.refl n m gs, hwf⟩
+      · exact ⟨heq, hwf'⟩
 
 /-- **Superoptimization preserves meaning.** -/
 theorem superOptGates_correct {n m : Nat} (cfg : SuperOptConfig) (tbl : SynthTable)
