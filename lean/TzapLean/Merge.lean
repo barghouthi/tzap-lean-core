@@ -26,6 +26,11 @@ namespace TzapLean
 
 /-! ## Rotations as phase matrices -/
 
+/-- A wire outside the register reads as `false`. -/
+theorem basis_get_of_ge {n : Nat} (b : Basis n) {q : Qubit} (hq : ¬ q < n) : b.get q = false := by
+  simp [Basis.get, hq]
+
+
 /-- The phase an `rz θ` on wire `q` applies to a basis state. -/
 noncomputable def rzPhase (n : Nat) (θ : ℚ) (q : Qubit) : Basis n → ℂ :=
   fun b => if b.get q then ep (θ / 2) else ep (-θ / 2)

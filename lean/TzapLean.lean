@@ -13,8 +13,14 @@ import TzapLean.Analysis
 import TzapLean.Merge
 import TzapLean.PhaseFold
 import TzapLean.PhaseFoldProof
+import TzapLean.Cyclotomic
+import TzapLean.ExactMat
+import TzapLean.Locality
+import TzapLean.SuperOpt
+import TzapLean.SuperOptProof
 import TzapLean.RandPass
 import TzapLean.PhaseFoldRand
 import TzapLean.Pipeline
 import TzapLean.Tests
 import TzapLean.PhaseFoldTests
+import TzapLean.SuperOptTests

@@ -1,6 +1,7 @@
 import TzapLean.RandPass
 import TzapLean.CnotMinProof
 import TzapLean.PhaseFoldRand
+import TzapLean.SuperOptProof
 
 /-!
 # tzap's Pipeline, in the Randomized World
@@ -26,11 +27,29 @@ def CancelGatesR : RandPass := Pass.toRand CancelGates
 /-- `CnotMin` as a zero-error randomized pass. -/
 def CnotMinR : RandPass := Pass.toRand CnotMin
 
+/-- `SuperOpt` as a zero-error randomized pass: it verifies each rewrite by exact matrix
+comparison, so despite the search inside it there is nothing probabilistic about it. -/
+def SuperOptR (cfg : SuperOptConfig) : RandPass := Pass.toRand (SuperOpt cfg)
+
 /-- tzap's deterministic pipeline, expressed in the randomized world. -/
 def detPipeline : RandPass := RandPass.pipeline [CancelGatesR, CnotMinR]
 
+/-- The deterministic pipeline with superoptimization at the end. -/
+def detPipelineSO (cfg : SuperOptConfig) : RandPass :=
+  RandPass.pipeline [CancelGatesR, CnotMinR, SuperOptR cfg]
+
 @[simp] theorem CancelGatesR_error (c : Circuit) : CancelGatesR.error c = 0 := rfl
 @[simp] theorem CnotMinR_error (c : Circuit) : CnotMinR.error c = 0 := rfl
+
+/-- Superoptimization keeps the pipeline exact. -/
+theorem detPipelineSO_error (cfg : SuperOptConfig) (c : Circuit) :
+    (detPipelineSO cfg).error c = 0 :=
+  RandPass.pipeline_error_eq_zero [CancelGates, CnotMin, SuperOpt cfg] c
+
+theorem detPipelineSO_correct (cfg : SuperOptConfig) (c : Circuit) (hc : c.Wf)
+    {s : (detPipelineSO cfg).Seed c} (hs : s ∈ ((detPipelineSO cfg).dist c).support) :
+    Equivalent c.numQubits c.numCbits ((detPipelineSO cfg).run c s).gates c.gates :=
+  RandPass.correct_of_error_eq_zero _ c hc (detPipelineSO_error cfg c) hs
 
 /-- The pipeline's failure probability is zero. -/
 theorem detPipeline_error (c : Circuit) : detPipeline.error c = 0 :=

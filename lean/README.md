@@ -30,9 +30,15 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/PhaseFold.lean` | `PhaseFoldRand`'s algorithm, on Rust-style tags, plus `phaseFoldIO` (the entropy boundary). |
 | `TzapLean/PhaseFoldProof.lean` | Tags simulate parities; the fold is correct whenever the tags are faithful. |
 | `TzapLean/PhaseFoldRand.lean` | The pass as a `RandPass`, with its failure bound. |
+| `TzapLean/Cyclotomic.lean` | `ℤ[ω]`, `ω = e^{iπ/4}`: exact Clifford+T arithmetic, the eight global phases, and division by `√2 = ω − ω³`. |
+| `TzapLean/ExactMat.lean` | Exact `2ⁿ × 2ⁿ` matrices over that ring, gate by gate, with `matrixOf_sound`. |
+| `TzapLean/Locality.lean` | `pad`: an operator on a few wires is itself ⊗ identity. Products, scalars, and every gate. |
+| `TzapLean/SuperOpt.lean` | `SuperOpt`: window scan and verified rewrite. |
+| `TzapLean/SuperOptProof.lean` | The window invariant, and the pass. |
 | `TzapLean/SemanticsCheck.lean` | Independent validation of the semantics: unitarity of every gate, trace preservation, concrete amplitudes, and the `src/unitary.rs` suite. |
 | `TzapLean/Tests.lean` | The Rust test suites of `circuit.rs`, `pass.rs`, `cancel.rs` and `cnot_min.rs`, as `#guard` checks. |
 | `TzapLean/PhaseFoldTests.lean` | The `phase_fold_rand.rs` suite: 108 `#guard` checks. |
+| `TzapLean/SuperOptTests.lean` | The behavioural half of the `super_opt` suite, as `#guard` checks. |
 
 ## The obligation
 
@@ -116,18 +122,72 @@ the ported tests record the difference instead of hiding it. Lifting the restric
 restating the merge on channels (a diagonal operator does commute with the measurement
 projectors, so the result should hold).
 
+## Exact arithmetic, and why locality matters
+
+`SuperOpt` replaces a window of gates whenever a shorter gate list has *the same unitary*, so
+it has to decide matrix equality — and two Clifford+T circuits are equal or they are not, with
+no tolerance to hide behind. Every entry is
+
+```
+    (a + b·ω + c·ω² + d·ω³) / √2 ᵏ ,      ω = e^{iπ/4},  ω⁴ = -1
+```
+
+over `ℤ`, one denominator exponent for the whole matrix — Rust's representation, with `i8`
+coefficients and an overflow path this port does not need. Hadamard adds and subtracts row
+pairs and bumps `k`; phase gates rotate coefficients; controlled-`X` permutes rows. Where Rust
+*checks* divisibility by `√2` with a parity test before cancelling a factor, `divSqrt2_spec`
+proves that test right.
+
+The second ingredient is locality. A window covers a handful of wires, and its matrix must be
+computed on *those*, not on the whole register — otherwise the check is exponential in the
+circuit's width rather than the window's. `Locality.lean` supplies
+
+```lean
+unitary n gs = pad S (unitary S.length (localizeGates S gs))
+```
+
+for a gate list living on wires `S`, with `pad` respecting products and scalars. So a local
+matrix identity, up to global phase, lifts to the full register — that is
+`equivalent_of_local_smul`, and it is what makes the window check both sound and small.
+
+### What the pass does, and what it does not
+
+`SuperOpt` scans forward, growing a window from each anchor through the gates that share its
+wires, and rewrites at the first strictly shorter equivalent. Windows are *subsequences*:
+gates in between on unrelated wires — including `measure` and `reset` — are skipped and
+re-emitted, which is sound because no skipped gate ever touches the window's support. That
+invariant is maintained by re-checking every skipped gate when a new member widens the
+support, and it is exactly the hypothesis the proof consumes.
+
+Two deliberate departures from Rust:
+
+* **Search instead of a table.** Rust precomputes shortest circuits per matrix, caches them on
+  disk, and looks windows up. This port enumerates candidates shorter than the window and
+  tests each, so there is no table to build or persist — at the cost of doing that work per
+  window. `maxSearch` caps it, so the Lean pass finds short replacements, not arbitrary ones.
+* **Skipped gates move to just after the replacement** rather than staying interleaved. They
+  commute with every window gate, so this is invisible.
+
+Neither affects correctness, which rests on the check the pass runs before every rewrite:
+nothing about the search enters the proof. The identities in the test file — `h·z·h = x`,
+`h·cx·h = cz`, `x·cx·x = x⊗cx`, a `T` commuting through a `CNOT` control — are *discovered*,
+not listed.
+
 ## Two proof styles
 
 * **`CancelGates` is proved outright.** Each of the three sweeps — self-inverse pair
   cancellation, Hadamard reduction, and `CNOT`/`CZ` cancellation across commuting gates — is
   proved to preserve `denote`, including every entry of the two commutation tables ported
   from `commutes_past_cnot` / `commutes_past_cz`.
-* **`CnotMin` is proved *certifying*.** Its Gray-code synthesis is a heuristic whose
+* **`CnotMin` and `SuperOpt` are proved *certifying*.** Its Gray-code synthesis is a heuristic whose
   correctness argument is a nontrivial invariant; instead of proving it, the pass re-analyses
   its own output and keeps it only when the (proved-sound) analysis returns the same linear
   map and phase polynomial. Soundness rests on the analysis alone — a bug in the heuristic
   could cost optimization, never correctness. On every ported test the check passes, so the
-  output matches the Rust pass gate for gate.
+  output matches the Rust pass gate for gate. `SuperOpt` is the same idea with a wider
+  search: its candidate replacements come from an unverified enumeration and are accepted only
+  after an exact matrix comparison, so the search may be replaced wholesale — by Rust's
+  precomputed table, say — without touching a line of the proof.
 
 ## Checking the semantics
 

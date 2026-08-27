@@ -171,9 +171,6 @@ theorem step_of_rotAngle {st : AState} {g : Gate} {θ : ℚ} {q : Qubit}
 
 /-! ## Rotations, re-emitted -/
 
-theorem basis_get_of_ge {n : Nat} (b : Basis n) {q : Qubit} (hq : ¬ q < n) : b.get q = false := by
-  simp [Basis.get, hq]
-
 theorem phaseMatrix_trivial {n : Nat} {q : Qubit} (hq : ¬ q < n) (z : ℂ) :
     phaseMatrix (fun s : Basis n => if s.get q then z else 1) = 1 := by
   rw [← phaseMatrix_one]
