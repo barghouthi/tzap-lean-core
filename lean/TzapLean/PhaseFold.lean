@@ -194,18 +194,73 @@ theorem mergeInto_length {k : Nat} (wdraws : Nat → Tag) (tag : Tag) (θ : ℚ)
           simp [ih t _ ht]
       · exact absurd h (by simp)
 
+/-! ## Which rotations have somewhere to go
+
+`mergeInto` scans forward from a rotation looking for a later one on the same parity, and when
+there is none it walks the entire rest of the circuit to find that out. That is the cost of
+the pass: rotations that merge are usually close, rotations that do not are `O(gates)` each.
+
+Rust never scans. It keeps a map from parity tag to the group of rotations sharing it, so a
+rotation finds its group in one lookup. This is the same information, precomputed: for each
+position, *is there a later rotation on this parity, with no barrier in between?*
+
+One left-to-right pass gives each rotation's canonical tag — rotations do not change tags, so
+the state at each position is just the state after the gates before it — and one right-to-left
+pass answers the question with a set, cleared at every barrier, exactly as `mergeInto`'s scan
+stops at one.
+
+Unverified, and used only to skip calling `mergeInto` where it would fail: `foldFrom`'s
+recursion advances one gate at a time in both branches, so the index stays aligned, and a
+rotation's tag is unaffected by the angle changes merging makes. -/
+
+/-- A tag and its complement have the same canonical form, so two rotations merge exactly when
+their canonical tags agree — `matchTag`, decided by equality. -/
+def canonTag (k : Nat) (t : Tag) : Tag := min t (t ^^^ onesTag k)
+
+/-- For each position, whether a later rotation shares its parity with no barrier between. -/
+def mergeTargets (k : Nat) (wdraws : Nat → Tag) (n : Nat) (gs : List Gate) : Array Bool :=
+  Id.run do
+    let arr := gs.toArray
+    -- forward: each rotation's canonical tag
+    let mut canons : Array (Option Tag) := Array.replicate arr.size none
+    let mut ts : TState k := TState.initial wdraws n
+    for h : i in [0 : arr.size] do
+      let g := arr[i]
+      match rotAngle g with
+      | some (_, q) => canons := canons.set! i (some (canonTag k (ts.tagOf q)))
+      | none => pure ()
+      ts := ts.step wdraws g
+    -- backward: has a later rotation with this tag been seen since the last barrier?
+    let mut res : Array Bool := Array.replicate arr.size false
+    let mut seen : Std.HashSet Tag := ∅
+    for i in [0 : arr.size] do
+      let j := arr.size - 1 - i
+      let g := arr[j]!
+      if !g.isUnitary then
+        seen := ∅
+      else
+        match canons[j]! with
+        | some c =>
+            res := res.set! j (seen.contains c)
+            seen := seen.insert c
+        | none => pure ()
+    return res
+
 /-- Fold a gate list: every rotation is pushed forward into the next rotation on its parity,
 if there is one. -/
-def foldFrom {k : Nat} (wdraws : Nat → Tag) (ts : TState k) : List Gate → List Gate
-  | [] => []
-  | g :: gs =>
+def foldFrom {k : Nat} (wdraws : Nat → Tag) (targets : Array Bool) (ts : TState k) :
+    Nat → List Gate → List Gate
+  | _, [] => []
+  | at_, g :: gs =>
       match rotAngle g with
       | some (θ, q) =>
-          match hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
-          | some gs' => foldFrom wdraws ts gs'
-          | none => g :: foldFrom wdraws (ts.step wdraws g) gs
-      | none => g :: foldFrom wdraws (ts.step wdraws g) gs
-  termination_by gs => gs.length
+          if targets[at_]?.getD true then
+            match hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
+            | some gs' => foldFrom wdraws targets ts (at_ + 1) gs'
+            | none => g :: foldFrom wdraws targets (ts.step wdraws g) (at_ + 1) gs
+          else g :: foldFrom wdraws targets (ts.step wdraws g) (at_ + 1) gs
+      | none => g :: foldFrom wdraws targets (ts.step wdraws g) (at_ + 1) gs
+  termination_by _ gs => gs.length
   decreasing_by
     all_goals
       first
@@ -223,7 +278,8 @@ def emitAll : List Gate → List Gate
 
 /-- Phase folding on a gate list, with the draws supplied. -/
 def phaseFoldGates (k : Nat) (wdraws : Nat → Tag) (n : Nat) (gs : List Gate) : List Gate :=
-  emitAll (foldFrom (k := k) wdraws (TState.initial (k := k) wdraws n) gs)
+  emitAll (foldFrom (k := k) wdraws (mergeTargets k wdraws n gs)
+    (TState.initial (k := k) wdraws n) 0 gs)
 
 /-- Phase folding on a circuit. -/
 def phaseFold (k : Nat) (wdraws : Nat → Tag) (c : Circuit) : Circuit where

@@ -58,36 +58,40 @@ theorem emitAll_wf {gs : List Gate} (h : ∀ g ∈ gs, g.Wf) : ∀ g ∈ emitAll
             exact h x (by simp)
       · exact ih (fun y hy => h y (by simp [hy])) g hg
 
-theorem foldFrom_wf {k : Nat} (wdraws : Nat → Tag) :
-    ∀ (N : Nat) (gs : List Gate), gs.length ≤ N → ∀ (ts : TState k),
-      (∀ g ∈ gs, g.Wf) → ∀ g ∈ foldFrom (wdraws) ts gs, g.Wf := by
+theorem foldFrom_wf {k : Nat} (wdraws : Nat → Tag) (targets : Array Bool) :
+    ∀ (N : Nat) (gs : List Gate), gs.length ≤ N → ∀ (at_ : Nat) (ts : TState k),
+      (∀ g ∈ gs, g.Wf) → ∀ g ∈ foldFrom wdraws targets ts at_ gs, g.Wf := by
   intro N
   induction N with
   | zero =>
-      intro gs hgs ts _ g hg
+      intro gs hgs at_ ts _ g hg
       rw [List.eq_nil_of_length_eq_zero (Nat.le_zero.1 hgs)] at hg
       simp at hg
   | succ N ih =>
-      intro gs hlen ts hwf
+      intro gs hlen at_ ts hwf
       cases gs with
       | nil => intro g hg; simp at hg
       | cons x gs =>
           have hlenN : gs.length ≤ N := by
             simp only [List.length_cons] at hlen
             omega
-          have keep : foldFrom (wdraws) ts (x :: gs) = x :: foldFrom (wdraws) (ts.step wdraws x) gs →
-              ∀ g ∈ foldFrom (wdraws) ts (x :: gs), g.Wf := by
+          have keep : foldFrom wdraws targets ts at_ (x :: gs)
+                = x :: foldFrom wdraws targets (ts.step wdraws x) (at_ + 1) gs →
+              ∀ g ∈ foldFrom wdraws targets ts at_ (x :: gs), g.Wf := by
             intro heq g hg
             rw [heq] at hg
             rcases List.mem_cons.1 hg with rfl | hg
             · exact hwf g (by simp)
-            · exact ih gs hlenN _ (fun y hy => hwf y (by simp [hy])) g hg
+            · exact ih gs hlenN _ _ (fun y hy => hwf y (by simp [hy])) g hg
           cases hrot : rotAngle x with
           | none => exact keep (foldFrom_cons_none hrot)
           | some p =>
               obtain ⟨θ, q⟩ := p
+              by_cases hsel : targets[at_]?.getD true = true
+              case neg => exact keep (foldFrom_cons_keep hrot (Or.inl (by simpa using hsel)))
+              case pos =>
               cases hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
-              | none => exact keep (foldFrom_cons_keep hrot hm)
+              | none => exact keep (foldFrom_cons_keep hrot (Or.inr hm))
               | some gs' =>
                   obtain ⟨M, rest, g', φ, q', sign, hgseq, hgs'eq, -, -, -⟩ :=
                     mergeInto_spec wdraws (ts.tagOf q) θ gs gs' ts hm
@@ -103,12 +107,12 @@ theorem foldFrom_wf {k : Nat} (wdraws : Nat → Tag) :
                       · trivial
                       · exact hwf y (by rw [hgseq]; simp [hy])
                   intro g hg
-                  rw [foldFrom_cons_merge hrot hm] at hg
-                  exact ih gs' hlen'' ts hwf' g hg
+                  rw [foldFrom_cons_merge hrot hsel hm] at hg
+                  exact ih gs' hlen'' (at_ + 1) ts hwf' g hg
 
 theorem phaseFoldGates_wf {k n : Nat} (wdraws : Nat → Tag) {gs : List Gate}
     (h : ∀ g ∈ gs, g.Wf) : ∀ g ∈ phaseFoldGates k wdraws n gs, g.Wf :=
-  emitAll_wf (foldFrom_wf (k := k) wdraws gs.length gs le_rfl _ h)
+  emitAll_wf (foldFrom_wf (k := k) wdraws _ gs.length gs le_rfl 0 _ h)
 
 /-! ## The compared parities are bounded -/
 

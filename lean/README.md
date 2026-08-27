@@ -102,12 +102,12 @@ The `gf2^k_mult` family is the useful stress test, because gate count grows quad
 
 | circuit | qubits | gates | gates/qubit | `-O3` |
 |---|---|---|---|---|
-| `gf2^4` | 12 | 292 | 24 | 0.46 s |
-| `gf2^8` | 24 | 1,142 | 47 | 0.81 s |
-| `gf2^16` | 48 | 4,462 | 92 | 3.9 s |
-| `gf2^32` | 96 | 17,661 | 183 | 45 s |
+| `gf2^8` | 24 | 1,142 | 47 | 0.43 s |
+| `gf2^16` | 48 | 4,462 | 92 | 1.4 s |
+| `gf2^32` | 96 | 17,661 | 183 | 8.0 s |
 
-That is not linear, and the shape says why. Every pass here walks the gate list, and a
+That is not linear either, though it is far closer than it was — `gf2^32` took 82 s before
+this work. The shape says why. Every pass here walks the gate list, and a
 lookahead — for a `CNOT`'s twin, for the next rotation on a parity, for a window's next
 member — walks *every* gate in between, most of which are on other wires. The expected
 distance to the next gate on a given wire is `gates/qubit`, so a sweep costs

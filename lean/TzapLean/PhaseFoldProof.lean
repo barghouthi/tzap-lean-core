@@ -359,16 +359,17 @@ theorem mergeInto_spec {k : Nat} (wdraws : Nat → Tag) (tag : Tag) (θ : ℚ) :
 
 /-! ## Unfolding the fold -/
 
-@[simp] theorem foldFrom_nil {k : Nat} (wdraws : Nat → Tag) (ts : TState k) :
-    foldFrom wdraws ts [] = [] := by
+@[simp] theorem foldFrom_nil {k : Nat} (wdraws : Nat → Tag) (targets : Array Bool)
+    (ts : TState k) (at_ : Nat) : foldFrom wdraws targets ts at_ [] = [] := by
   rw [foldFrom]
 
-theorem foldFrom_cons_merge {k : Nat} {wdraws : Nat → Tag} {ts : TState k} {g : Gate}
-    {θ : ℚ} {q : Qubit} {gs gs' : List Gate} (hrot : rotAngle g = some (θ, q))
+theorem foldFrom_cons_merge {k : Nat} {wdraws : Nat → Tag} {targets : Array Bool}
+    {ts : TState k} {at_ : Nat} {g : Gate} {θ : ℚ} {q : Qubit} {gs gs' : List Gate}
+    (hrot : rotAngle g = some (θ, q)) (hsel : targets[at_]?.getD true = true)
     (hm : mergeInto wdraws ts (ts.tagOf q) θ gs = some gs') :
-    foldFrom wdraws ts (g :: gs) = foldFrom wdraws ts gs' := by
+    foldFrom wdraws targets ts at_ (g :: gs) = foldFrom wdraws targets ts (at_ + 1) gs' := by
   rw [foldFrom]
-  simp only [hrot]
+  simp only [hrot, hsel, if_true]
   split
   · rename_i x heq
     rw [hm] at heq
@@ -378,23 +379,35 @@ theorem foldFrom_cons_merge {k : Nat} {wdraws : Nat → Tag} {ts : TState k} {g 
     rw [hm] at heq
     exact absurd heq (by simp)
 
-theorem foldFrom_cons_none {k : Nat} {wdraws : Nat → Tag} {ts : TState k} {g : Gate}
-    {gs : List Gate} (hrot : rotAngle g = none) :
-    foldFrom wdraws ts (g :: gs) = g :: foldFrom wdraws (ts.step wdraws g) gs := by
+theorem foldFrom_cons_none {k : Nat} {wdraws : Nat → Tag} {targets : Array Bool}
+    {ts : TState k} {at_ : Nat} {g : Gate} {gs : List Gate} (hrot : rotAngle g = none) :
+    foldFrom wdraws targets ts at_ (g :: gs)
+      = g :: foldFrom wdraws targets (ts.step wdraws g) (at_ + 1) gs := by
   rw [foldFrom]
   simp only [hrot]
 
-theorem foldFrom_cons_keep {k : Nat} {wdraws : Nat → Tag} {ts : TState k} {g : Gate}
-    {θ : ℚ} {q : Qubit} {gs : List Gate} (hrot : rotAngle g = some (θ, q))
-    (hm : mergeInto wdraws ts (ts.tagOf q) θ gs = none) :
-    foldFrom wdraws ts (g :: gs) = g :: foldFrom wdraws (ts.step wdraws g) gs := by
+/-- The two ways the fold declines to merge: the filter said there is nothing to merge with,
+or the scan looked and found nothing. -/
+theorem foldFrom_cons_keep {k : Nat} {wdraws : Nat → Tag} {targets : Array Bool}
+    {ts : TState k} {at_ : Nat} {g : Gate} {θ : ℚ} {q : Qubit} {gs : List Gate}
+    (hrot : rotAngle g = some (θ, q))
+    (hm : targets[at_]?.getD true = false ∨ mergeInto wdraws ts (ts.tagOf q) θ gs = none) :
+    foldFrom wdraws targets ts at_ (g :: gs)
+      = g :: foldFrom wdraws targets (ts.step wdraws g) (at_ + 1) gs := by
   rw [foldFrom]
   simp only [hrot]
-  split
-  · rename_i x heq
-    rw [hm] at heq
-    exact absurd heq (by simp)
-  · rfl
+  by_cases hsel : targets[at_]?.getD true = true
+  · rw [if_pos hsel]
+    have hmm : mergeInto wdraws ts (ts.tagOf q) θ gs = none := by
+      rcases hm with h | h
+      · rw [h] at hsel; exact absurd hsel (by simp)
+      · exact h
+    split
+    · rename_i x heq
+      rw [hmm] at heq
+      exact absurd heq (by simp)
+    · rfl
+  · rw [if_neg hsel]
 
 /-! ## Rotations are `rz`s -/
 
@@ -444,20 +457,20 @@ theorem faithful_of_sub {k n : Nat} {draws : Draws k} {st st' : AState} {gs hs :
 this run hash alike — folding a gate list yields an equivalent one. -/
 theorem foldFrom_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
     (hw : ∀ i, wordToBits (k := k) (wdraws i) = draws i) :
-    ∀ (N : Nat) (gs : List Gate), gs.length ≤ N → ∀ (st : AState) (ts : TState k),
+    ∀ (N : Nat) (gs : List Gate), gs.length ≤ N → ∀ (at_ : Nat) (st : AState) (ts : TState k),
       Sim draws st ts → st.Bounded → st.par.length = n → AState.Generic n st →
       (∀ g ∈ gs, g.Wf) → Faithful draws (relevant n st gs) →
-      Equivalent n m (foldFrom wdraws ts gs) gs := by
+      Equivalent n m (foldFrom wdraws targets ts at_ gs) gs := by
   intro N
   induction N with
   | zero =>
-      intro gs hgs st ts _ _ _ _ _ _
+      intro gs hgs at_ st ts _ _ _ _ _ _
       have : gs = [] := List.eq_nil_of_length_eq_zero (Nat.le_zero.1 hgs)
       subst this
       simp only [foldFrom_nil]
       exact fun _ => rfl
   | succ N ih =>
-      intro gs hlen' st ts hsim hbd hlen hgen hwf hfaith
+      intro gs hlen' at_ st ts hsim hbd hlen hgen hwf hfaith
       cases gs with
       | nil => simp only [foldFrom_nil]; exact fun _ => rfl
       | cons g gs =>
@@ -465,14 +478,15 @@ theorem foldFrom_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
             simp only [List.length_cons] at hlen'
             omega
           -- The two "keep the gate" branches share a proof.
-          have keep : foldFrom wdraws ts (g :: gs) = g :: foldFrom wdraws (ts.step wdraws g) gs →
-              Equivalent n m (foldFrom wdraws ts (g :: gs)) (g :: gs) := by
+          have keep : foldFrom wdraws targets ts at_ (g :: gs)
+                = g :: foldFrom wdraws targets (ts.step wdraws g) (at_ + 1) gs →
+              Equivalent n m (foldFrom wdraws targets ts at_ (g :: gs)) (g :: gs) := by
             intro heq
             rw [heq]
             have hsub : ∀ p ∈ visited n (st.step g) gs, p ∈ visited n st (g :: gs) := by
               intro p hp
               exact List.mem_append.2 (Or.inr hp)
-            have := ih gs hlenN (st.step g) (ts.step wdraws g) (sim_step hw hsim g)
+            have := ih gs hlenN (at_ + 1) (st.step g) (ts.step wdraws g) (sim_step hw hsim g)
               (AState.bounded_step hbd g) (by rw [AState.length_step, hlen])
               (AState.generic_step hbd hlen hgen (hwf g (by simp)))
               (fun x hx => hwf x (by simp [hx])) (faithful_of_sub hfaith hsub)
@@ -481,8 +495,12 @@ theorem foldFrom_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
           | none => exact keep (foldFrom_cons_none hrot)
           | some p =>
               obtain ⟨θ, q⟩ := p
+              -- The filter can decline outright; otherwise the scan decides.
+              by_cases hsel : targets[at_]?.getD true = true
+              case neg => exact keep (foldFrom_cons_keep hrot (Or.inl (by simpa using hsel)))
+              case pos =>
               cases hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
-              | none => exact keep (foldFrom_cons_keep hrot hm)
+              | none => exact keep (foldFrom_cons_keep hrot (Or.inr hm))
               | some gs' =>
                   obtain ⟨M, rest, g', φ, q', sign, hgseq, hgs'eq, hMu, hrot', hmatch⟩ :=
                     mergeInto_spec wdraws (ts.tagOf q) θ gs gs' ts hm
@@ -508,8 +526,9 @@ theorem foldFrom_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
                     intro r hr
                     rwa [visited_cons_rot (g := Gate.rz (φ + signedAngle sign θ) q')
                       (g' := g') rfl hrot'] at hr
-                  have hIH : Equivalent n m (foldFrom wdraws ts gs') gs' :=
-                    ih gs' hlen'' st ts hsim hbd hlen hgen hwf' (faithful_of_sub hfaith hvis)
+                  have hIH : Equivalent n m (foldFrom wdraws targets ts (at_ + 1) gs') gs' :=
+                    ih gs' hlen'' (at_ + 1) st ts hsim hbd hlen hgen hwf'
+                      (faithful_of_sub hfaith hvis)
                   -- The parity condition, from the tag match and faithfulness.
                   have hsimM : Sim draws (st.steps M) (ts.steps wdraws M) := sim_steps hw hsim M
                   have hmemq : st.parOf q ∈ visited n st (g :: gs) :=
@@ -563,7 +582,7 @@ theorem foldFrom_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat → Tag}
                       simpa using this
                     rw [hgs'eq, hgseq]
                     exact (hstep₁.trans (hstep₂.trans hstep₃)).symm
-                  rw [foldFrom_cons_merge hrot hm]
+                  rw [foldFrom_cons_merge hrot hsel hm]
                   exact hIH.trans hmerge
 
 /-- **Phase folding preserves meaning**, under `Faithful`. -/
@@ -573,7 +592,7 @@ theorem phaseFoldGates_correct {n m k : Nat} {draws : Draws k} {wdraws : Nat →
     (hf : Faithful draws (relevant n (AState.initial n) gs)) :
     Equivalent n m (phaseFoldGates k wdraws n gs) gs := by
   refine Equivalent.trans (emitAll_correct _) ?_
-  exact foldFrom_correct hw gs.length gs le_rfl (AState.initial n)
+  exact foldFrom_correct hw gs.length gs le_rfl 0 (AState.initial n)
     (TState.initial (k := k) wdraws n)
     (sim_initial hw n) (AState.bounded_initial n) (length_initial_par n)
     (AState.generic_initial n) hwf hf
