@@ -57,7 +57,7 @@ def unsupportedPass (name : String) : Bool :=
 
 /-- Parse a comma-separated pass list. -/
 def parsePassList (list : String) : IO (List PassName) := do
-  let names := (list.splitOn ",").map String.trim |>.filter (· ≠ "")
+  let names := (list.splitOn ",").map (·.trimAscii.toString) |>.filter (· ≠ "")
   if names.isEmpty then
     argError "--passes requires at least one pass name (e.g. --passes CancelGates,SuperOpt)"
   names.mapM fun name =>
@@ -72,7 +72,7 @@ def parsePassList (list : String) : IO (List PassName) := do
 
 /-- Whether a token continues a `--passes` list rather than starting a new flag. -/
 def looksLikePassFragment (token : String) : Bool :=
-  let parts := (token.splitOn ",").map String.trim |>.filter (· ≠ "")
+  let parts := (token.splitOn ",").map (·.trimAscii.toString) |>.filter (· ≠ "")
   !parts.isEmpty && parts.all fun n => (PassName.parse n).isSome
 
 /-- The `--help` text. -/

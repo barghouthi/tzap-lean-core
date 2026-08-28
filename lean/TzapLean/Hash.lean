@@ -94,6 +94,8 @@ instance : Sub Form := ⟨fun p q => ⟨p.constant - q.constant, p.coefficients 
 @[simp] theorem add_constant (p q : Form) : (p + q).constant = p.constant + q.constant := rfl
 @[simp] theorem add_coefficients (p q : Form) :
     (p + q).coefficients = p.coefficients + q.coefficients := rfl
+@[simp] theorem sub_constant (p q : Form) :
+    (p - q).constant = p.constant - q.constant := rfl
 @[simp] theorem sub_coefficients (p q : Form) :
     (p - q).coefficients = p.coefficients - q.coefficients := rfl
 

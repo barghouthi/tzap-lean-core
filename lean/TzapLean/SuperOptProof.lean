@@ -428,7 +428,7 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
                 · intro x hx
                   rw [List.mem_singleton.1 hx]
                   exact isWindowGate_isUnitary hwin
-                · simpa [Win.start] using Equivalent.refl n m [g]
+                · simpa using Equivalent.refl n m [g]
               obtain ⟨heq, hrepl, hsk, htail⟩ :=
                 tryWindow_correct rest _ (Win.start g) 0 repl sk tail consumed hok
                   (fun x hx => hwf x (by simp [hx])) hw
@@ -441,7 +441,7 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
                     (repl ++ sk ++ tail) := by
                   have := Equivalent.append_left (n := n) (m := m) sk heqt
                   simpa using Equivalent.append_left (n := n) (m := m) repl this
-                exact hcont.trans (by simpa [Win.start] using heq)
+                exact hcont.trans (by simpa using heq)
               · intro x hx
                 rcases List.mem_append.1 hx with hx | hx
                 · rcases List.mem_append.1 hx with hx | hx

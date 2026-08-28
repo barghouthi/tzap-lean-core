@@ -454,7 +454,7 @@ theorem OnWire.isUnitary {q : Qubit} {g : Gate} (h : OnWire q g) : g.isUnitary =
 theorem OnWire.gateUnitary_eq_one {n q : Nat} {g : Gate} (h : OnWire q g) (hq : ¬ q < n) :
     gateUnitary n g = 1 := by
   cases g <;> simp only [OnWire] at h <;> subst h <;>
-    simp [gateUnitary, embed1, dif_neg hq]
+    simp [gateUnitary, embed1_eq_one _ hq]
 
 /-- A one-wire gate is disjoint from anything that misses its wire. -/
 theorem disjoint_of_onWire {q : Qubit} {g g' : Gate} (hg : OnWire q g)
@@ -552,7 +552,8 @@ theorem ep_quarter_mod (a : Nat) : ep ((a : ℚ)/4) = ep (((a % 8 : Nat) : ℚ)/
   have h : (a : ℚ)/4 = 2 * ((a / 8 : Nat) : ℚ) + ((a % 8 : Nat) : ℚ)/4 := by
     rw [hsplit]; ring
   have hone : ep (2 * ((a / 8 : Nat) : ℚ)) = 1 := by
-    simpa using ep_two_mul_int ((a / 8 : Nat) : ℤ)
+    have := ep_two_mul_int ((a / 8 : Nat) : ℤ)
+    rwa [Int.cast_natCast] at this
   rw [h, ep_add, hone, one_mul]
 
 theorem diagonalK_onWire {g : Gate} {q : Qubit} {x : Option Nat} (h : diagonalK g q = some x) :
@@ -1178,7 +1179,7 @@ def IsDiagGate : Gate → Bool
 theorem embed1_diag2_eq_phaseMatrix {n : Nat} (a b : ℂ) (q : Qubit) (hq : q < n) :
     embed1 n (diag2 a b) q = phaseMatrix (fun s : Basis n => if s.get q then b else a) := by
   funext out inp
-  simp only [embed1, dif_pos hq, phaseMatrix, diag2]
+  simp only [embed1_apply_of_lt _ hq, phaseMatrix, diag2]
   by_cases h : out = inp
   · subst h
     have hall : ∀ r : Fin n, (r : Nat) ≠ q → out r = out r := fun _ _ => rfl
@@ -1205,7 +1206,7 @@ theorem exists_phase_of_isDiagGate {n : Nat} {g : Gate} (h : IsDiagGate g = true
       ∃ f : Basis n → ℂ, embed1 n (diag2 a b) q = phaseMatrix f ∧
         ∀ b₁ b₂ : Basis n, (∀ r ∈ [q], b₁.get r = b₂.get r) → f b₁ = f b₂ := by
     intro q hq a b
-    exact ⟨fun _ => 1, by rw [embed1, dif_neg hq, phaseMatrix_one], fun _ _ _ => rfl⟩
+    exact ⟨fun _ => 1, by rw [embed1_eq_one _ hq, phaseMatrix_one], fun _ _ _ => rfl⟩
   have wire_case : ∀ (q : Qubit) (a b : ℂ),
       ∃ f : Basis n → ℂ, embed1 n (diag2 a b) q = phaseMatrix f ∧
         ∀ b₁ b₂ : Basis n, (∀ r ∈ [q], b₁.get r = b₂.get r) → f b₁ = f b₂ := by

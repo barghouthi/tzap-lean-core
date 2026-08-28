@@ -132,7 +132,7 @@ theorem h2_apply (o i : Bool) : h2 o i = (if o && i then -1 else 1) / sq2 := rfl
 
 theorem embed1_apply_set {n : Nat} (M : Bool → Bool → ℂ) {q : Qubit} (hq : q < n)
     (out : Basis n) (v : Bool) : embed1 n M q out (out.set q v) = M (out.get q) v := by
-  simp only [embed1, dif_pos hq]
+  simp only [embed1_apply_of_lt _ hq]
   rw [if_pos (fun r hr => by simp [Basis.set, hr])]
   congr 1
   · simp [Basis.get, hq]
@@ -141,7 +141,7 @@ theorem embed1_apply_set {n : Nat} (M : Bool → Bool → ℂ) {q : Qubit} (hq :
 theorem embed1_apply_eq_zero {n : Nat} (M : Bool → Bool → ℂ) {q : Qubit} (hq : q < n)
     (out k : Basis n) (h : k ≠ out.set q false) (h' : k ≠ out.set q true) :
     embed1 n M q out k = 0 := by
-  simp only [embed1, dif_pos hq]
+  simp only [embed1_apply_of_lt _ hq]
   refine if_neg (fun hall => ?_)
   have hk : k = out.set q (k ⟨q, hq⟩) := by
     funext r
@@ -196,7 +196,7 @@ theorem interp_applyH {n : Nat} (q : Qubit) (M : ExactMat n) :
       field_simp
       norm_num [Cyc.interp_add, Cyc.interp_sub]
       try ring
-  · rw [applyH, if_neg hq, embed1, dif_neg hq, Matrix.one_mul]
+  · rw [applyH, if_neg hq, embed1_eq_one _ hq, Matrix.one_mul]
 
 /-! ## Building a gate list's matrix -/
 
@@ -259,7 +259,7 @@ theorem gateUnitary_phase {n : Nat} (q : Qubit) (a : ℚ) (p : Nat) (hp : ω ^ p
       phaseMatrix (fun b : Basis n => if b.get q then ω ^ p else 1) := by
   by_cases hq : q < n
   · rw [embed1_diag2_eq_phaseMatrix _ _ _ hq, hp]
-  · rw [embed1, dif_neg hq, ← phaseMatrix_one]
+  · rw [embed1_eq_one _ hq, ← phaseMatrix_one]
     congr 1
     funext b
     rw [basis_get_of_ge b hq, if_neg (by simp)]

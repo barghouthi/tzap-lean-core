@@ -28,14 +28,13 @@ noncomputable section
 theorem embed1_conjTranspose (n : Nat) (M : Bool → Bool → ℂ) (q : Qubit) :
     (embed1 n M q)ᴴ = embed1 n (fun o i => star (M i o)) q := by
   by_cases hq : q < n
-  · simp only [embed1, dif_pos hq]
-    funext out inp
-    simp only [Matrix.conjTranspose_apply]
+  · funext out inp
+    simp only [Matrix.conjTranspose_apply, embed1_apply_of_lt _ hq]
     by_cases h : ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r
     · rw [if_pos h, if_pos fun r hr => (h r hr).symm]
     · rw [if_neg h, if_neg fun hc => h fun r hr => (hc r hr).symm]
       simp
-  · simp [embed1, dif_neg hq]
+  · simp [embed1_eq_one _ hq]
 
 /-- A permutation matrix of an involution is self-adjoint. -/
 theorem permMatrix_conjTranspose_of_involutive {n : Nat} {σ : Basis n → Basis n}
@@ -194,7 +193,7 @@ reads one entry, and a diagonal scales one. -/
 theorem embed1_mul_apply {n : Nat} (M : Bool → Bool → ℂ) (q : Qubit) (hq : q < n)
     (A : Density n) (out inp : Basis n) :
     (embed1 n M q * A) out inp = ∑ v : Bool, M (out ⟨q, hq⟩) v * A (out.set q v) inp := by
-  simp only [Matrix.mul_apply, embed1, dif_pos hq]
+  simp only [Matrix.mul_apply, embed1_apply_of_lt _ hq]
   set kf : Basis n := out.set q false with hkf
   set kt : Basis n := out.set q true with hkt
   have hkf_q : kf ⟨q, hq⟩ = false := by simp [hkf, Basis.set]
@@ -306,7 +305,7 @@ theorem basis_one_eq_false_iff (b : Basis 1) : b = ![false] ↔ b 0 = false := b
 
 theorem embed1_apply_one (M : Bool → Bool → ℂ) (out inp : Basis 1) :
     embed1 1 M 0 out inp = M (out 0) (inp 0) := by
-  simp only [embed1, dif_pos (by norm_num : (0:Nat) < 1)]
+  simp only [embed1_apply_of_lt _ (by norm_num : (0:Nat) < 1)]
   rw [if_pos]
   · rfl
   · intro r hr
@@ -314,7 +313,7 @@ theorem embed1_apply_one (M : Bool → Bool → ℂ) (out inp : Basis 1) :
 
 theorem embed1_apply_two_zero (M : Bool → Bool → ℂ) (out inp : Basis 2) :
     embed1 2 M 0 out inp = if out 1 = inp 1 then M (out 0) (inp 0) else 0 := by
-  simp only [embed1, dif_pos (by norm_num : (0:Nat) < 2)]
+  simp only [embed1_apply_of_lt _ (by norm_num : (0:Nat) < 2)]
   by_cases h : out 1 = inp 1
   · rw [if_pos, if_pos h]
     · rfl
@@ -328,7 +327,7 @@ theorem embed1_apply_two_zero (M : Bool → Bool → ℂ) (out inp : Basis 2) :
 
 theorem embed1_apply_two_one (M : Bool → Bool → ℂ) (out inp : Basis 2) :
     embed1 2 M 1 out inp = if out 0 = inp 0 then M (out 1) (inp 1) else 0 := by
-  simp only [embed1, dif_pos (by norm_num : (1:Nat) < 2)]
+  simp only [embed1_apply_of_lt _ (by norm_num : (1:Nat) < 2)]
   by_cases h : out 0 = inp 0
   · rw [if_pos, if_pos h]
     · rfl
@@ -1250,12 +1249,12 @@ theorem cz_does_not_commute_with_cnot_targeting_operand :
 theorem embed1_apply_agree {n : Nat} (M : Bool → Bool → ℂ) {q : Qubit} (hq : q < n)
     (out inp : Basis n) (h : ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r) :
     embed1 n M q out inp = M (out ⟨q, hq⟩) (inp ⟨q, hq⟩) := by
-  simp only [embed1, dif_pos hq, if_pos h]
+  simp only [embed1_apply_of_lt _ hq, if_pos h]
 
 theorem embed1_apply_disagree {n : Nat} (M : Bool → Bool → ℂ) {q : Qubit} (hq : q < n)
     (out inp : Basis n) (h : ¬ ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r) :
     embed1 n M q out inp = 0 := by
-  simp only [embed1, dif_pos hq, if_neg h]
+  simp only [embed1_apply_of_lt _ hq, if_neg h]
 
 theorem gateUnitary_ccx_perm (n : Nat) (c₁ c₂ t : Qubit) :
     gateUnitary n (.ccx c₁ c₂ t) =

@@ -224,7 +224,7 @@ theorem one_entry {n : Nat} {b' b : Basis n} (h : (1 : Density n) b' b ≠ 0) : 
 theorem embed1_entry {n : Nat} {M : Bool → Bool → ℂ} {q : Qubit} {b' b : Basis n}
     (h : embed1 n M q b' b ≠ 0) {r : Qubit} (hr : r ≠ q) : b'.get r = b.get r := by
   by_cases hq : q < n
-  · simp only [embed1, dif_pos hq] at h
+  · simp only [embed1_apply_of_lt _ hq] at h
     by_cases hall : ∀ s : Fin n, (s : Nat) ≠ q → b' s = b s
     · by_cases hrn : r < n
       · have := hall ⟨r, hrn⟩ (by simpa using hr)
@@ -232,7 +232,7 @@ theorem embed1_entry {n : Nat} {M : Bool → Bool → ℂ} {q : Qubit} {b' b : B
       · simp [Basis.get, hrn]
     · rw [if_neg hall] at h
       exact absurd rfl h
-  · rw [embed1, dif_neg hq] at h
+  · rw [embed1_eq_one _ hq] at h
     rw [one_entry h]
 
 /-! ## Soundness of one step -/

@@ -312,7 +312,7 @@ def fmtNum (n : Nat) : String :=
   let grouped :=
     ds.reverse.foldl (fun (acc, i) c =>
       (if i ≠ 0 && i % 3 == 0 then c :: ',' :: acc else c :: acc, i + 1)) ([], 0) |>.1
-  String.mk grouped
+  String.ofList grouped
 
 /-- Seconds to three decimal places. -/
 def fmtSecs (nanos : Nat) : String :=

@@ -40,8 +40,8 @@ def id2 : Bool → Bool → ℂ := fun out inp => if out = inp then 1 else 0
 
 @[simp] theorem embed1_id2 (n : Nat) (q : Qubit) : embed1 n id2 q = 1 := by
   by_cases h : q < n
-  · simp only [embed1, dif_pos h]
-    funext out inp
+  · funext out inp
+    rw [embed1_apply_of_lt _ h]
     simp only [Matrix.one_apply, id2]
     by_cases hall : ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r
     · rw [if_pos hall]
@@ -58,15 +58,15 @@ def id2 : Bool → Bool → ℂ := fun out inp => if out = inp then 1 else 0
     · rw [if_neg hall]
       have : out ≠ inp := fun hc => hall fun r _ => by rw [hc]
       simp [this]
-  · simp [embed1, dif_neg h]
+  · simp [embed1_eq_one _ h]
 
 /-- Two gates on the same wire multiply as their `2 × 2` matrices. -/
 theorem embed1_mul (n : Nat) (M M' : Bool → Bool → ℂ) (q : Qubit) :
     embed1 n M q * embed1 n M' q = embed1 n (mul2 M M') q := by
   by_cases h : q < n
-  · simp only [embed1, dif_pos h]
-    funext out inp
+  · funext out inp
     rw [Matrix.mul_apply]
+    simp only [embed1_apply_of_lt _ h]
     set kf : Basis n := out.set q false with hkf
     set kt : Basis n := out.set q true with hkt
     have hkf_off : ∀ r : Fin n, (r : Nat) ≠ q → kf r = out r := by
@@ -135,13 +135,13 @@ theorem embed1_mul (n : Nat) (M M' : Bool → Bool → ℂ) (q : Qubit) :
         ring
       · rw [if_neg hk]
         ring
-  · simp [embed1, dif_neg h]
+  · simp [embed1_eq_one _ h]
 
 /-- Scaling a one-wire matrix scales the embedded operator (in range). -/
 theorem embed1_smul {n : Nat} (c : ℂ) (M : Bool → Bool → ℂ) (q : Qubit) (hq : q < n) :
     embed1 n (fun o i => c * M o i) q = c • embed1 n M q := by
-  simp only [embed1, dif_pos hq]
   funext out inp
+  simp only [embed1_apply_of_lt _ hq, Matrix.smul_apply, smul_eq_mul]
   by_cases h : ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r <;> simp [h]
 
 /-! ## Permutations and diagonals -/
@@ -356,7 +356,7 @@ theorem isDiagonal_embed1_diag2 {n : Nat} (a b : ℂ) (q : Qubit) :
     IsDiagonal (embed1 n (diag2 a b) q) := by
   by_cases hq : q < n
   · intro out inp hne
-    simp only [embed1, dif_pos hq]
+    rw [embed1_apply_of_lt _ hq]
     by_cases hall : ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r
     · rw [if_pos hall]
       have : out ⟨q, hq⟩ ≠ inp ⟨q, hq⟩ := by
@@ -368,7 +368,7 @@ theorem isDiagonal_embed1_diag2 {n : Nat} (a b : ℂ) (q : Qubit) :
         · exact hall r hr
       simp [diag2, this]
     · simp [hall]
-  · simpa [embed1, dif_neg hq] using isDiagonal_one (n := n)
+  · simpa [embed1_eq_one _ hq] using isDiagonal_one (n := n)
 
 /-- **Diagonal matrices commute.** -/
 theorem IsDiagonal.mul_comm {n : Nat} {U V : Density n} (hU : IsDiagonal U) (hV : IsDiagonal V) :
@@ -420,7 +420,7 @@ theorem embed1_x2_eq_perm (n : Nat) (q : Qubit) :
     embed1 n x2 q = permMatrix (fun b : Basis n => b.set q (!b.get q)) := by
   by_cases hq : q < n
   · funext out inp
-    simp only [embed1, dif_pos hq, permMatrix, x2]
+    simp only [embed1_apply_of_lt _ hq, permMatrix, x2]
     by_cases hall : ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r
     · rw [if_pos hall]
       by_cases hb : out ⟨q, hq⟩ = !inp ⟨q, hq⟩
@@ -445,7 +445,7 @@ theorem embed1_x2_eq_perm (n : Nat) (q : Qubit) :
         rw [hc]
         simp [Basis.set, hr]
       simp [this]
-  · rw [embed1, dif_neg hq]
+  · rw [embed1_eq_one _ hq]
     funext out inp
     simp [permMatrix, Basis.set_out_of_range _ _ _ hq, Matrix.one_apply, eq_comm]
 

@@ -98,6 +98,10 @@ def Win.start (g : Gate) : Win where
   revSkipped := []
   revConsumed := [g]
 
+@[simp] theorem Win.members_start (g : Gate) : (Win.start g).members = [g] := rfl
+
+@[simp] theorem Win.support_start (g : Gate) : (Win.start g).support = g.qubitsOf := rfl
+
 @[simp] theorem Win.skipped_start (g : Gate) : (Win.start g).skipped = [] := rfl
 
 @[simp] theorem Win.consumed_start (g : Gate) : (Win.start g).consumed = [g] := rfl

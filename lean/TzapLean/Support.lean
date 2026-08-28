@@ -106,7 +106,7 @@ theorem mul_comm {n : Nat} {U V : Density n} {S T : Wires}
         simp [hU.offdiag k inp r hSr this]
       · simp [hV.offdiag out k r hTr hk]
     rw [h1, h2]
-  · push_neg at hdiff
+  · push Not at hdiff
     have hagree : ∀ r : Fin n, S r = false → T r = false → out r = inp r := by
       intro r hs ht
       by_contra hne
@@ -248,15 +248,23 @@ theorem supportedOn_one {n : Nat} (S : Wires) : SupportedOn (1 : Density n) S :=
   rw [← phaseMatrix_one]
   exact supportedOn_phaseMatrix _ S fun _ _ _ => rfl
 
-/-- A single-wire embedding is local on that wire. -/
+/-- A single-wire embedding is local on that wire.
+
+The `dite` in `embed1` is applied pointwise rather than split in the goal: `SupportedOn` is a
+structure whose fields quantify over basis states, so rewriting under it once per entry keeps
+the two obligations in the shape their proofs expect. -/
 theorem supportedOn_embed1 {n : Nat} (M : Bool → Bool → ℂ) (q : Qubit) :
     SupportedOn (embed1 n M q) (fun r => r == q) := by
-  unfold embed1
-  split
-  · rename_i h
+  by_cases h : q < n
+  · have he : ∀ out inp : Basis n, embed1 n M q out inp =
+        if ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r
+        then M (out ⟨q, h⟩) (inp ⟨q, h⟩) else 0 := by
+      intro out inp
+      simp [embed1, h]
     refine ⟨?_, ?_⟩
     · intro out inp r hr hne
       have hrq : (r : Nat) ≠ q := by simpa using hr
+      rw [he]
       simp only [ite_eq_right_iff]
       intro hall
       exact absurd (hall r hrq) hne
@@ -268,8 +276,10 @@ theorem supportedOn_embed1 {n : Nat} (M : Bool → Bool → ℂ) (q : Qubit) :
         intro r hr; exact h3 r (by simpa using hr)
       have hc2 : (∀ r : Fin n, (r : Nat) ≠ q → out' r = inp' r) := by
         intro r hr; exact h4 r (by simpa using hr)
-      rw [if_pos hc1, if_pos hc2, hout, hinp]
-  · exact supportedOn_one _
+      rw [he, he, if_pos hc1, if_pos hc2, hout, hinp]
+  · have hone : embed1 n M q = 1 := by simp [embed1, h]
+    rw [hone]
+    exact supportedOn_one _
 
 /-! ## Every gate matrix is local on its operands -/
 

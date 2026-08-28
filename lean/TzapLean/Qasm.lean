@@ -25,7 +25,7 @@ namespace Qasm
 /-! ## Small string helpers -/
 
 /-- Drop leading and trailing ASCII whitespace. -/
-def trim (s : String) : String := s.trim
+def trim (s : String) : String := s.trimAscii.toString
 
 /-- Split on a character, dropping empty pieces after trimming. -/
 def splitTrim (s : String) (c : Char) : List String :=
@@ -33,7 +33,7 @@ def splitTrim (s : String) (c : Char) : List String :=
 
 /-- Strip a trailing `;` if present. -/
 def dropSemi (s : String) : String :=
-  if s.endsWith ";" then s.dropRight 1 else s
+  if s.endsWith ";" then (s.dropEnd 1).toString else s
 
 /-- Offset of a `//` line comment. -/
 def lineComment (line : String) : Option Nat :=
@@ -57,9 +57,9 @@ partial def stripBlockComments (s : String) : String :=
             | [] => acc
             | [only] =>
                 -- unclosed: the rest is comment, keep only its newlines
-                acc ++ String.mk (only.toList.filter (· = '\n'))
+                acc ++ String.ofList (only.toList.filter (· = '\n'))
             | commented :: tailParts =>
-                acc ++ String.mk (commented.toList.filter (· = '\n')) ++
+                acc ++ String.ofList (commented.toList.filter (· = '\n')) ++
                   String.intercalate "*/" tailParts)
           head
   else s
@@ -75,7 +75,7 @@ def subscript (part : String) : Option (Nat × Nat) :=
 
 /-- The substring between two byte offsets, exclusive. -/
 def slice (s : String) (a b : Nat) : String :=
-  String.mk ((s.toList.drop a).take (b - a))
+  String.ofList ((s.toList.drop a).take (b - a))
 
 /-- Parse a decimal `Nat`, rejecting anything else. -/
 def parseNat (s : String) : Option Nat :=
@@ -204,7 +204,7 @@ def candidates (first : Char) : List String :=
 
 /-- Handle one statement. -/
 def parseStatement (line : String) (st : St) (lineNum : Nat) : Except String St := do
-  let first := line.get 0
+  let first := line.front
   -- ignored statements
   if line.startsWith "//" || line.startsWith "OPENQASM" || line.startsWith "include"
       || line.startsWith "barrier" then

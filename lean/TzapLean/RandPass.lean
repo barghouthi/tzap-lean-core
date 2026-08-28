@@ -91,7 +91,7 @@ def _root_.TzapLean.Pass.toRand (p : Pass) : RandPass where
   correct c hc := by
     have hempty : {s : Unit | ¬ Equivalent c.numQubits c.numCbits (p.run c).gates c.gates} = ∅ := by
       ext s
-      simp only [Set.mem_setOf_eq, Set.mem_empty_iff_false, iff_false, not_not]
+      simp only [Set.mem_ofPred_eq, Set.mem_empty_iff_false, iff_false, not_not]
       exact p.correct c hc
     rw [hempty]
     simp
@@ -116,7 +116,7 @@ def id : RandPass where
   correct c _ := by
     have hempty : {s : Unit | ¬ Equivalent c.numQubits c.numCbits c.gates c.gates} = ∅ := by
       ext s
-      simp only [Set.mem_setOf_eq, Set.mem_empty_iff_false, iff_false, not_not]
+      simp only [Set.mem_ofPred_eq, Set.mem_empty_iff_false, iff_false, not_not]
       exact Equivalent.refl _ _ _
     rw [hempty]
     simp
@@ -190,7 +190,7 @@ def compWhen (p q : RandPass) (cond : Circuit → Circuit → Bool) : RandPass w
         have hsub : (fun s₂ => (⟨s, s₂⟩ : Σ s : p.Seed c, q.Seed (p.run c s))) ⁻¹' F ⊆
             q.failure (p.run c s) := by
           intro s₂ hs₂
-          simp only [hF, Set.mem_preimage, Set.mem_setOf_eq] at hs₂
+          simp only [hF, Set.mem_preimage, Set.mem_ofPred_eq] at hs₂
           intro hq
           refine hs₂ ?_
           -- when the condition fails the composite *is* `p`'s output, which is already good
@@ -233,7 +233,7 @@ def compWhen (p q : RandPass) (cond : Circuit → Circuit → Bool) : RandPass w
       _ ≤ ∑' s, (p.dist c) s *
             (Set.indicator (p.failure c) (fun _ => (1 : ℝ≥0∞)) s + E) := by
           refine ENNReal.tsum_le_tsum fun s => ?_
-          exact mul_le_mul_left' (hinner s) _
+          exact mul_le_mul_right (hinner s) _
       _ = (∑' s, (p.dist c) s * Set.indicator (p.failure c) (fun _ => (1 : ℝ≥0∞)) s) +
             (∑' s, (p.dist c) s * E) := by
           rw [← ENNReal.tsum_add]
@@ -243,7 +243,7 @@ def compWhen (p q : RandPass) (cond : Circuit → Circuit → Bool) : RandPass w
               = (p.dist c).toOuterMeasure (p.failure c) := by
             rw [PMF.toOuterMeasure_apply]
             refine tsum_congr fun s => ?_
-            by_cases hs : s ∈ p.failure c <;> simp [Set.indicator_apply, hs]
+            by_cases hs : s ∈ p.failure c <;> simp [hs]
           have h2 : (∑' _s : p.Seed c, (p.dist c) _s * E) = E := by
             rw [ENNReal.tsum_mul_right, PMF.tsum_coe, one_mul]
           rw [h1, h2]
@@ -301,7 +301,9 @@ theorem fixpointShrink_run (p : RandPass) (n : Nat) (c : Circuit)
     (p.fixpointShrink (n + 1)).run c s =
       (if (p.run c s.1).gates.length < c.gates.length then
         (p.fixpointShrink n).run (p.run c s.1) s.2 else p.run c s.1) := by
-  simp [fixpointShrink_succ, compWhen_run, Shrank]
+  have hiff : (Shrank c (p.run c s.1) = true) ↔
+      ((p.run c s.1).gates.length < c.gates.length) := by simp [Shrank]
+  exact if_congr hiff rfl rfl
 
 /-- **The union bound over rounds.** `fuel` rounds are wrong with probability at most `fuel`
 times one round's, whatever the rounds do to each other's inputs — the composition draws each

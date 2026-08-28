@@ -148,6 +148,24 @@ def embed1 (n : Nat) (M : Bool → Bool → ℂ) (q : Qubit) : Density n :=
       else 0
   else 1
 
+/-- `embed1`'s entries, on a wire the register has.
+
+The definition branches on `q < n` at the level of a whole `Density n`, and `Matrix` is no
+longer transparent enough for `rw [dif_pos h]` to see through that — the motive fails to
+typecheck at reducible transparency. Rewriting entry by entry with this instead is both what
+the proofs want and independent of how transparent `Matrix` is. -/
+theorem embed1_apply_of_lt {n : Nat} (M : Bool → Bool → ℂ) {q : Qubit} (h : q < n)
+    (out inp : Basis n) :
+    embed1 n M q out inp =
+      if ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r
+      then M (out ⟨q, h⟩) (inp ⟨q, h⟩) else 0 := by
+  simp [embed1, h]
+
+/-- An out-of-range wire embeds as the identity. -/
+theorem embed1_eq_one {n : Nat} (M : Bool → Bool → ℂ) {q : Qubit} (h : ¬ q < n) :
+    embed1 n M q = 1 := by
+  simp [embed1, h]
+
 /-- The one-qubit matrix `diag(a, b)`. -/
 def diag2 (a b : ℂ) : Bool → Bool → ℂ :=
   fun out inp => if out = inp then (if inp then b else a) else 0

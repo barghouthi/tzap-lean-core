@@ -87,7 +87,7 @@ theorem unitary_rot_smul (n : Nat) (θ : ℚ) (q : Qubit) :
       funext out inp
       by_cases h : out = inp <;>
         simp [phaseMatrix, h, rzPhase, Basis.get, hq, Matrix.one_apply]
-    rw [hconst, smul_smul, gateUnitary, embed1, dif_neg hq, ← ep_add,
+    rw [hconst, smul_smul, gateUnitary, embed1_eq_one _ hq, ← ep_add,
       show θ / 2 + -θ / 2 = 0 by ring, ep_zero, one_smul]
 
 /-- **The hop.** A rotation on wire `q` before `B` is a rotation on wire `q'` after `B`, as

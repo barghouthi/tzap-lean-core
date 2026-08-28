@@ -270,7 +270,7 @@ theorem embed1_pad {S : List Qubit} (hnd : S.Nodup) (hrange : ∀ q ∈ S, q < n
   have hq : q < n := hrange q (localIdx_getD hi ▸ getD_mem (localIdx_lt hi))
   have hik : i < S.length := localIdx_lt hi
   funext out inp
-  simp only [embed1, dif_pos hq, dif_pos hik, pad]
+  simp only [embed1_apply_of_lt _ hq, embed1_apply_of_lt _ hik, pad]
   by_cases hall : ∀ r : Fin n, (r : Nat) ≠ q → out r = inp r
   · have hoff : OffS S out inp := by
       intro r hr

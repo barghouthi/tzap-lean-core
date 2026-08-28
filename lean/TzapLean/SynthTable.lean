@@ -450,10 +450,15 @@ structure SynthTable where
   widths : Array WidthTable
 deriving Inhabited
 
-/-- Build the table for a configuration. -/
+/-- Build the table for a configuration.
+
+Width `0` is built like the rest even though nothing ever queries it. There are no gates on
+zero wires, so it costs a single arena node — and it keeps every `WidthTable` self-consistent
+(a node for every key, a key for every node), which is what makes serializing and reading a
+table back the identity. Filling it with `default` instead left one node with no key, and the
+round trip did not reproduce it. -/
 def buildTable (cfg : SuperOptTableConfig) : SynthTable :=
-  { widths := (Array.range (cfg.maxQubits + 1)).map fun k =>
-      if k == 0 then default else buildWidth k cfg }
+  { widths := (Array.range (cfg.maxQubits + 1)).map fun k => buildWidth k cfg }
 
 /-- Whether the table holds anything for this fingerprint — the cheap pre-filter `SuperOpt`
 uses to decide whether the verified lookup is worth running at all. Unverified in both
