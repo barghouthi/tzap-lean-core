@@ -4,15 +4,16 @@ import TzapLean.PhaseFoldRand
 import TzapLean.SuperOptProof
 
 /-!
-# tzap's Pipeline, in the Randomized World
+# The Passes, in the Randomized World
 
-The two passes proved here are deterministic, so they enter `RandPass` at `error = 0` with a
-one-point seed. `pipeline_error` shows a pipeline of them still carries error `0`, and
-`pipeline_correct` turns that back into the unconditional statement — nothing was given up
-by moving to the randomized structure.
+`RandPass` is the common currency. Three of tzap's four passes are deterministic, so they
+enter at `error = 0` with a one-point seed; phase folding is the one that consumes randomness.
+This file is only that embedding, plus what it costs (nothing).
 
-`foldPipeline` then slots the randomized pass in: phase folding's `C(L,2)·2⁻ᵏ` is the only
-term that survives, since the deterministic passes around it contribute `0`.
+The pipeline itself — which passes, in which order, repeated how often — is *not* here. It is
+`passOf` / `tzapRound` / `tzapRun` in `TzapLean/Optimize.lean`, sitting next to `stepOf` and
+`runToFixpoint`, the driver code that runs it. Keeping the two adjacent is deliberate: a
+pipeline modelled in one file and executed in another is a pipeline that drifts.
 -/
 
 namespace TzapLean
@@ -32,58 +33,38 @@ comparison, so despite the search inside it there is nothing probabilistic about
 def SuperOptR (cfg : SuperOptConfig) (tbl : SynthTable) : RandPass :=
   Pass.toRand (SuperOpt cfg tbl)
 
-/-- tzap's deterministic pipeline, expressed in the randomized world. -/
-def detPipeline : RandPass := RandPass.pipeline [CancelGatesR, CnotMinR]
-
-/-- The deterministic pipeline with superoptimization at the end. -/
-def detPipelineSO (cfg : SuperOptConfig) (tbl : SynthTable) : RandPass :=
-  RandPass.pipeline [CancelGatesR, CnotMinR, SuperOptR cfg tbl]
-
 @[simp] theorem CancelGatesR_error (c : Circuit) : CancelGatesR.error c = 0 := rfl
 @[simp] theorem CnotMinR_error (c : Circuit) : CnotMinR.error c = 0 := rfl
 
-/-- Superoptimization keeps the pipeline exact. -/
-theorem detPipelineSO_error (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
-    (detPipelineSO cfg tbl).error c = 0 :=
-  RandPass.pipeline_error_eq_zero [CancelGates, CnotMin, SuperOpt cfg tbl] c
+@[simp] theorem SuperOptR_error (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
+    (SuperOptR cfg tbl).error c = 0 := rfl
 
-theorem detPipelineSO_correct (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit)
-    (hc : c.Wf) {s : (detPipelineSO cfg tbl).Seed c}
-    (hs : s ∈ ((detPipelineSO cfg tbl).dist c).support) :
-    Equivalent c.numQubits c.numCbits ((detPipelineSO cfg tbl).run c s).gates c.gates :=
-  RandPass.correct_of_error_eq_zero _ c hc (detPipelineSO_error cfg tbl c) hs
+@[simp] theorem CancelGatesR_run (c : Circuit) (s : CancelGatesR.Seed c) :
+    CancelGatesR.run c s = CancelGates.run c := rfl
 
-/-- The pipeline's failure probability is zero. -/
-theorem detPipeline_error (c : Circuit) : detPipeline.error c = 0 :=
-  RandPass.pipeline_error_eq_zero [CancelGates, CnotMin] c
+@[simp] theorem CnotMinR_run (c : Circuit) (s : CnotMinR.Seed c) :
+    CnotMinR.run c s = CnotMin.run c := rfl
 
-/-- …and therefore every run of it is exactly correct. -/
-theorem detPipeline_correct (c : Circuit) (hc : c.Wf) {s : detPipeline.Seed c}
-    (hs : s ∈ (detPipeline.dist c).support) :
-    Equivalent c.numQubits c.numCbits (detPipeline.run c s).gates c.gates :=
-  RandPass.correct_of_error_eq_zero detPipeline c hc (detPipeline_error c) hs
+@[simp] theorem SuperOptR_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit)
+    (s : (SuperOptR cfg tbl).Seed c) : (SuperOptR cfg tbl).run c s = superOpt cfg tbl c := rfl
 
-/-! ## With phase folding in the pipeline -/
+/-- **Nothing is given up by moving to the randomized setting.** A pipeline built only from
+`Pass`es carries error `0`, and `correct_of_error_eq_zero` turns that back into the
+unconditional statement `Pass.correct_runAll` already made. -/
+theorem pipeline_toRand_correct (ps : List Pass) (c : Circuit) (hc : c.Wf)
+    {s : (RandPass.pipeline (ps.map Pass.toRand)).Seed c}
+    (hs : s ∈ ((RandPass.pipeline (ps.map Pass.toRand)).dist c).support) :
+    Equivalent c.numQubits c.numCbits
+      ((RandPass.pipeline (ps.map Pass.toRand)).run c s).gates c.gates :=
+  RandPass.correct_of_error_eq_zero _ c hc (RandPass.pipeline_error_eq_zero ps c) hs
 
-/-- tzap's pipeline with phase folding in front of the deterministic passes. -/
-def foldPipeline (k : Nat) : RandPass :=
-  RandPass.pipeline [PhaseFoldRand k, CancelGatesR, CnotMinR]
-
-/-- **The whole pipeline's failure bound is phase folding's.** Everything else is exact, so
-the union bound over the pipeline collapses to the single randomized term. -/
-theorem foldPipeline_error (k : Nat) (c : Circuit) :
-    (foldPipeline k).error c =
-      ((relevantForms c).length.choose 2 : ℝ≥0∞) * ((2 : ℝ≥0∞)⁻¹) ^ k := by
-  simp only [foldPipeline, RandPass.pipeline_cons, RandPass.pipeline_nil, RandPass.comp,
-    PhaseFoldRand_error]
-  simp [RandPass.id, CancelGatesR, CnotMinR, Pass.toRand]
-
-/-- What the pipeline computes: phase folding first, on the seed's first component, then the
-two deterministic passes. -/
-theorem foldPipeline_correct (k : Nat) (c : Circuit) (hc : c.Wf)
-    (s : (foldPipeline k).Seed c) :
-    (foldPipeline k).run c s = CnotMin.run (CancelGates.run (phaseFold k (wordsOf k (liftSample s.1)) c)) :=
-  rfl
+/-- Phase folding's bound, in closed form, for reference from the pipeline: `t` compared
+parities collide with probability at most `C(t,2)·2⁻ᵏ`, so doubling the tag width squares the
+odds against it. -/
+theorem phaseFold_error (k : Nat) (c : Circuit) :
+    (PhaseFoldRand k).error c =
+      ((relevantForms c).length.choose 2 : ℝ≥0∞) * ((2 : ℝ≥0∞)⁻¹) ^ k :=
+  PhaseFoldRand_error k c
 
 end
 end TzapLean

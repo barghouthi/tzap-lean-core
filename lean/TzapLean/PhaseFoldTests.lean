@@ -12,15 +12,25 @@ list the pass produces — and the counts follow.
 Angles are rationals in units of `π`, so Rust's radian constants become the `π`-fraction with
 the same classification: `0.3` (not a quarter turn) becomes `3/10`, `PI/4` becomes `1/4`.
 
-The draws are a fixed splitmix stream, so the results are reproducible; `phaseFoldIO` draws
-real entropy, and `PhaseFoldRand.correct` bounds the chance that any draw misleads the pass.
+The draws here are a fixed splitmix stream, so the results are reproducible. The optimizer
+itself never uses one: `phaseFoldIO` draws a uniform `Sample`, which is the space
+`PhaseFoldRand.correct` bounds a measure over, and nothing relates a splitmix stream to it.
 -/
 
 namespace TzapLean
 
 open Gate
 
-/-- A fixed draw stream: splitmix64 bit mixing, one 63-bit tag per variable. -/
+/-- A fixed draw stream: splitmix64 bit mixing, one 63-bit tag per variable. Reproducible,
+and *only* for these tests — see the module docstring. -/
+def seedWords (k : Nat) (seed : Nat) : Nat → Tag := fun i =>
+  let x : UInt64 := (seed.toUInt64 + i.toUInt64 + 1) * 0x9E3779B97F4A7C15
+  let x := (x ^^^ (x >>> 30)) * 0xBF58476D1CE4E5B9
+  let x := (x ^^^ (x >>> 27)) * 0x94D049BB133111EB
+  let x := x ^^^ (x >>> 31)
+  x.toNat % 2 ^ k
+
+/-- A fixed draw stream for the tests below. -/
 def testWords : Nat → Tag := seedWords 63 0
 
 /-- Phase folding with those draws. -/

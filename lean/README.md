@@ -20,7 +20,7 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/Equivalence.lean` | `Equivalent`: equality of channels. Congruence, commutation, and the fact that global phase is invisible. |
 | `TzapLean/Pass.lean` | The `Pass` structure — a transformation *plus* proofs — with composition and pipelines. |
 | `TzapLean/RandPass.lean` | `RandPass`: a pass with a seed distribution and a bound on its failure probability. Deterministic passes are the `error = 0` case. |
-| `TzapLean/Pipeline.lean` | tzap's pipeline as a `RandPass`: deterministic at error `0`, and with phase folding in front (`foldPipeline`). |
+| `TzapLean/Pipeline.lean` | The three deterministic passes as `RandPass`es, at error `0`. The pipeline itself lives with the driver, in `Optimize.lean`. |
 | `TzapLean/Cancel.lean` | `CancelGates`: all three sweeps of `src/cancel.rs`, proved. |
 | `TzapLean/CnotMin.lean` | `CnotMin`: the phase-polynomial resynthesis of `src/cnot_min.rs`. |
 | `TzapLean/CnotMinProof.lean` | Soundness of that pass's analysis, and the pass itself. |
@@ -42,7 +42,7 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/PhaseFoldTests.lean` | The `phase_fold_rand.rs` suite: 108 `#guard` checks. |
 | `TzapLean/SuperOptTests.lean` | The behavioural half of the `super_opt` suite, as `#guard` checks. |
 | `TzapLean/Qasm.lean` | OpenQASM 2.0 parser and serializer — the port of `src/qasm.rs`. |
-| `TzapLean/Optimize.lean` | Levels, pass names, the fixpoint driver, and the reported metrics. |
+| `TzapLean/Optimize.lean` | Levels, pass names, the pipeline as a `RandPass` (`passOf`/`tzapRound`/`tzapRun`), the driver that runs it, and the reported metrics. |
 | `TzapLean/Cli.lean` | Flags, `--help`, and the run banner — `src/cli.rs` and `src/main.rs`. |
 | `TzapLean/QasmTests.lean` | The parser suite and the option plumbing, as `#guard` checks. |
 
@@ -173,11 +173,26 @@ structure Pass where
   numQubits_run : ∀ c, (run c).numQubits = c.numQubits
   numCbits_run : ∀ c, (run c).numCbits = c.numCbits
   wf_run : ∀ c, c.Wf → (run c).Wf
+  wellFormed_run : ∀ c, c.WellFormed → (run c).WellFormed
+  flagsOk_run : ∀ c, c.FlagsOk → (run c).FlagsOk
   correct : ∀ c, c.Wf → Equivalent c.numQubits c.numCbits (run c).gates c.gates
 ```
 
 `Pass.comp` and `Pass.runAll` compose that obligation, so any pipeline of passes is correct
 by construction (`Pass.correct_runAll`).
+
+The last two are about the output being a *circuit*, not about what it means. `WellFormed` is
+"every operand names a slot that was declared" — without it the back end can emit a subscript
+past the end of the register. `FlagsOk` is "the cached `has*` flags describe the gates that
+came out", which every pass gets by rebuilding them through `Circuit.withGates`. Together with
+`Qasm.parse_valid`, which establishes all three of `Wf`, `WellFormed` and `FlagsOk` for
+whatever the front end accepts, `Pass.structural_runAll` closes the loop from parse to emit.
+
+`Circuit.Wf` is "multi-qubit gates have distinct operands". It is genuinely needed: `cnot q q`
+is idempotent, not self-inverse, so cancelling a pair of them would be unsound — and the
+parser checks it rather than assuming it, since `cx q[0],q[0]` is otherwise perfectly good
+QASM syntax. (The Rust front end does *not* check; there it is a latent bug rather than a
+broken proof.)
 
 ### Randomized passes
 
@@ -202,10 +217,6 @@ every seed, so nothing is lost by working in the randomized structure throughout
 `cancelGates`, `cnotMinGates` and the `Pass` layer still compute, which is what the `#guard`
 suite runs on.
 
-`Circuit.Wf` is "multi-qubit gates have distinct operands" — the class of circuits the QASM
-front end produces. It is genuinely needed: `cnot q q` is idempotent, not self-inverse, so
-cancelling a pair of them would be unsound.
-
 ## Where the randomness lives
 
 `PhaseFoldRand` merges two rotations when their wires carry the same parity, and it decides
@@ -221,16 +232,60 @@ organised to isolate that:
   union bound over pairs, each pair bounded by the fiber of a surjective 𝔽₂-linear map.
 
 Composing the two gives the `RandPass` obligation. Doubling the tag width squares the odds
-against the pass; `foldPipeline_error` shows the whole pipeline's bound is this single term,
-since everything around it is exact.
+against the pass, and everything around it in the pipeline is exact, so this single term is
+the whole of the optimizer's error budget per round.
 
 The seed *is* the randomness: `Seed c = Sample (varBound c) k`, one uniform `k`-bit tag per
 variable, under `PMF.uniformOfFintype`. Nothing is sampled in the proof — the bad set is
 measured. The algorithm, in turn, is a pure function of a draw stream `Draws k`, so entropy
-enters at exactly one place: `phaseFoldIO` draws a `Sample` from `IO.rand` and pads it into
-that stream, which is the same object the theorem quantifies over. (`liftSample` is
-noncomputable, living with the `Finsupp` machinery, so the runtime uses `padSample`;
-`padSample_eq` records that they are the same function.)
+enters at exactly one place: `phaseFoldIO` draws a `Sample` and pads it into that stream,
+which is the same object the theorem quantifies over. (`liftSample` is noncomputable, living
+with the `Finsupp` machinery, so the runtime uses `padSample`; `padSample_eq` records that
+they are the same function, and `phaseFoldIO_run` records that what the runtime computes is
+`(PhaseFoldRand k).run c s` and not a lookalike.)
+
+Drawn *afresh on every call*, which is the point of doing it there rather than expanding one
+seed into a stream up front. The driver runs the pipeline in rounds, and round two's circuit
+depends on round one's tags; a single stream reused across rounds is an adaptive use that no
+union bound here covers. `randomSample` draws a bit at a time from the low bit of a generator
+step, which is uniform as soon as the generator is — asking `randNat` for a whole `k`-bit word
+would reduce a value that is not a multiple of `2ᵏ` wide modulo `2ᵏ`, and would not be.
+`--seed` seeds that generator (`IO.setRandSeed`) rather than substituting a deterministic
+stream for the uniform one the bound is about.
+
+## The pipeline, once
+
+`Level.pipeline` is a list of pass names; `passOf` says which verified object each name
+denotes, `tzapRound` composes them in that order, and `tzapRun` repeats the round while the
+gate count keeps falling — `RandPass.fixpointShrink`, whose rule is literally the driver's.
+`stepOf`, the function the driver calls, is that object's `run`; the four `stepOf_*_run`
+theorems are `rfl`. So there is one pipeline, not a modelled one and a run one:
+
+```lean
+theorem tzapRun_correct … :
+  ((tzapRun cfg tbl names fuel).dist c).toOuterMeasure
+      {s | ¬ Equivalent … ((tzapRun cfg tbl names fuel).run c s).gates c.gates}
+    ≤ (tzapRun cfg tbl names fuel).error c
+```
+
+with `fixpointShrink_error_le` and `pipeline_error_le` bounding that error by (rounds ×
+passes) times one phase fold's `C(t,2)·2⁻ᵏ`. Drop `PhaseFoldRand` from `--passes` and
+`tzapRun_exact` says the bound is `0` and *every* run is right. `tzapRun_structural` says the
+output is a circuit the back end may print, for every seed.
+
+## What is trusted
+
+Everything above is machine-checked from `propext`, `Classical.choice` and `Quot.sound`. Three
+things are not, and they are all at the edges:
+
+1. **`IO.rand` is uniform.** No Lean theorem can say otherwise; the point of `randomSample` is
+   to keep the assumption to exactly this and nothing more.
+2. **The `IO` round loop matches `fixpointShrink`.** An `IO` action is opaque to the logic, so
+   `runToFixpoint`'s rule and `fixpointShrink_run`'s equation are a correspondence to read
+   rather than a theorem. They are kept adjacent in `Optimize.lean` for that reason.
+3. **The unverified filters** — `SuperOpt`'s per-qubit index and the on-disk table cache — can
+   only cost an optimization, never soundness: every rewrite is still checked by the verified
+   path before it is taken.
 
 Two representations meet here, as they do in Rust: the pass carries `k`-bit tags and never
 mentions a parity, while the proof carries 𝔽₂ affine forms and never mentions a tag. `Sim`

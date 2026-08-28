@@ -45,6 +45,14 @@ def initial (n : Nat) : AState where
   par := (List.range n).map Form.var
   fresh := n
 
+/-- The gates that allocate a fresh variable: `h`, `ccx` and `reset` are the ones whose
+output parity the affine analysis cannot express in terms of the input's. Counting them
+rather than every gate is what keeps the drawn sample — one tag per variable — to the size
+the analysis actually needs. -/
+def _root_.TzapLean.Gate.allocates : Gate → Bool
+  | .h _ | .ccx .. | .reset _ => true
+  | _ => false
+
 /-- One step of the analysis — the Rust transfer functions. -/
 def step (st : AState) (g : Gate) : AState :=
   match g with

@@ -301,13 +301,19 @@ boundary. The correctness theorem relates that stream to the theory's `Draws k` 
 `wordToBits`, which is why nothing in the inner loop ever touches an `F₂` function: the pass
 XORs machine words, and only the statement of the theorem talks about bits.
 
-`bitsToWord` converts a drawn `Sample` into that stream — once per variable, never per step —
-so `phaseFoldIO` runs the very distribution `PhaseFoldRand.correct` bounds, modulo the one
-thing no proof can supply: that `IO.rand` is uniform. -/
+The runtime draws a `Sample (varBound c) k` — an element of the very space
+`PhaseFoldRand.correct` bounds a measure over — and hands `phaseFold` the words it stands
+for. `PhaseFoldRand_run` records that `phaseFold k (wordsOf k (padSample s)) c` *is*
+`(PhaseFoldRand k).run c s`, so the optimizer runs the modelled experiment and not a
+lookalike. What no proof can supply is that `IO.rand` is uniform; that is the whole of the
+trusted base on the randomness side, and drawing a bit at a time is what keeps it to that.
+-/
 
-/-- The number of variables a circuit's analysis can allocate: one per wire, plus at most one
-per gate (`h`, `ccx` and `reset` are the only allocating gates). -/
-def varBound (c : Circuit) : Nat := c.numQubits + c.gates.length
+/-- The number of variables a circuit's analysis can allocate: one per wire, plus one per
+allocating gate (`h`, `ccx`, `reset`). Counting only those rather than every gate is worth the
+slightly longer proof in `bounded_visited`: it is the size of the sample the runtime draws,
+and on a typical circuit it is four or five times smaller. -/
+def varBound (c : Circuit) : Nat := c.numQubits + c.gates.countP Gate.allocates
 
 /-- Executable `liftSample`: pad a finite seed out to a draw stream. -/
 def padSample {m k : Nat} (sample : Sample m k) : Draws k :=
@@ -323,32 +329,37 @@ def wordsOf (k : Nat) (draws : Draws k) : Nat → Tag := fun i => bitsToWord (dr
     wordToBits (k := k) (wordsOf k draws i) = draws i := by
   simp [wordsOf]
 
-/-- A deterministic word stream from a seed: splitmix64 bit mixing, one `k`-bit tag per
-variable. Used by the CLI, where a run is reproducible from `--seed`.
+/-- Draw one uniform `k`-bit tag per variable from the runtime's generator, as an element of
+the finite space the failure bound is a measure over.
 
-Packed directly, never through a bit function: converting per step was measurably most of the
-pass's remaining cost. -/
-def seedWords (k : Nat) (seed : Nat) : Nat → Tag := fun i =>
-  let x : UInt64 := (seed.toUInt64 + i.toUInt64 + 1) * 0x9E3779B97F4A7C15
-  let x := (x ^^^ (x >>> 30)) * 0xBF58476D1CE4E5B9
-  let x := (x ^^^ (x >>> 27)) * 0x94D049BB133111EB
-  let x := x ^^^ (x >>> 31)
-  x.toNat % 2 ^ k
+A bit at a time, from the low bit of one generator step. `StdGen`'s range has even width, so
+that bit is uniform as soon as the generator is — whereas asking `randNat` for a whole `k`-bit
+word reduces a value that is *not* a multiple of `2^k` wide modulo `2^k`, and is not. Called
+directly rather than through `IO.rand` so the generator is checked out once instead of taken
+and put back for each of a few hundred thousand bits.
 
-/-- Draw one uniform `k`-bit tag per variable from the runtime's generator. -/
-def randomWords (m k : Nat) : IO (Nat → Tag) := do
-  let mut rows : Array Nat := #[]
+Rows are packed into `Nat`s and unpacked by `testBit`, so a drawn sample costs one machine
+word per variable rather than an array of `k` field elements. -/
+def randomSample (m k : Nat) : IO (Sample m k) := do
+  let mut gen ← IO.stdGenRef.get
+  let mut rows : Array Nat := Array.emptyWithCapacity m
   for _ in [0:m] do
     let mut w : Nat := 0
-    for j in [0:k] do
-      let b ← IO.rand 0 1
-      w := w ||| (if b == 1 then 2 ^ j else 0)
+    for _ in [0:k] do
+      let (v, gen') := stdNext gen
+      gen := gen'
+      w := 2 * w + v % 2
     rows := rows.push w
-  return fun i => rows[i]!
+  IO.stdGenRef.set gen
+  return fun i j => bit ((rows[i.val]!).testBit j.val)
 
-/-- Phase folding with freshly drawn tags: the pass as it would actually be run. -/
+/-- Phase folding with freshly drawn tags: the pass as the optimizer runs it.
+
+Fresh *per call*, which is what makes the round loop's union bound apply. A single stream
+reused across rounds would be adaptive — round two's circuit depends on round one's draws —
+and no bound here covers that. -/
 def phaseFoldIO (k : Nat) (c : Circuit) : IO Circuit := do
-  let wdraws ← randomWords (varBound c) k
-  return phaseFold k wdraws c
+  let s ← randomSample (varBound c) k
+  return phaseFold k (wordsOf k (padSample s)) c
 
 end TzapLean

@@ -2,6 +2,7 @@ import TzapLean.SuperOptProof
 import TzapLean.PhaseFoldRand
 import TzapLean.Qasm
 import TzapLean.TableCache
+import TzapLean.Pipeline
 
 /-!
 # The Optimizer Driver
@@ -12,9 +13,13 @@ reports.
 
 Three of the four passes are `Pass`es and carry their proofs. `PhaseFoldRand` is a `RandPass`,
 so it is *not* a `Pass` at any fixed seed — that is the whole content of `RandPass.lean` — and
-the driver runs it at a seed drawn once per invocation. So the pipeline here is a list of
-plain `Circuit → Circuit` functions, not a list of `Pass`es: what each one carries is recorded
-in `PassName.verified` and reported by `--passes-info`, rather than silently implied.
+the driver draws it a fresh seed on every call.
+
+The pipeline is defined once, as a `RandPass`: `passOf` sends a pass name to the verified
+object, `tzapRound` composes them in the order the driver runs them, and `tzapRun` repeats the
+round on the driver's own rule. `stepOf` — what the driver actually calls — is then that
+object's `run`, which the `stepOf_*_run` theorems record by `rfl`. There is no second,
+informal pipeline for the two to drift apart.
 
 Not ported: `DecomposeToffoli`, `DecomposeCz`, `DecomposeRz` (gridsynth), `CliffordResynth`,
 and parallel chunking. `Level.O3` is therefore `O2` run to a true fixpoint, without Rust's
@@ -164,19 +169,17 @@ def Level.usesSuperOpt : Level → Bool
 
 /-! ## Running -/
 
-/-- A pass as the driver runs it: a name and a circuit transformation. -/
-structure Step where
-  /-- The name shown in the progress output. -/
-  name : String
-  /-- The transformation. -/
-  run : Circuit → Circuit
+/-- Tag width for phase folding: 63 bits, so one round misleads the pass with probability at
+most `C(t,2)·2⁻⁶³`. -/
+def tagBits : Nat := 63
 
-/-- Build the transformation for one pass name. -/
-def stepOf (wdraws : Nat → Tag) (cfg : SuperOptConfig) (tbl : SynthTable) : PassName → Step
-  | .CancelGates => ⟨"Gate cancellation", CancelGates.run⟩
-  | .CnotMin => ⟨"CNOT minimization", CnotMin.run⟩
-  | .SuperOpt => ⟨"Superoptimization", superOpt cfg tbl⟩
-  | .PhaseFoldRand => ⟨"Phase folding", phaseFold 63 wdraws⟩
+/-- **The verified object a pass name denotes.** The three deterministic passes enter at
+error `0` with a one-point seed; phase folding is the one that consumes randomness. -/
+noncomputable def passOf (cfg : SuperOptConfig) (tbl : SynthTable) : PassName → RandPass
+  | .CancelGates => CancelGatesR
+  | .CnotMin => CnotMinR
+  | .SuperOpt => SuperOptR cfg tbl
+  | .PhaseFoldRand => PhaseFoldRand tagBits
 
 /-- The pipeline a level runs, when `--passes` is absent.
 
@@ -185,6 +188,115 @@ far more than the peephole rewriter does, and the passes after it work on the re
 def Level.pipeline : Level → List PassName
   | .O1 => [.CancelGates, .PhaseFoldRand]
   | _ => [.CnotMin, .CancelGates, .SuperOpt, .PhaseFoldRand]
+
+/-- **One round**: the named passes, in the order the driver runs them. -/
+noncomputable def tzapRound (cfg : SuperOptConfig) (tbl : SynthTable) (names : List PassName) :
+    RandPass := RandPass.pipeline (names.map (passOf cfg tbl))
+
+/-- **The whole run**: the round, repeated while it keeps removing gates, at most `fuel`
+times. This is `runToFixpoint` below, as a pass. -/
+noncomputable def tzapRun (cfg : SuperOptConfig) (tbl : SynthTable) (names : List PassName)
+    (fuel : Nat) : RandPass := (tzapRound cfg tbl names).fixpointShrink fuel
+
+/-! ### What the run is worth
+
+Two statements, and between them they say what the optimizer guarantees.
+
+`tzapRun_correct` is the general one: the output denotes the same channel as the input except
+on a set of seeds whose measure is at most `error`, which by `fixpointShrink_error_le` and
+`pipeline_error_le` is at most (rounds × passes) times one phase fold's `C(t,2)·2⁻ᵏ`. Note
+that this needs no independence *between* rounds' failure events — a union bound never does —
+only that each round's tags are drawn afresh, which is why `phaseFoldIO` draws per call.
+
+`tzapRun_exact` is the special one: drop `PhaseFoldRand` from `--passes` and the bound is
+`0`, so *every* run is right, and the randomized machinery gives back exactly the
+unconditional `Pass` guarantee. -/
+
+theorem passOf_error_eq_zero {nm : PassName} (h : nm ≠ .PhaseFoldRand) (cfg : SuperOptConfig)
+    (tbl : SynthTable) (c : Circuit) : (passOf cfg tbl nm).error c = 0 := by
+  cases nm <;> simp_all [passOf, CancelGatesR, CnotMinR, SuperOptR]
+
+theorem tzapRound_error_eq_zero {names : List PassName} (h : PassName.PhaseFoldRand ∉ names)
+    (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
+    (tzapRound cfg tbl names).error c = 0 := by
+  refine le_antisymm ?_ (by simp)
+  have := RandPass.pipeline_error_le 0 (names.map (passOf cfg tbl)) ?_ c
+  · simpa [tzapRound] using this
+  · intro p hp c
+    obtain ⟨nm, hnm, rfl⟩ := List.mem_map.1 hp
+    exact le_of_eq (passOf_error_eq_zero (by rintro rfl; exact h hnm) cfg tbl c)
+
+theorem tzapRun_error_eq_zero {names : List PassName} (h : PassName.PhaseFoldRand ∉ names)
+    (cfg : SuperOptConfig) (tbl : SynthTable) (fuel : Nat) (c : Circuit) :
+    (tzapRun cfg tbl names fuel).error c = 0 := by
+  refine le_antisymm ?_ (by simp)
+  have := RandPass.fixpointShrink_error_le (tzapRound cfg tbl names) 0
+    (fun c => le_of_eq (tzapRound_error_eq_zero h cfg tbl c)) fuel c
+  simpa [tzapRun] using this
+
+/-- **The optimizer is correct.** For a well-formed circuit, the pipeline's output denotes the
+same channel as its input, except on a set of seeds of measure at most `error`. -/
+theorem tzapRun_correct (cfg : SuperOptConfig) (tbl : SynthTable) (names : List PassName)
+    (fuel : Nat) (c : Circuit) (hc : c.Wf) :
+    ((tzapRun cfg tbl names fuel).dist c).toOuterMeasure
+        {s | ¬ Equivalent c.numQubits c.numCbits
+          ((tzapRun cfg tbl names fuel).run c s).gates c.gates}
+      ≤ (tzapRun cfg tbl names fuel).error c :=
+  (tzapRun cfg tbl names fuel).correct c hc
+
+/-- **…and exactly correct without the randomized pass.** -/
+theorem tzapRun_exact {names : List PassName} (h : PassName.PhaseFoldRand ∉ names)
+    (cfg : SuperOptConfig) (tbl : SynthTable) (fuel : Nat) (c : Circuit) (hc : c.Wf)
+    {s : (tzapRun cfg tbl names fuel).Seed c}
+    (hs : s ∈ ((tzapRun cfg tbl names fuel).dist c).support) :
+    Equivalent c.numQubits c.numCbits ((tzapRun cfg tbl names fuel).run c s).gates c.gates :=
+  RandPass.correct_of_error_eq_zero _ c hc (tzapRun_error_eq_zero h cfg tbl fuel c) hs
+
+/-- **The run returns a circuit the back end may print**, for any seed: operands in range and
+honest `has*` flags, from `RandPass`'s structural obligations. With `Qasm.parse_valid`, which
+establishes the same of whatever the front end accepts, this holds from parse to emit. -/
+theorem tzapRun_structural (cfg : SuperOptConfig) (tbl : SynthTable) (names : List PassName)
+    (fuel : Nat) (c : Circuit) (hc : c.Structural)
+    (s : (tzapRun cfg tbl names fuel).Seed c) :
+    ((tzapRun cfg tbl names fuel).run c s).Structural :=
+  ⟨(tzapRun cfg tbl names fuel).wellFormed_run c s hc.1,
+   (tzapRun cfg tbl names fuel).flagsOk_run c s hc.2⟩
+
+/-! ## Running -/
+
+/-- A pass as the driver runs it: a name and a circuit transformation.
+
+`run` is an `IO` action because phase folding draws its tags there — and nowhere else does
+the driver touch entropy. -/
+structure Step where
+  /-- The name shown in the progress output. -/
+  name : String
+  /-- The transformation. -/
+  run : Circuit → IO Circuit
+
+/-- Build the transformation for one pass name.
+
+Each of these is `(passOf cfg tbl nm).run` at the seed drawn for it — see the four `rfl`
+theorems below. Nothing else is going on: the driver is the model, executed. -/
+def stepOf (cfg : SuperOptConfig) (tbl : SynthTable) : PassName → Step
+  | .CancelGates => ⟨"Gate cancellation", fun c => pure (CancelGates.run c)⟩
+  | .CnotMin => ⟨"CNOT minimization", fun c => pure (CnotMin.run c)⟩
+  | .SuperOpt => ⟨"Superoptimization", fun c => pure (superOpt cfg tbl c)⟩
+  | .PhaseFoldRand => ⟨"Phase folding", phaseFoldIO tagBits⟩
+
+theorem stepOf_cancelGates_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
+    CancelGates.run c = (passOf cfg tbl .CancelGates).run c () := rfl
+
+theorem stepOf_cnotMin_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
+    CnotMin.run c = (passOf cfg tbl .CnotMin).run c () := rfl
+
+theorem stepOf_superOpt_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
+    superOpt cfg tbl c = (passOf cfg tbl .SuperOpt).run c () := rfl
+
+theorem stepOf_phaseFold_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit)
+    (s : Sample (varBound c) tagBits) :
+    phaseFold tagBits (wordsOf tagBits (padSample s)) c =
+      (passOf cfg tbl .PhaseFoldRand).run c s := rfl
 
 /-- How many fixpoint rounds a level allows: `O2` is the cheap bounded tier, the rest run out
 fully. -/
@@ -236,9 +348,9 @@ per-pass timing was only ever useful while tuning the passes themselves — `--v
 prints it. -/
 def runStep (verbose : Bool) (st : Step) (c : Circuit) : IO Circuit := do
   if !verbose then
-    return st.run c
+    return ← st.run c
   let t0 ← IO.monoNanosNow
-  let out := st.run c
+  let out ← st.run c
   let m := Metrics.of out
   force fun _ => m.gates + m.twoQubit + m.depth + m.t + m.rz
   let t1 ← IO.monoNanosNow
@@ -250,24 +362,38 @@ def runStep (verbose : Bool) (st : Step) (c : Circuit) : IO Circuit := do
   IO.eprintln ""
   return out
 
-/-- Run every pass once, in order. -/
+/-- Run every pass once, in order: `RandPass.pipeline`, executed. -/
 def runPipeline (verbose : Bool) (steps : List Step) (c : Circuit) : IO Circuit :=
   steps.foldlM (fun acc st => runStep verbose st acc) c
 
-/-- Repeat the pipeline until the gate count stops decreasing, or `maxRounds` rounds have
-run. -/
+/-- How many rounds a run may take.
+
+`Level.maxRounds` when the level caps them; otherwise `gates + 1`, which is the whole loop:
+a round that removes no gate ends it, so no more than `gates` rounds can continue. This is
+the `fuel` `tzapRun` is indexed by. -/
+def roundFuel (maxRounds : Option Nat) (c : Circuit) : Nat :=
+  maxRounds.getD (c.gates.length + 1)
+
+/-- Repeat the pipeline while it keeps removing gates, at most `roundFuel` rounds.
+
+The loop rule is `RandPass.fixpointShrink`'s: run the round, and go again exactly when the
+gate count fell (`fixpointShrink_run` states the same equation as a rewrite). What is *not* a
+Lean theorem is the correspondence between this `IO` loop and that term — an `IO` action is
+opaque to the logic — so it is a correspondence to read, one rule against the other, and the
+two are kept adjacent for that reason. -/
 def runToFixpoint (verbose : Bool) (steps : List Step) (c : Circuit) (maxRounds : Option Nat) :
     IO Circuit := do
   let mut current := c
+  let mut fuel := roundFuel maxRounds c
   let mut round := 0
   repeat
+    if fuel = 0 then break
+    fuel := fuel - 1
     let before := current.gates.length
     if verbose then IO.eprintln s!"  ── round {round + 1} ──"
     current ← runPipeline verbose steps current
     round := round + 1
-    let reduced := current.gates.length < before
-    if !reduced then break
-    if maxRounds.any (round ≥ ·) then break
+    if !(current.gates.length < before) then break
   return current
 
 /-- The result of a run: the counts the banner compares. -/
@@ -305,23 +431,23 @@ def optimize (c : Circuit) (o : Options) : IO (Circuit × Report) := do
         IO.eprintln ""
       pure tbl
     else pure default
-  let seed ← match o.seed with
-    | some s => pure s
-    | none => do
-        let a ← IO.rand 0 (2 ^ 31 - 1)
-        let b ← IO.rand 0 (2 ^ 31 - 1)
-        pure (a * (2 ^ 31) + b)
-  let wdraws : Nat → Tag := seedWords 63 seed
-  let steps := names.map (stepOf wdraws cfg tbl)
+  -- `--seed` fixes the generator every draw comes from, rather than substituting a
+  -- deterministic stream for the uniform one the bound is about.
+  match o.seed with
+  | some sd => IO.setRandSeed sd
+  | none => pure ()
+  let steps := names.map (stepOf cfg tbl)
   let baseline := Metrics.of c
+  -- Each branch is `tzapRun cfg tbl names fuel` for the fuel named beside it; a single
+  -- `runPipeline` is the `fuel = 1` case, since one round then meets `fixpointShrink 0 = id`.
   let result ←
     if o.passes.isSome then
-      if o.fixpoint then runToFixpoint o.verbose steps c none
-      else runPipeline o.verbose steps c
+      if o.fixpoint then runToFixpoint o.verbose steps c none      -- fuel = gates + 1
+      else runPipeline o.verbose steps c                           -- fuel = 1
     else if o.level.usesSuperOpt then
-      runToFixpoint o.verbose steps c o.level.maxRounds
-    else if o.fixpoint then runToFixpoint o.verbose steps c none
-    else runPipeline o.verbose steps c
+      runToFixpoint o.verbose steps c o.level.maxRounds            -- fuel = maxRounds
+    else if o.fixpoint then runToFixpoint o.verbose steps c none   -- fuel = gates + 1
+    else runPipeline o.verbose steps c                             -- fuel = 1
   return (result, ⟨baseline, Metrics.of result⟩)
 
 end TzapLean

@@ -12,9 +12,12 @@ together gives the obligation `RandPass` demands,
 Pr_{s ← uniform} [ ⟦phaseFold s c⟧ ≠ ⟦c⟧ ]  ≤  C(L, 2) · 2⁻ᵏ
 ```
 
-where `L` is the number of parities (and complements) this circuit makes the pass compare —
-at most `2·(n·(|gates|+1) + 1)`. The seed is drawn once per circuit: one uniform `k`-bit tag
-per variable, `Sample (varBound c) k`, which is exactly what `phaseFoldIO` draws at runtime.
+where `L` is the number of parities (and complements) this circuit makes the pass compare.
+The seed is one uniform `k`-bit tag per variable — `Sample (varBound c) k` — drawn afresh on
+every call, which is exactly what `phaseFoldIO` does at runtime and what
+`phaseFoldIO_run` below records. Afresh matters: the driver runs the pipeline in rounds, and
+the union bound over rounds needs each round's tags to be a new draw, not a new slice of one
+stream chosen before the circuit those rounds see existed.
 -/
 
 namespace TzapLean
@@ -234,14 +237,20 @@ theorem phaseFoldGates_inRange {k n' n m : Nat} (wdraws : Nat → Tag) {gs : Lis
 /-! ## The compared parities are bounded -/
 
 theorem fresh_steps_le (st : AState) (gs : List Gate) :
-    (st.steps gs).fresh ≤ st.fresh + gs.length := by
+    (st.steps gs).fresh ≤ st.fresh + gs.countP Gate.allocates := by
   induction gs generalizing st with
   | nil => simp
   | cons g gs ih =>
-      have hstep : (st.step g).fresh ≤ st.fresh + 1 := by cases g <;> simp [AState.step]
       have := ih (st.step g)
-      simp only [AState.steps_cons, List.length_cons]
-      omega
+      rw [AState.steps_cons, List.countP_cons]
+      by_cases hall : Gate.allocates g = true
+      · rw [if_pos hall]
+        have hstep : (st.step g).fresh ≤ st.fresh + 1 := by cases g <;> simp [AState.step]
+        omega
+      · rw [if_neg hall]
+        have hstep : (st.step g).fresh = st.fresh := by
+          cases g <;> simp_all [AState.step, Gate.allocates]
+        omega
 
 theorem bounded_formsOf {n : Nat} {st : AState} (hst : st.Bounded) {m : Nat}
     (h : st.fresh ≤ m) : ∀ p ∈ formsOf n st, Form.Bounded m p := by
@@ -252,7 +261,8 @@ theorem bounded_formsOf {n : Nat} {st : AState} (hst : st.Bounded) {m : Nat}
     exact Form.bounded_mono h (hst q)
 
 theorem bounded_visited {n : Nat} : ∀ (gs : List Gate) (st : AState), st.Bounded →
-    ∀ {m : Nat}, st.fresh + gs.length ≤ m → ∀ p ∈ visited n st gs, Form.Bounded m p := by
+    ∀ {m : Nat}, st.fresh + gs.countP Gate.allocates ≤ m →
+      ∀ p ∈ visited n st gs, Form.Bounded m p := by
   intro gs
   induction gs with
   | nil =>
@@ -260,14 +270,19 @@ theorem bounded_visited {n : Nat} : ∀ (gs : List Gate) (st : AState), st.Bound
       exact bounded_formsOf hst (by simpa using h) p hp
   | cons g gs ih =>
       intro st hst m h p hp
-      have hstep : (st.step g).fresh ≤ st.fresh + 1 := by cases g <;> simp [AState.step]
-      rcases List.mem_append.1 hp with hp | hp
-      · refine bounded_formsOf hst ?_ p hp
-        simp only [List.length_cons] at h
-        omega
-      · refine ih (st.step g) (AState.bounded_step hst g) ?_ p hp
-        simp only [List.length_cons] at h
-        omega
+      rw [List.countP_cons] at h
+      by_cases hall : Gate.allocates g = true
+      · rw [if_pos hall] at h
+        have hstep : (st.step g).fresh ≤ st.fresh + 1 := by cases g <;> simp [AState.step]
+        rcases List.mem_append.1 hp with hp | hp
+        · exact bounded_formsOf hst (by omega) p hp
+        · exact ih (st.step g) (AState.bounded_step hst g) (by omega) p hp
+      · rw [if_neg hall] at h
+        have hstep : (st.step g).fresh = st.fresh := by
+          cases g <;> simp_all [AState.step, Gate.allocates]
+        rcases List.mem_append.1 hp with hp | hp
+        · exact bounded_formsOf hst (by omega) p hp
+        · exact ih (st.step g) (AState.bounded_step hst g) (by omega) p hp
 
 /-- The forms one run of the pass can compare. -/
 noncomputable def relevantForms (c : Circuit) : List Form :=
@@ -321,6 +336,14 @@ def PhaseFoldRand (k : Nat) : RandPass where
 
 @[simp] theorem PhaseFoldRand_run (k : Nat) (c : Circuit) (s : (PhaseFoldRand k).Seed c) :
     (PhaseFoldRand k).run c s = phaseFold k (wordsOf k (liftSample s)) c := rfl
+
+/-- **What `phaseFoldIO` computes is what the bound is about.** The runtime draws an element
+of `Sample (varBound c) k` — the space `correct` above takes a measure over — and applies the
+pass at it; this says the two are the same function, by definition and not by resemblance.
+The one thing left unproved is that the draw is uniform, which is a fact about `IO.rand` and
+not about any Lean term. -/
+theorem phaseFoldIO_run (k : Nat) (c : Circuit) (s : Sample (varBound c) k) :
+    phaseFold k (wordsOf k (padSample s)) c = (PhaseFoldRand k).run c s := rfl
 
 /-- The failure bound in closed form: with `t` compared parities the pass is wrong with
 probability at most `C(t,2)·2⁻ᵏ`, so doubling the tag width squares the odds against it. -/
