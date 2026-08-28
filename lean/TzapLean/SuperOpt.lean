@@ -357,6 +357,6 @@ def superOptGates (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : List
 
 /-- Peephole superoptimization of a circuit. -/
 def superOpt (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) : Circuit :=
-  { c with gates := superOptGates cfg tbl c.numQubits c.gates }
+  c.withGates (superOptGates cfg tbl c.numQubits c.gates)
 
 end TzapLean

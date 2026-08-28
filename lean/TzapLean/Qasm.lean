@@ -263,8 +263,11 @@ def parseStatement (line : String) (st : St) (lineNum : Nat) : Except String St 
            in units of π, and Rz synthesis (gridsynth) is not ported"
   | _ => .error s!"line {lineNum}: unsupported: {line}"
 
-/-- Parse a circuit from OpenQASM 2.0 source. -/
-def parse (source : String) : Except String Circuit := do
+/-- Read the statements of an OpenQASM 2.0 source into a circuit.
+
+This is the parser proper; `parse` is this followed by `validate`, and everything outside
+this module should call `parse`. -/
+def parseRaw (source : String) : Except String Circuit := do
   let source := stripBlockComments source
   let mut st : St := {}
   let mut lineNum := 0
@@ -278,6 +281,99 @@ def parse (source : String) : Except String Circuit := do
       if line ≠ "" then
         st ← parseStatement line st lineNum
   return Circuit.ofGates st.numQubits st.numCbits st.revGates.reverse
+
+/-! ## Validating
+
+The parser checks each operand against its register's size, but nothing checks that a
+multi-qubit gate's operands are *distinct*: `cx q[0],q[0]` parses. That circuit is not one
+the pipeline may be handed. `Pass.correct` is conditional on `Circuit.Wf`, and the condition
+is not idle — `cnot q q` denotes `b ↦ b[q := 0]`, which is idempotent rather than
+self-inverse, so `CancelGates` deleting a pair of them is a genuinely unsound rewrite. (The
+Rust front end has the same gap; there it is a latent bug rather than a broken proof.)
+
+So the front end rejects such a circuit rather than passing it on, and `parse_wf` below
+turns that check into the precondition every downstream pass asks for. The range check comes
+along for the ride: it is implied by the per-register bound in `resolveIdx`, but checking it
+here is cheaper than threading a proof through the parser's state monad, and it is what
+`parse_wellFormed` needs so the back end can only ever emit subscripts that are in range.
+-/
+
+/-- Name the gate that failed validation, for the error message. -/
+def badGate (c : Circuit) : String :=
+  match c.gates.find? (fun g => !decide g.Wf) with
+  | some g =>
+      s!"gate '{g}' repeats a qubit operand — a multi-qubit gate needs distinct qubits"
+  | none =>
+      match c.gates.find? (fun g => !decide (g.InRange c.numQubits c.numCbits)) with
+      | some g => s!"gate '{g}' addresses a register slot that was never declared"
+      | none => "circuit failed validation"
+
+/-- Accept a parsed circuit only if every gate has distinct operands and is in range,
+rebuilding it so that its cached `has*` flags are honest too. -/
+def validate (c : Circuit) : Except String Circuit :=
+  if ∀ g ∈ c.gates, g.Wf ∧ g.InRange c.numQubits c.numCbits then
+    .ok (c.withGates c.gates)
+  else
+    .error (badGate c)
+
+/-- Validation returns the circuit it was given, up to the rebuilt flags. -/
+theorem validate_eq {c c' : Circuit} (h : validate c = .ok c') : c' = c.withGates c.gates := by
+  unfold validate at h
+  split at h
+  · exact (Except.ok.injEq _ _ ▸ h).symm ▸ rfl
+  · exact absurd h (by simp)
+
+/-- **A validated circuit has distinct multi-qubit operands** — the precondition of every
+`Pass.correct`. -/
+theorem validate_wf {c c' : Circuit} (h : validate c = .ok c') : c'.Wf := by
+  unfold validate at h
+  split at h
+  · rename_i hall
+    obtain rfl : c' = c.withGates c.gates := (Except.ok.injEq _ _ ▸ h).symm ▸ rfl
+    exact fun g hg => (hall g hg).1
+  · exact absurd h (by simp)
+
+/-- **A validated circuit is well-formed**: every operand is a slot that was declared. -/
+theorem validate_wellFormed {c c' : Circuit} (h : validate c = .ok c') : c'.WellFormed := by
+  unfold validate at h
+  split at h
+  · rename_i hall
+    obtain rfl : c' = c.withGates c.gates := (Except.ok.injEq _ _ ▸ h).symm ▸ rfl
+    exact fun g hg => (hall g hg).2
+  · exact absurd h (by simp)
+
+/-- **A validated circuit's flags are honest**, since validation rebuilds them. -/
+theorem validate_flagsOk {c c' : Circuit} (h : validate c = .ok c') : c'.FlagsOk := by
+  rw [validate_eq h]; exact Circuit.flagsOk_withGates _ _
+
+/-- Parse a circuit from OpenQASM 2.0 source, rejecting anything the pipeline may not
+assume. -/
+def parse (source : String) : Except String Circuit := do
+  let c ← parseRaw source
+  validate c
+
+theorem parse_eq_validate {source : String} {c : Circuit} (h : parseRaw source = .ok c) :
+    parse source = validate c := by
+  simp only [parse, h, bind, Except.bind]
+
+/-- **Everything the parser promises the rest of the compiler.** `Circuit.Wf` is the
+precondition of `Pass.correct`; `WellFormed` and `FlagsOk` are what `Pass` then preserves,
+so the whole pipeline runs on circuits satisfying all three. -/
+theorem parse_valid {source : String} {c : Circuit} (h : parse source = .ok c) :
+    c.Wf ∧ c.WellFormed ∧ c.FlagsOk := by
+  unfold parse at h
+  simp only [bind, Except.bind] at h
+  cases hraw : parseRaw source with
+  | error e => rw [hraw] at h; exact absurd h (by simp)
+  | ok c₀ =>
+      rw [hraw] at h
+      exact ⟨validate_wf h, validate_wellFormed h, validate_flagsOk h⟩
+
+theorem parse_wf {source : String} {c : Circuit} (h : parse source = .ok c) : c.Wf :=
+  (parse_valid h).1
+
+theorem parse_wellFormed {source : String} {c : Circuit} (h : parse source = .ok c) :
+    c.WellFormed := (parse_valid h).2.1
 
 /-! ## Serializing -/
 

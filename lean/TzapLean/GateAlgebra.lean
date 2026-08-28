@@ -23,18 +23,6 @@ open Matrix
 
 noncomputable section
 
-/-- A gate whose multi-qubit operands are pairwise distinct. -/
-def Gate.Wf : Gate → Prop
-  | .cnot c tgt | .cz c tgt => c ≠ tgt
-  | .ccx c₁ c₂ tgt | .ccz c₁ c₂ tgt => c₁ ≠ c₂ ∧ c₁ ≠ tgt ∧ c₂ ≠ tgt
-  | _ => True
-
-instance (g : Gate) : Decidable g.Wf := by
-  cases g <;> unfold Gate.Wf <;> infer_instance
-
-/-- Every circuit the parser can produce has well-formed gates. -/
-def Circuit.Wf (c : Circuit) : Prop := ∀ g ∈ c.gates, g.Wf
-
 /-- The gates `CancelGates` treats as self-inverse: `h`, `x`, `z`, `cnot`, `cz`, `ccx`,
 `ccz` (the Rust `is_self_inverse`). -/
 def Gate.isSelfInverse : Gate → Bool

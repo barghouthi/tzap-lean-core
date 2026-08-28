@@ -1789,6 +1789,123 @@ theorem reduceHadamardsFuel_wf (fuel : Nat) : ∀ {gs : List Gate}, (∀ g ∈ g
 theorem reduceHadamards_wf {gs : List Gate} (hwf : ∀ g ∈ gs, g.Wf) :
     ∀ g ∈ reduceHadamards gs, g.Wf := reduceHadamardsFuel_wf _ hwf
 
+/-! ## Operand ranges
+
+The same three sweeps, against the other half of `Circuit`'s structural invariant. The
+argument is shorter than the `Wf` one only because the gates the Hadamard rule invents —
+`x`, `z`, `h`, `s`, `sdg` — all sit on the wire of the `h` that opened the run, so their
+range is the range of a gate the sweep was already given. -/
+
+theorem reduceAtH_inRange {n m : Nat} {q : Qubit} {gs out : List Gate} (hq : q < n)
+    (hwf : ∀ g ∈ gs, g.InRange n m) (h : reduceAtH q gs = some out) :
+    ∀ g ∈ out, g.InRange n m := by
+  have hxw : (Gate.x q).InRange n m := Gate.inRange_of_qubitsOf_eq hq rfl rfl
+  have hzw : (Gate.z q).InRange n m := Gate.inRange_of_qubitsOf_eq hq rfl rfl
+  have hhw : (Gate.h q).InRange n m := Gate.inRange_of_qubitsOf_eq hq rfl rfl
+  have hsw : (Gate.s q).InRange n m := Gate.inRange_of_qubitsOf_eq hq rfl rfl
+  have hsdw : (Gate.sdg q).InRange n m := Gate.inRange_of_qubitsOf_eq hq rfl rfl
+  unfold reduceAtH at h
+  rcases hx : scanXH q gs with _ | ⟨b₁, b₂, rest⟩
+  · rw [hx] at h
+    dsimp only at h
+    rcases hscan : scanH q gs with _ | r
+    · rw [hscan] at h; simp at h
+    · rw [hscan] at h
+      dsimp only at h
+      obtain ⟨hb, ha, hr⟩ := scanH_mem hscan
+      have hbw : ∀ g ∈ r.before, g.InRange n m := fun g hg => hwf g (hb g hg)
+      have haw : ∀ g ∈ r.after, g.InRange n m := fun g hg => hwf g (ha g hg)
+      have hrw : ∀ g ∈ r.rest, g.InRange n m := fun g hg => hwf g (hr g hg)
+      by_cases hodd : r.k % 2 = 1
+      · rw [if_pos hodd] at h; simp at h
+      · rw [if_neg hodd] at h
+        split at h
+        · simp only [Option.some.injEq] at h
+          subst h
+          simp only [List.forall_mem_append]
+          and_intros <;> assumption
+        · split at h
+          · simp only [Option.some.injEq] at h
+            subst h
+            simp only [List.forall_mem_append, List.forall_mem_cons]
+            and_intros <;> assumption
+          · split at h <;>
+            · simp only [Option.some.injEq] at h
+              subst h
+              simp only [List.forall_mem_append, List.forall_mem_cons]
+              and_intros <;> assumption
+  · rw [hx] at h
+    dsimp only at h
+    simp only [Option.some.injEq] at h
+    subst h
+    obtain ⟨hgs, -, -⟩ := scanXH_spec hx
+    have hmem : ∀ x ∈ b₁, x ∈ gs := by
+      intro x hx'; rw [hgs]; exact List.mem_append_left _ hx'
+    have hmem₂ : ∀ x ∈ b₂, x ∈ gs := by
+      intro x hx'; rw [hgs]
+      exact List.mem_append_right _ (List.mem_cons_of_mem _ (List.mem_append_left _ hx'))
+    have hmem₃ : ∀ x ∈ rest, x ∈ gs := by
+      intro x hx'; rw [hgs]
+      exact List.mem_append_right _ (List.mem_cons_of_mem _
+        (List.mem_append_right _ (List.mem_cons_of_mem _ hx')))
+    have hb₁ : ∀ g ∈ b₁, g.InRange n m := fun g hg => hwf g (hmem g hg)
+    have hb₂ : ∀ g ∈ b₂, g.InRange n m := fun g hg => hwf g (hmem₂ g hg)
+    have hrest : ∀ g ∈ rest, g.InRange n m := fun g hg => hwf g (hmem₃ g hg)
+    simp only [List.forall_mem_append, List.forall_mem_cons]
+    and_intros <;> assumption
+
+theorem reduceStep_inRange {n m : Nat} : ∀ {gs out : List Gate},
+    (∀ g ∈ gs, g.InRange n m) → reduceStep gs = some out → ∀ g ∈ out, g.InRange n m := by
+  intro gs
+  induction gs with
+  | nil => intro out _ h; simp [reduceStep] at h
+  | cons g gs ih =>
+      intro out hwf h
+      have hwf' : ∀ g' ∈ gs, g'.InRange n m := fun g' hg' => hwf g' (by simp [hg'])
+      simp only [reduceStep] at h
+      cases hg : g with
+      | h q =>
+          subst hg
+          dsimp only at h
+          rcases hred : reduceAtH q gs with _ | out'
+          · rw [hred] at h
+            dsimp only at h
+            simp only [Option.map_eq_some_iff] at h
+            obtain ⟨out'', hstep, rfl⟩ := h
+            intro x hx
+            rcases List.mem_cons.mp hx with rfl | hx
+            · exact hwf _ (by simp)
+            · exact ih hwf' hstep x hx
+          · rw [hred] at h
+            dsimp only at h
+            simp only [Option.some.injEq] at h
+            subst h
+            exact reduceAtH_inRange ((hwf (Gate.h q) (by simp)).qubits q (by simp [Gate.qubitsOf]))
+              hwf' hred
+      | _ =>
+          subst hg
+          dsimp only at h
+          simp only [Option.map_eq_some_iff] at h
+          obtain ⟨out'', hstep, rfl⟩ := h
+          intro x hx
+          rcases List.mem_cons.mp hx with rfl | hx
+          · exact hwf _ (by simp)
+          · exact ih hwf' hstep x hx
+
+theorem reduceHadamardsFuel_inRange {n m : Nat} (fuel : Nat) : ∀ {gs : List Gate},
+    (∀ g ∈ gs, g.InRange n m) → ∀ g ∈ reduceHadamardsFuel fuel gs, g.InRange n m := by
+  induction fuel with
+  | zero => intro gs hwf; exact hwf
+  | succ fuel ih =>
+      intro gs hwf
+      rw [reduceHadamardsFuel]
+      rcases hstep : reduceStep gs with _ | gs'
+      · exact hwf
+      · exact ih (reduceStep_inRange hwf hstep)
+
+theorem reduceHadamards_inRange {n m : Nat} {gs : List Gate} (hwf : ∀ g ∈ gs, g.InRange n m) :
+    ∀ g ∈ reduceHadamards gs, g.InRange n m := reduceHadamardsFuel_inRange _ hwf
+
 theorem cancelCommutingFuel_wf (fuel : Nat) : ∀ {gs : List Gate}, (∀ g ∈ gs, g.Wf) →
     ∀ g ∈ cancelCommutingFuel fuel gs, g.Wf := by
   induction fuel with
@@ -1859,21 +1976,47 @@ theorem cancelGates_wf {gs : List Gate} (hwf : ∀ g ∈ gs, g.Wf) :
     ∀ g ∈ cancelGates gs, g.Wf :=
   cancelGatesLoop_wf _ (cancelPairs_wf hwf)
 
+/-- The two cancelling sweeps only ever *delete*, so they preserve any gate property at
+all — including both halves of the structural invariant. -/
+theorem cancelCommutingFuel_pred {P : Gate → Prop} (fuel : Nat) : ∀ {gs : List Gate},
+    (∀ g ∈ gs, P g) → ∀ g ∈ cancelCommutingFuel fuel gs, P g := by
+  induction fuel with
+  | zero => intro gs h; exact h
+  | succ fuel ih =>
+      intro gs h
+      rw [cancelCommutingFuel]
+      rcases hstep : cancelCommutingStep gs with _ | gs'
+      · exact h
+      · exact ih fun g hg => h g (cancelCommutingStep_mem hstep g hg)
+
+theorem cancelCommutingPairs_pred {P : Gate → Prop} {gs : List Gate} (h : ∀ g ∈ gs, P g) :
+    ∀ g ∈ cancelCommutingPairs gs, P g := cancelCommutingFuel_pred _ h
+
+theorem cancelPairs_pred {P : Gate → Prop} {gs : List Gate} (h : ∀ g ∈ gs, P g) :
+    ∀ g ∈ cancelPairs gs, P g := fun g hg => h g (cancelPairs_mem gs g hg)
+
+theorem cancelGatesLoop_inRange {n m : Nat} : ∀ (fuel : Nat) {gs : List Gate},
+    (∀ g ∈ gs, g.InRange n m) → ∀ g ∈ cancelGatesLoop fuel gs, g.InRange n m := by
+  intro fuel
+  induction fuel with
+  | zero => intro gs h; exact h
+  | succ fuel ih =>
+      intro gs h
+      rw [cancelGatesLoop]
+      split
+      · exact h
+      · exact ih (cancelPairs_pred (cancelCommutingPairs_pred (reduceHadamards_inRange h)))
+
+/-- **`CancelGates` keeps every operand in range.** -/
+theorem cancelGates_inRange {n m : Nat} {gs : List Gate} (h : ∀ g ∈ gs, g.InRange n m) :
+    ∀ g ∈ cancelGates gs, g.InRange n m :=
+  cancelGatesLoop_inRange _ (cancelPairs_pred h)
+
 /-- **`CancelGates` preserves semantics.** -/
 theorem cancelGates_correct {n m : Nat} (gs : List Gate) (hwf : ∀ g ∈ gs, g.Wf) :
     Equivalent n m (cancelGates gs) gs :=
   Equivalent.trans (cancelGatesLoop_correct _ (cancelPairs_wf hwf))
     (cancelPairs_correct _ hwf)
-
-/-- Rebuild a circuit around a new gate list, recomputing the `has*` flags as the Rust
-`CancelGates::run` does. -/
-def Circuit.withGates (c : Circuit) (gs : List Gate) : Circuit where
-  numQubits := c.numQubits
-  numCbits := c.numCbits
-  gates := gs
-  hasToffoli := gs.any Gate.isToffoli
-  hasCcz := gs.any Gate.isCcz
-  hasMeasurement := gs.any Gate.isMeasurement
 
 /-- **The `CancelGates` pass**, with its correctness proof as a field. -/
 def CancelGates : Pass where
@@ -1882,6 +2025,8 @@ def CancelGates : Pass where
   numQubits_run _ := rfl
   numCbits_run _ := rfl
   wf_run c hc := cancelGates_wf hc
+  wellFormed_run c hc := cancelGates_inRange hc
+  flagsOk_run c _ := Circuit.flagsOk_withGates _ _
   correct c hc := cancelGates_correct c.gates hc
 
 end

@@ -281,11 +281,12 @@ def phaseFoldGates (k : Nat) (wdraws : Nat → Tag) (n : Nat) (gs : List Gate) :
   emitAll (foldFrom (k := k) wdraws (mergeTargets k wdraws n gs)
     (TState.initial (k := k) wdraws n) 0 gs)
 
-/-- Phase folding on a circuit. -/
-def phaseFold (k : Nat) (wdraws : Nat → Tag) (c : Circuit) : Circuit where
-  numQubits := c.numQubits
-  numCbits := c.numCbits
-  gates := phaseFoldGates k wdraws c.numQubits c.gates
+/-- Phase folding on a circuit.
+
+Through `withGates`, so the cached `has*` flags describe the gates that came out rather than
+the ones that went in — `Pass.flagsOk_run` is the obligation that keeps that honest. -/
+def phaseFold (k : Nat) (wdraws : Nat → Tag) (c : Circuit) : Circuit :=
+  c.withGates (phaseFoldGates k wdraws c.numQubits c.gates)
 
 @[simp] theorem phaseFold_numQubits (k : Nat) (wdraws : Nat → Tag) (c : Circuit) :
     (phaseFold k wdraws c).numQubits = c.numQubits := rfl

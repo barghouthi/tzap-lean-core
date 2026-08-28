@@ -179,7 +179,8 @@ theorem trySynth_correct {n m : Nat} {tbl : SynthTable} {w : Win} {repl : List G
     (hwf : ∀ g ∈ w.members, g.Wf)
     (h : trySynth tbl w = some repl) :
     Equivalent n m repl w.members ∧ (∀ g ∈ repl, g.Wf) ∧
-      (∀ g ∈ repl, ∀ q ∈ g.qubitsOf, q ∈ w.support) := by
+      (∀ g ∈ repl, ∀ q ∈ g.qubitsOf, q ∈ w.support) ∧
+      (∀ g ∈ repl, g.isUnitary = true) := by
   set S := w.support with hS
   set k := S.length with hk
   rw [trySynth] at h
@@ -244,7 +245,7 @@ theorem trySynth_correct {n m : Nat} {tbl : SynthTable} {w : Win} {repl : List G
           have h2 : M.interp = unitary k (localizeGates S w.members) := matrixOf_sound hwfl hM
           have h3 : (N.normalize).interp = ω ^ p • (M.normalize).interp := phaseMatch_sound hp
           rw [interp_normalize, interp_normalize, h1, h2] at h3
-          refine ⟨?_, hreplwf, hreplsub⟩
+          refine ⟨?_, hreplwf, hreplsub, hreplu⟩
           exact equivalent_of_local_smul hnd hrange hsub hreplsub hmemu hreplu (ω ^ p)
             (omega_pow_unit p) (by rw [hlocal]; exact h3)
         · exact absurd h (by simp)
@@ -343,7 +344,7 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             simp only [Option.some.injEq, Prod.mk.injEq] at h
             obtain ⟨hr, hs, ht, -⟩ := h
             subst hr; subst hs; subst ht
-            obtain ⟨heq, hwfrepl, -⟩ :=
+            obtain ⟨heq, hwfrepl, -, -⟩ :=
               trySynth_correct (m := m) hok'.nodup hok'.range hok'.sub hok'.wf
                 (trySynthFiltered_eq hsynth)
             refine ⟨?_, hwfrepl, hok.wfsk, fun x hx => hwfr x (by simp [hx])⟩
@@ -477,6 +478,152 @@ theorem superOptGates_wf {n : Nat} (cfg : SuperOptConfig) (tbl : SynthTable) (gs
     (hwf : ∀ g ∈ gs, g.Wf) : ∀ g ∈ superOptGates cfg tbl n gs, g.Wf :=
   (superOptAux_correct (n := n) (m := 0) gs.length gs hwf).2
 
+/-! ## Operand ranges
+
+`WinOk` carries what the equivalence argument needs; the range argument needs less — in
+particular not `equiv` — so it gets its own invariant. The only gates superoptimization
+invents are the table's answer for a window, and `trySynth_correct` already says those live
+on the window's wires and are unitary. `canAnchor` and the scan's own check keep the window's
+wires below `n`, and a unitary gate has no classical operand, so a replacement is in range
+without any assumption about what the table contains. -/
+
+/-- The part of `WinOk` the range argument uses, plus the skipped gates' ranges. -/
+structure WinCore (n m : Nat) (w : Win) : Prop where
+  /-- The support lists distinct wires. -/
+  nodup : w.support.Nodup
+  /-- All of them are wires of the register. -/
+  range : ∀ q ∈ w.support, q < n
+  /-- Members live on the support. -/
+  sub : ∀ g ∈ w.members, ∀ q ∈ g.qubitsOf, q ∈ w.support
+  /-- Members are well-formed. -/
+  wf : ∀ g ∈ w.members, g.Wf
+  /-- Skipped gates are in range — they came from the circuit. -/
+  skRange : ∀ g ∈ w.skipped, g.InRange n m
+
+theorem tryWindow_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
+    ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (cnt : Nat)
+      (repl sk tail : List Gate) (k : Nat), WinCore n m w →
+      (∀ g ∈ rest, g.InRange n m) →
+      tryWindow cfg tbl n fm w cnt rest = some (repl, sk, tail, k) →
+      (∀ g ∈ repl, g.InRange n m) ∧ (∀ g ∈ sk, g.InRange n m) ∧
+        (∀ g ∈ tail, g.InRange n m) := by
+  intro rest
+  induction rest with
+  | nil => intro fm w cnt repl sk tail k _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
+  | cons g rest ih =>
+      intro fm w cnt repl sk tail k hok hin h
+      rw [tryWindow] at h
+      split at h
+      · split at h
+        · rename_i hchecks
+          simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, Bool.not_eq_true',
+            List.any_eq_false] at hchecks
+          obtain ⟨⟨⟨⟨⟨-, hrangeg⟩, hwfg⟩, -⟩, -⟩, -⟩ := hchecks
+          set sup := widen w.support g.qubitsOf with hsup
+          have hok' : WinCore n m ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ := by
+            refine ⟨nodup_widen _ _ hok.nodup, ?_, ?_, ?_, hok.skRange⟩
+            · intro q hq
+              rcases mem_widen _ _ hq with hq' | hq'
+              · exact hok.range q hq'
+              · exact hrangeg q hq'
+            · intro x hx q hq
+              rcases List.mem_append.1 hx with hx | hx
+              · exact subset_widen _ _ (hok.sub x hx q hq)
+              · rw [List.mem_singleton.1 hx] at hq
+                exact mem_widen_of_mem _ _ hq
+            · intro x hx
+              rcases List.mem_append.1 hx with hx | hx
+              · exact hok.wf x hx
+              · rw [List.mem_singleton.1 hx]; exact hwfg
+          split at h
+          · rename_i repl₀ hsynth
+            simp only [Option.some.injEq, Prod.mk.injEq] at h
+            obtain ⟨hr, hs, ht, -⟩ := h
+            subst hr; subst hs; subst ht
+            obtain ⟨-, -, hsub', hu'⟩ :=
+              trySynth_correct (n := n) (m := m) hok'.nodup hok'.range hok'.sub hok'.wf
+                (trySynthFiltered_eq hsynth)
+            refine ⟨fun x hx => ⟨fun q hq => hok'.range q (hsub' x hx q hq), fun b hb => ?_⟩,
+              hok.skRange, fun x hx => hin x (by simp [hx])⟩
+            rw [Gate.cbitsOf_eq_nil_of_isUnitary (hu' x hx)] at hb
+            exact absurd hb (by simp)
+          · exact ih _ _ _ repl sk tail k hok' (fun x hx => hin x (by simp [hx])) h
+        · exact absurd h (by simp)
+      · rename_i htouch
+        have hok' : WinCore n m ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ := by
+          refine ⟨hok.nodup, hok.range, hok.sub, hok.wf, ?_⟩
+          simp only [Win.skipped_skip]
+          intro x hx
+          rcases List.mem_append.1 hx with hx | hx
+          · exact hok.skRange x hx
+          · rw [List.mem_singleton.1 hx]; exact hin g (by simp)
+        exact ih _ _ _ repl sk tail k hok' (fun x hx => hin x (by simp [hx])) h
+
+theorem sweep_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
+    (arr : Array Gate) (tracks : Array (Array Nat)) :
+    ∀ (fuel at_ : Nat) (gs : List Gate), (∀ g ∈ gs, g.InRange n m) →
+      ∀ g ∈ sweepOnce cfg tbl n arr tracks fuel at_ gs, g.InRange n m := by
+  intro fuel
+  induction fuel with
+  | zero => intro at_ gs h; exact h
+  | succ fuel ih =>
+      intro at_ gs hin
+      cases gs with
+      | nil => simp [sweepOnce]
+      | cons g rest =>
+          have keep : ∀ j : Nat, ∀ x ∈ g :: sweepOnce cfg tbl n arr tracks fuel j rest,
+              x.InRange n m := by
+            intro j x hx
+            rcases List.mem_cons.1 hx with rfl | hx
+            · exact hin x (by simp)
+            · exact ih j rest (fun y hy => hin y (by simp [hy])) x hx
+          rw [sweepOnce]
+          split
+          · rename_i hanchor
+            simp only [canAnchor, Bool.and_eq_true, decide_eq_true_eq,
+              List.all_eq_true] at hanchor
+            obtain ⟨⟨⟨⟨-, -⟩, hrangeg⟩, hwfg⟩, -⟩ := hanchor
+            split
+            · rename_i repl sk tail consumed hw
+              have hok : WinCore n m (Win.start g) := by
+                refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, by simp⟩
+                · intro x hx q hq
+                  rw [List.mem_singleton.1 hx] at hq
+                  exact hq
+                · intro x hx; rw [List.mem_singleton.1 hx]; exact hwfg
+              obtain ⟨h1, h2, h3⟩ :=
+                tryWindow_inRange rest _ (Win.start g) 0 repl sk tail consumed hok
+                  (fun x hx => hin x (by simp [hx])) hw
+              intro x hx
+              rcases List.mem_append.1 hx with hx | hx
+              · rcases List.mem_append.1 hx with hx | hx
+                · exact h1 x hx
+                · exact h2 x hx
+              · exact ih (at_ + 1 + consumed) tail h3 x hx
+            · exact keep _
+          · exact keep _
+
+theorem superOptAux_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
+    ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.InRange n m) →
+      ∀ g ∈ superOptAux cfg tbl n fuel gs, g.InRange n m := by
+  intro fuel
+  induction fuel with
+  | zero => intro gs h; exact h
+  | succ fuel ih =>
+      intro gs hin
+      have h' := sweep_inRange (n := n) (m := m) (cfg := cfg) (tbl := tbl)
+        gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hin
+      rw [superOptAux]
+      split
+      · exact ih _ h'
+      · exact h'
+
+/-- **Superoptimization keeps every operand in range.** -/
+theorem superOptGates_inRange {n m : Nat} (cfg : SuperOptConfig) (tbl : SynthTable)
+    (gs : List Gate) (hin : ∀ g ∈ gs, g.InRange n m) :
+    ∀ g ∈ superOptGates cfg tbl n gs, g.InRange n m :=
+  superOptAux_inRange gs.length gs hin
+
 /-- `SuperOpt`, as a `Pass`: the rewrite is decided by exact matrix comparison, so the proof
 obligation is discharged by the check the pass already runs. -/
 def SuperOpt (cfg : SuperOptConfig) (tbl : SynthTable) : Pass where
@@ -485,6 +632,8 @@ def SuperOpt (cfg : SuperOptConfig) (tbl : SynthTable) : Pass where
   numQubits_run _ := rfl
   numCbits_run _ := rfl
   wf_run c hc := superOptGates_wf cfg tbl c.gates hc
+  wellFormed_run c hc := superOptGates_inRange cfg tbl c.gates hc
+  flagsOk_run c _ := Circuit.flagsOk_withGates _ _
   correct c hc := superOptGates_correct cfg tbl c.gates hc
 
 @[simp] theorem SuperOpt_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :

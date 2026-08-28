@@ -74,8 +74,28 @@ def roundTrip (c : Circuit) : Bool :=
   | .error _ => false
   | .ok c' => c'.gates == c.gates && c'.numQubits == c.numQubits && c'.numCbits == c.numCbits
 
-#guard roundTrip (Circuit.ofGates 2 1
-  [.h 0, .cnot 0 1, .t 1, .ccx 0 1 1, .cz 0 1, .measure 0 0, .reset 1])
+#guard roundTrip (Circuit.ofGates 3 1
+  [.h 0, .cnot 0 1, .t 1, .ccx 0 1 2, .cz 0 1, .measure 0 0, .reset 1])
+
+/-! ## Validation
+
+`cx q[0],q[0]` parses but is not a circuit any pass may be handed: `Pass.correct` assumes
+`Circuit.Wf`, and without it `CancelGates` would delete the pair as self-inverse — which
+`cnot q q` is not. The front end rejects it rather than passing it on. -/
+
+/-- Whether the parser accepts a source. -/
+def parseAccepts (src : String) : Bool := (parse src).toOption.isSome
+
+#guard !parseAccepts "OPENQASM 2.0;\nqreg q[1];\ncx q[0],q[0];\n"
+#guard !parseAccepts "OPENQASM 2.0;\nqreg q[2];\ncz q[1],q[1];\n"
+#guard !parseAccepts "OPENQASM 2.0;\nqreg q[3];\nccx q[0],q[1],q[1];\n"
+#guard !parseAccepts "OPENQASM 2.0;\nqreg q[3];\nccz q[2],q[2],q[0];\n"
+#guard parseAccepts "OPENQASM 2.0;\nqreg q[2];\ncx q[0],q[1];\n"
+
+-- The offending gate is named in the message.
+#guard (match parse "OPENQASM 2.0;\nqreg q[1];\ncx q[0],q[0];\n" with
+        | .error e => (e.splitOn "distinct").length == 2
+        | .ok _ => false)
 #guard roundTrip (Circuit.ofGates 3 0 [.x 0, .z 1, .s 2, .sdg 0, .tdg 1, .ccz 0 1 2])
 #guard serialize (Circuit.ofGates 1 0 [.h 0]) ==
   "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\nh q[0];\n"

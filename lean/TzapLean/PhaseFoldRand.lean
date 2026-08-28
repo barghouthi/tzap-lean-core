@@ -114,6 +114,123 @@ theorem phaseFoldGates_wf {k n : Nat} (wdraws : Nat → Tag) {gs : List Gate}
     (h : ∀ g ∈ gs, g.Wf) : ∀ g ∈ phaseFoldGates k wdraws n gs, g.Wf :=
   emitAll_wf (foldFrom_wf (k := k) wdraws _ gs.length gs le_rfl 0 _ h)
 
+/-! ## Operand ranges are preserved
+
+`Wf` above is about *distinctness*; this is about *range*, and together they are what
+`Pass.wf_run` and `Pass.wellFormed_run` ask for. The two arguments have the same shape
+because the pass only ever invents one kind of gate: a diagonal rotation on a wire the gate
+it replaced already used. -/
+
+theorem diagRun_shape (j : Nat) (q : Qubit) :
+    ∀ g ∈ diagRun j q, g.qubitsOf = [q] ∧ g.cbitsOf = [] := by
+  match j with
+  | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 =>
+      intro g hg; fin_cases hg <;> exact ⟨rfl, rfl⟩
+  | (i + 8) => intro g hg; simp [diagRun] at hg
+
+theorem emitRotation_shape (q : Qubit) (a : ℚ) :
+    ∀ g ∈ emitRotation q a, g.qubitsOf = [q] ∧ g.cbitsOf = [] := by
+  by_cases h0 : BlockState.angleMod a = 0
+  · rw [emitRotation_eq_nil h0]; simp
+  · cases hcl : classifyQuarterPi (BlockState.angleMod a) with
+    | some j => rw [emitRotation_eq_diagRun h0 hcl]; exact diagRun_shape j q
+    | none =>
+        rw [emitRotation_eq_rz h0 hcl]
+        intro g hg
+        rw [List.mem_singleton.1 hg]
+        exact ⟨rfl, rfl⟩
+
+/-- A gate the folder can re-emit lives on one of its own wires. -/
+theorem rotAngle_mem {g : Gate} {a : ℚ} {q : Qubit} (h : rotAngle g = some (a, q)) :
+    q ∈ g.qubitsOf := by
+  cases g <;> simp_all [rotAngle, Gate.qubitsOf]
+
+theorem emitRotation_inRange {n m : Nat} {g : Gate} {q : Qubit} {a : ℚ}
+    (hg : g.InRange n m) (hq : q ∈ g.qubitsOf) : ∀ g' ∈ emitRotation q a, g'.InRange n m := by
+  intro g' hg'
+  obtain ⟨h₁, h₂⟩ := emitRotation_shape q a g' hg'
+  exact Gate.InRange.onWire hg hq h₁ h₂
+
+theorem emitAll_inRange {n m : Nat} {gs : List Gate} (h : ∀ g ∈ gs, g.InRange n m) :
+    ∀ g ∈ emitAll gs, g.InRange n m := by
+  induction gs with
+  | nil => intro g hg; simp [emitAll] at hg
+  | cons x gs ih =>
+      intro g hg
+      rw [emitAll] at hg
+      rcases List.mem_append.1 hg with hg | hg
+      · cases hrot : rotAngle x with
+        | some p =>
+            obtain ⟨a, q⟩ := p
+            rw [hrot] at hg
+            exact emitRotation_inRange (h x (by simp)) (rotAngle_mem hrot) g hg
+        | none =>
+            rw [hrot] at hg
+            rw [List.mem_singleton.1 hg]
+            exact h x (by simp)
+      · exact ih (fun y hy => h y (by simp [hy])) g hg
+
+theorem foldFrom_inRange {k n m : Nat} (wdraws : Nat → Tag) (targets : Array Bool) :
+    ∀ (N : Nat) (gs : List Gate), gs.length ≤ N → ∀ (at_ : Nat) (ts : TState k),
+      (∀ g ∈ gs, g.InRange n m) →
+        ∀ g ∈ foldFrom wdraws targets ts at_ gs, g.InRange n m := by
+  intro N
+  induction N with
+  | zero =>
+      intro gs hgs at_ ts _ g hg
+      rw [List.eq_nil_of_length_eq_zero (Nat.le_zero.1 hgs)] at hg
+      simp at hg
+  | succ N ih =>
+      intro gs hlen at_ ts hin
+      cases gs with
+      | nil => intro g hg; simp at hg
+      | cons x gs =>
+          have hlenN : gs.length ≤ N := by
+            simp only [List.length_cons] at hlen
+            omega
+          have keep : foldFrom wdraws targets ts at_ (x :: gs)
+                = x :: foldFrom wdraws targets (ts.step wdraws x) (at_ + 1) gs →
+              ∀ g ∈ foldFrom wdraws targets ts at_ (x :: gs), g.InRange n m := by
+            intro heq g hg
+            rw [heq] at hg
+            rcases List.mem_cons.1 hg with rfl | hg
+            · exact hin g (by simp)
+            · exact ih gs hlenN _ _ (fun y hy => hin y (by simp [hy])) g hg
+          cases hrot : rotAngle x with
+          | none => exact keep (foldFrom_cons_none hrot)
+          | some p =>
+              obtain ⟨θ, q⟩ := p
+              by_cases hsel : targets[at_]?.getD true = true
+              case neg => exact keep (foldFrom_cons_keep hrot (Or.inl (by simpa using hsel)))
+              case pos =>
+              cases hm : mergeInto wdraws ts (ts.tagOf q) θ gs with
+              | none => exact keep (foldFrom_cons_keep hrot (Or.inr hm))
+              | some gs' =>
+                  obtain ⟨M, rest, g', φ, q', sign, hgseq, hgs'eq, -, hrot', -⟩ :=
+                    mergeInto_spec wdraws (ts.tagOf q) θ gs gs' ts hm
+                  have hlen'' : gs'.length ≤ N := by
+                    have := mergeInto_length wdraws (ts.tagOf q) θ gs gs' ts hm
+                    omega
+                  have hin' : ∀ y ∈ gs', y.InRange n m := by
+                    intro y hy
+                    rw [hgs'eq] at hy
+                    rcases List.mem_append.1 hy with hy | hy
+                    · exact hin y (by rw [hgseq]; simp [hy])
+                    · rcases List.mem_cons.1 hy with rfl | hy
+                      · -- the merged rotation sits on the wire of the gate it replaced
+                        exact Gate.InRange.onWire
+                          (hin g' (by rw [hgseq]; simp)) (rotAngle_mem hrot') rfl rfl
+                      · exact hin y (by rw [hgseq]; simp [hy])
+                  intro g hg
+                  rw [foldFrom_cons_merge hrot hsel hm] at hg
+                  exact ih gs' hlen'' (at_ + 1) ts hin' g hg
+
+/-- **Phase folding keeps every operand in range.** -/
+theorem phaseFoldGates_inRange {k n' n m : Nat} (wdraws : Nat → Tag) {gs : List Gate}
+    (h : ∀ g ∈ gs, g.InRange n m) :
+    ∀ g ∈ phaseFoldGates k wdraws n' gs, g.InRange n m :=
+  emitAll_inRange (foldFrom_inRange (k := k) wdraws _ gs.length gs le_rfl 0 _ h)
+
 /-! ## The compared parities are bounded -/
 
 theorem fresh_steps_le (st : AState) (gs : List Gate) :
@@ -192,6 +309,8 @@ def PhaseFoldRand (k : Nat) : RandPass where
   numQubits_run _ _ := rfl
   numCbits_run _ _ := rfl
   wf_run c s hc := phaseFoldGates_wf (wordsOf k (liftSample s)) hc
+  wellFormed_run c s hc := phaseFoldGates_inRange (wordsOf k (liftSample s)) hc
+  flagsOk_run c _ _ := Circuit.flagsOk_withGates _ _
   correct c hc := by
     refine le_trans ((PMF.uniformOfFintype (Sample (varBound c) k)).toOuterMeasure_mono ?_)
       (collides_probability_le (relevantForms c) (bounded_relevantForms c))

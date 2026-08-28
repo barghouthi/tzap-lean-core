@@ -85,6 +85,46 @@ def cbitsOf : Gate → List CBit
   | .measure _ c => [c]
   | _ => []
 
+/-- A gate whose multi-qubit operands are pairwise distinct.
+
+`cnot q q` is not a gate QASM can express and the Rust implementation never builds one;
+semantically it would be the map `b ↦ b[q := 0]`, which is idempotent rather than
+self-inverse, so cancelling a pair of them would be unsound. It is the precondition of
+`Pass.correct`, and `Qasm.validate` is what establishes it. -/
+def Wf : Gate → Prop
+  | .cnot c tgt | .cz c tgt => c ≠ tgt
+  | .ccx c₁ c₂ tgt | .ccz c₁ c₂ tgt => c₁ ≠ c₂ ∧ c₁ ≠ tgt ∧ c₂ ≠ tgt
+  | _ => True
+
+instance (g : Gate) : Decidable g.Wf := by
+  cases g <;> unfold Gate.Wf <;> infer_instance
+
+/-- A gate whose operands are in range for an `n`-qubit, `m`-cbit circuit: every qubit
+operand below `n`, every classical bit below `m`. `Circuit.WellFormed` is this, gatewise. -/
+structure InRange (n m : Nat) (g : Gate) : Prop where
+  /-- Every qubit operand names a wire of the register. -/
+  qubits : ∀ q ∈ g.qubitsOf, q < n
+  /-- Every classical operand names a declared classical bit. -/
+  cbits : ∀ b ∈ g.cbitsOf, b < m
+
+instance (n m : Nat) (g : Gate) : Decidable (g.InRange n m) :=
+  decidable_of_iff ((∀ q ∈ g.qubitsOf, q < n) ∧ (∀ b ∈ g.cbitsOf, b < m))
+    ⟨fun h => ⟨h.1, h.2⟩, fun h => ⟨h.1, h.2⟩⟩
+
+/-- A gate on one wire is in range as soon as that wire is. -/
+theorem inRange_of_qubitsOf_eq {n m : Nat} {g : Gate} {q : Qubit} (hq : q < n)
+    (hg : g.qubitsOf = [q]) (hc : g.cbitsOf = []) : g.InRange n m := by
+  refine ⟨fun r hr => ?_, fun b hb => ?_⟩
+  · rw [hg, List.mem_singleton] at hr; exact hr ▸ hq
+  · rw [hc] at hb; exact absurd hb (by simp)
+
+/-- **The one way the passes invent a gate**: on a wire some gate they were given already
+uses, with no classical operand. Such a gate is in range whenever that one was, which is
+what carries `Circuit.WellFormed` through a rewrite. -/
+theorem InRange.onWire {n m : Nat} {g g' : Gate} {q : Qubit} (hg : g.InRange n m)
+    (hq : q ∈ g.qubitsOf) (h₁ : g'.qubitsOf = [q]) (h₂ : g'.cbitsOf = []) : g'.InRange n m :=
+  inRange_of_qubitsOf_eq (hg.1 q hq) h₁ h₂
+
 /-- The same gate with every qubit operand sent through `f`. Classical bits are
 untouched. Mirrors the Rust `Gate::map_qubits`. -/
 def mapQubits (f : Qubit → Qubit) : Gate → Gate
@@ -123,6 +163,11 @@ def isMeasurement : Gate → Bool
 def isUnitary (g : Gate) : Bool := !g.isMeasurement
 
 @[simp] theorem isUnitary_eq (g : Gate) : g.isUnitary = !g.isMeasurement := rfl
+
+/-- `measure` is the only gate with a classical operand, so a unitary gate has none. This is
+what makes a synthesized replacement in range for free: it can only miss on a qubit. -/
+theorem cbitsOf_eq_nil_of_isUnitary {g : Gate} (h : g.isUnitary = true) : g.cbitsOf = [] := by
+  cases g <;> simp_all [isUnitary, isMeasurement, cbitsOf]
 
 /-- One-line rendering, matching the Rust `Display` impl. -/
 def toString : Gate → String
@@ -197,9 +242,64 @@ def size (c : Circuit) : Nat := c.gates.length
 
 /-- Every gate operand is in range: qubits below `numQubits`, classical bits below
 `numCbits`. The Rust representation leaves this implicit; the semantics in
-`TzapLean/Semantics.lean` needs it only to relate out-of-range operands to real ones. -/
+`TzapLean/Semantics.lean` needs it only to relate out-of-range operands to real ones, but
+the QASM back end needs it to emit a register subscript it is allowed to emit. -/
 def WellFormed (c : Circuit) : Prop :=
-  ∀ g ∈ c.gates, (∀ q ∈ g.qubitsOf, q < c.numQubits) ∧ (∀ b ∈ g.cbitsOf, b < c.numCbits)
+  ∀ g ∈ c.gates, g.InRange c.numQubits c.numCbits
+
+instance (c : Circuit) : Decidable c.WellFormed := by unfold WellFormed; infer_instance
+
+/-- Every circuit the front end may hand a pass has well-formed gates. -/
+def Wf (c : Circuit) : Prop := ∀ g ∈ c.gates, g.Wf
+
+instance (c : Circuit) : Decidable c.Wf := by unfold Wf; infer_instance
+
+/-- The cached `has*` flags say what a scan of `gates` would say.
+
+Rust maintains these incrementally in `Circuit::apply` and its passes rebuild them when they
+rebuild the gate list; a pass that forgot to would leave a circuit whose metadata lies, and
+downstream passes skip work on the strength of that metadata. `Pass.flagsOk_run` makes
+rebuilding them an obligation rather than a convention. -/
+def FlagsOk (c : Circuit) : Prop :=
+  c.hasToffoli = c.gates.any Gate.isToffoli ∧
+  c.hasCcz = c.gates.any Gate.isCcz ∧
+  c.hasMeasurement = c.gates.any Gate.isMeasurement
+
+instance (c : Circuit) : Decidable c.FlagsOk := by unfold FlagsOk; infer_instance
+
+/-- Rebuild a circuit around a new gate list, recomputing the `has*` flags as the Rust passes
+do. Every pass that replaces the gate list goes through this, which is what makes
+`Pass.flagsOk_run` hold by construction. -/
+def withGates (c : Circuit) (gs : List Gate) : Circuit where
+  numQubits := c.numQubits
+  numCbits := c.numCbits
+  gates := gs
+  hasToffoli := gs.any Gate.isToffoli
+  hasCcz := gs.any Gate.isCcz
+  hasMeasurement := gs.any Gate.isMeasurement
+
+@[simp] theorem gates_withGates (c : Circuit) (gs : List Gate) : (c.withGates gs).gates = gs := rfl
+
+@[simp] theorem numQubits_withGates (c : Circuit) (gs : List Gate) :
+    (c.withGates gs).numQubits = c.numQubits := rfl
+
+@[simp] theorem numCbits_withGates (c : Circuit) (gs : List Gate) :
+    (c.withGates gs).numCbits = c.numCbits := rfl
+
+/-- A rebuilt circuit's flags are honest, whatever the gates. -/
+theorem flagsOk_withGates (c : Circuit) (gs : List Gate) : (c.withGates gs).FlagsOk :=
+  ⟨rfl, rfl, rfl⟩
+
+/-- A rebuilt circuit is well-formed exactly when its new gates are in range. -/
+theorem wellFormed_withGates {c : Circuit} {gs : List Gate}
+    (h : ∀ g ∈ gs, g.InRange c.numQubits c.numCbits) : (c.withGates gs).WellFormed := h
+
+/-- **The structural invariant the driver maintains.** Distinct operands (`Wf`, in
+`GateAlgebra`) is stated separately, because only it is a precondition of the semantic
+obligation; these two are about the output being a circuit one can print and re-parse. -/
+def Structural (c : Circuit) : Prop := c.WellFormed ∧ c.FlagsOk
+
+instance (c : Circuit) : Decidable c.Structural := by unfold Structural; infer_instance
 
 /-- Rendering, matching the Rust `Display` impl for `Circuit`. -/
 def toString (c : Circuit) : String :=
@@ -235,6 +335,10 @@ theorem flags_ofGates (n m : Nat) (gs : List Gate) :
     (ofGates n m gs).hasToffoli = gs.any Gate.isToffoli ∧
     (ofGates n m gs).hasCcz = gs.any Gate.isCcz ∧
     (ofGates n m gs).hasMeasurement = gs.any Gate.isMeasurement :=
+  ⟨rfl, rfl, rfl⟩
+
+/-- Circuits built the way the front end builds them have honest flags. -/
+theorem flagsOk_ofGates (n m : Nat) (gs : List Gate) : (ofGates n m gs).FlagsOk :=
   ⟨rfl, rfl, rfl⟩
 
 /-- Gate list of `ofGates`: the gates, in order. -/

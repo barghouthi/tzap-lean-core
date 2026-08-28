@@ -815,6 +815,100 @@ theorem analyzeGates_wf {qs : List Qubit} {gs : List Gate} {d : BlockState}
     (h : analyzeGates qs gs = some d) : ∀ g ∈ gs, g.Wf :=
   analyzeFold_wf qs gs _ d h
 
+/-! ## Operand ranges from the certificate
+
+The `Wf` argument above and this one both read off the same fact: `feedGate` returns `none`
+for anything it cannot place on the block's wires, so a gate list the analysis *accepts* has
+every operand in `ch.qubits` — and `Chunk.Ok` says those are wires of the register. That
+covers the synthesized replacement, which is the only gate list `CnotMin` invents. -/
+
+theorem rotAngle_shape {g : Gate} {θ : ℚ} {q : Qubit} (h : rotAngle g = some (θ, q)) :
+    g.qubitsOf = [q] ∧ g.cbitsOf = [] := by
+  cases g <;> simp_all [rotAngle, Gate.qubitsOf, Gate.cbitsOf]
+
+/-- A gate the block accepted lives on the block's wires and writes no classical bit. -/
+theorem feedGate_mem {qs : List Qubit} {st st' : BlockState} {g : Gate}
+    (h : feedGate qs st g = some st') : (∀ q ∈ g.qubitsOf, q ∈ qs) ∧ g.cbitsOf = [] := by
+  unfold feedGate at h
+  rcases hrot : rotAngle g with _ | ⟨θ, q⟩
+  · rw [hrot] at h
+    cases g with
+    | x q =>
+        simp only at h
+        rcases hidx : localIdx qs q with _ | i
+        · simp only [hidx] at h; simp at h
+        · refine ⟨fun r hr => ?_, rfl⟩
+          simp only [Gate.qubitsOf, List.mem_singleton] at hr
+          exact hr ▸ localIdx_mem hidx
+    | cnot c t =>
+        simp only at h
+        by_cases hct : (c == t) = true
+        · simp [hct] at h
+        · rw [if_neg (by simpa using hct)] at h
+          rcases hc : localIdx qs c with _ | ci <;> rcases ht : localIdx qs t with _ | ti <;>
+            simp only [hc, ht] at h
+          · simp at h
+          · simp at h
+          · simp at h
+          · refine ⟨fun r hr => ?_, rfl⟩
+            simp only [Gate.qubitsOf, List.mem_cons, List.mem_singleton,
+              List.not_mem_nil, or_false] at hr
+            rcases hr with rfl | rfl
+            · exact localIdx_mem hc
+            · exact localIdx_mem ht
+    | cz c t =>
+        simp only at h
+        by_cases hct : (c == t) = true
+        · simp [hct] at h
+        · rw [if_neg (by simpa using hct)] at h
+          rcases hc : localIdx qs c with _ | ci <;> rcases ht : localIdx qs t with _ | ti <;>
+            simp only [hc, ht] at h
+          · simp at h
+          · simp at h
+          · simp at h
+          · refine ⟨fun r hr => ?_, rfl⟩
+            simp only [Gate.qubitsOf, List.mem_cons, List.mem_singleton,
+              List.not_mem_nil, or_false] at hr
+            rcases hr with rfl | rfl
+            · exact localIdx_mem hc
+            · exact localIdx_mem ht
+    | _ => simp at h
+  · rw [hrot] at h
+    simp only at h
+    rcases hidx : localIdx qs q with _ | i
+    · simp only [hidx] at h; simp at h
+    · obtain ⟨hq, hc⟩ := rotAngle_shape hrot
+      refine ⟨fun r hr => ?_, hc⟩
+      rw [hq, List.mem_singleton] at hr
+      exact hr ▸ localIdx_mem hidx
+
+theorem feedGate_inRange {n m : Nat} {qs : List Qubit} (hqs : ∀ q ∈ qs, q < n)
+    {st st' : BlockState} {g : Gate} (h : feedGate qs st g = some st') : g.InRange n m := by
+  obtain ⟨hq, hc⟩ := feedGate_mem h
+  exact ⟨fun r hr => hqs r (hq r hr), fun b hb => absurd hb (by rw [hc]; simp)⟩
+
+theorem analyzeFold_inRange {n m : Nat} (qs : List Qubit) (hqs : ∀ q ∈ qs, q < n) :
+    ∀ (gs : List Gate) (st st' : BlockState),
+      gs.foldl (fun s g => s.bind fun s => feedGate qs s g) (some st) = some st' →
+      ∀ g ∈ gs, g.InRange n m := by
+  intro gs
+  induction gs with
+  | nil => intro st st' _ g hg; simp at hg
+  | cons g gs ih =>
+      intro st st' h g' hg'
+      simp only [List.foldl_cons, Option.bind_some] at h
+      rcases hfeed : feedGate qs st g with _ | st₁
+      · rw [hfeed, foldl_bind_none] at h; exact absurd h (by simp)
+      · rw [hfeed] at h
+        rcases List.mem_cons.mp hg' with rfl | hg'
+        · exact feedGate_inRange hqs hfeed
+        · exact ih st₁ st' h g' hg'
+
+theorem analyzeGates_inRange {n m : Nat} {qs : List Qubit} (hqs : ∀ q ∈ qs, q < n)
+    {gs : List Gate} {d : BlockState} (h : analyzeGates qs gs = some d) :
+    ∀ g ∈ gs, g.InRange n m :=
+  analyzeFold_inRange qs hqs gs _ d h
+
 /-! ## The chunk invariant -/
 
 /-- A chunk only ever holds wires the circuit has. -/
@@ -971,6 +1065,22 @@ theorem flush_wf (ch : Chunk) (horig : ∀ g ∈ ch.original, g.Wf) : ∀ g ∈ 
         · exact horig
       all_goals exact horig
 
+theorem flush_inRange {n m : Nat} (ch : Chunk) (hn : ch.numQubits = n) (hok : ch.Ok)
+    (horig : ∀ g ∈ ch.original, g.InRange n m) : ∀ g ∈ ch.flush, g.InRange n m := by
+  have hqs : ∀ q ∈ ch.qubits, q < n := fun q hq => hn ▸ hok q hq
+  unfold Chunk.flush
+  split
+  · simp
+  · split
+    · exact horig
+    · rename_i synth hsynth
+      split
+      · rename_i d₁ d₂ h₁ h₂
+        split
+        · exact analyzeGates_inRange hqs h₂
+        · exact horig
+      all_goals exact horig
+
 /-! ## Running the chunker -/
 
 theorem Chunk.reset_ok (ch : Chunk) : ch.reset.Ok := by
@@ -1054,6 +1164,38 @@ theorem feed_wf (ch : Chunk) (g : Gate) (horig : ∀ g' ∈ ch.original, g'.Wf) 
         · exact flush_wf ch horig g' h'
         · simp only [List.mem_singleton] at h'; exact h' ▸ hg
 
+theorem feed_inRange {n m : Nat} (ch : Chunk) (hn : ch.numQubits = n) (hok : ch.Ok) (g : Gate)
+    (horig : ∀ g' ∈ ch.original, g'.InRange n m) (hg : g.InRange n m) :
+    (∀ g' ∈ (ch.feed g).1, g'.InRange n m) ∧
+      (∀ g' ∈ (ch.feed g).2.original, g'.InRange n m) := by
+  unfold Chunk.feed
+  split
+  · rename_i res h
+    obtain ⟨out, ch'⟩ := res
+    obtain ⟨rfl, -, horig'⟩ := Chunk.feedTry_basic h
+    refine ⟨by simp, ?_⟩
+    rw [horig']
+    intro g' hg'
+    rcases List.mem_append.mp hg' with h' | h'
+    · exact horig g' h'
+    · simp only [List.mem_singleton] at h'
+      exact h' ▸ hg
+  · split
+    · exact ⟨by simpa using hg, horig⟩
+    · split
+      · rename_i out ch' hfresh
+        obtain ⟨rfl, -, horig'⟩ := Chunk.feedTry_basic hfresh
+        refine ⟨by simpa using flush_inRange ch hn hok horig, ?_⟩
+        rw [horig', Chunk.reset_original]
+        intro g' hg'
+        simp only [List.nil_append, List.mem_singleton] at hg'
+        exact hg' ▸ hg
+      · refine ⟨?_, by rw [Chunk.reset_original]; simp⟩
+        intro g' hg'
+        rcases List.mem_append.mp hg' with h' | h'
+        · exact flush_inRange ch hn hok horig g' h'
+        · simp only [List.mem_singleton] at h'; exact h' ▸ hg
+
 /-! ## The whole pass -/
 
 theorem runGates_spec {n m : Nat} : ∀ (gs : List Gate) (ch : Chunk),
@@ -1099,6 +1241,75 @@ theorem runGates_spec {n m : Nat} : ∀ (gs : List Gate) (ch : Chunk),
         · exact hwf₁ g' h'
         · exact hwf₃ g' h'
 
+theorem runGates_inRange {n m : Nat} : ∀ (gs : List Gate) (ch : Chunk),
+    ch.numQubits = n → ch.Ok → (∀ g ∈ ch.original, g.InRange n m) →
+    (∀ g ∈ gs, g.InRange n m) →
+    (∀ g ∈ (runGates ch gs).1, g.InRange n m) ∧
+      (∀ g ∈ (runGates ch gs).2.original, g.InRange n m) := by
+  intro gs
+  induction gs with
+  | nil => intro ch _ _ hin _; exact ⟨by simp [runGates], by simpa [runGates] using hin⟩
+  | cons g gs ih =>
+      intro ch hn hok hin hgs
+      have hg : g.InRange n m := hgs g (by simp)
+      have hgs' : ∀ g' ∈ gs, g'.InRange n m := fun g' hg' => hgs g' (by simp [hg'])
+      obtain ⟨hnq, hok'⟩ := feed_ok ch hok g
+      obtain ⟨hin₁, hin₂⟩ := feed_inRange (m := m) ch hn hok g hin hg
+      obtain ⟨hin₃, hin₄⟩ := ih (ch.feed g).2 (by rw [hnq, hn]) hok' hin₂ hgs'
+      rcases hfe : ch.feed g with ⟨e, ch'⟩
+      rcases hru : runGates ch' gs with ⟨rest, ch''⟩
+      rw [hfe] at hin₁ hin₂
+      rw [hfe, hru] at hin₃ hin₄
+      simp only at hin₁ hin₂ hin₃ hin₄
+      have hrun : runGates ch (g :: gs) = (e ++ rest, ch'') := by
+        rw [runGates, hfe]
+        dsimp only
+        rw [hru]
+      rw [hrun]
+      refine ⟨?_, hin₄⟩
+      intro g' hg'
+      rcases List.mem_append.mp hg' with h' | h'
+      · exact hin₁ g' h'
+      · exact hin₃ g' h'
+
+/-- The chunker's bookkeeping alone: the wire count and `Chunk.Ok` survive a run, with no
+assumption about the gates. `runGates_spec` proves this too, but only alongside the
+equivalence, which needs hypotheses the range argument has no reason to carry. -/
+theorem runGates_ok : ∀ (gs : List Gate) (ch : Chunk), ch.Ok →
+    (runGates ch gs).2.numQubits = ch.numQubits ∧ (runGates ch gs).2.Ok := by
+  intro gs
+  induction gs with
+  | nil => intro ch hok; exact ⟨rfl, hok⟩
+  | cons g gs ih =>
+      intro ch hok
+      obtain ⟨hnq, hok'⟩ := feed_ok ch hok g
+      obtain ⟨hnq', hok''⟩ := ih (ch.feed g).2 hok'
+      rcases hfe : ch.feed g with ⟨e, ch'⟩
+      rcases hru : runGates ch' gs with ⟨rest, ch''⟩
+      rw [hfe] at hnq hok'
+      rw [hfe, hru] at hnq' hok''
+      simp only at hnq hok' hnq' hok''
+      have hrun : runGates ch (g :: gs) = (e ++ rest, ch'') := by
+        rw [runGates, hfe]
+        dsimp only
+        rw [hru]
+      rw [hrun]
+      exact ⟨hnq'.trans hnq, hok''⟩
+
+/-- **`CnotMin` keeps every operand in range.** -/
+theorem cnotMinGates_inRange {n m : Nat} (maxQ maxT : Nat) (gs : List Gate)
+    (hin : ∀ g ∈ gs, g.InRange n m) :
+    ∀ g ∈ cnotMinGates n maxQ maxT gs, g.InRange n m := by
+  have hok : (Chunk.empty n maxQ maxT).Ok := by intro q hq; simp [Chunk.empty] at hq
+  obtain ⟨hnq, hok'⟩ := runGates_ok gs (Chunk.empty n maxQ maxT) hok
+  obtain ⟨hin₁, hin₂⟩ :=
+    runGates_inRange (m := m) gs (Chunk.empty n maxQ maxT) rfl hok (by simp [Chunk.empty]) hin
+  intro g hg
+  simp only [cnotMinGates] at hg
+  rcases List.mem_append.mp hg with h' | h'
+  · exact hin₁ g h'
+  · exact flush_inRange _ (by rw [hnq]) hok' hin₂ g h'
+
 /-- **`CnotMin` preserves the circuit.** -/
 theorem cnotMinGates_correct {n m : Nat} (maxQ maxT : Nat) (gs : List Gate)
     (hwf : ∀ g ∈ gs, g.Wf) : Equivalent n m (cnotMinGates n maxQ maxT gs) gs := by
@@ -1131,6 +1342,8 @@ def CnotMin : Pass where
   numQubits_run _ := rfl
   numCbits_run _ := rfl
   wf_run c hc := cnotMinGates_wf _ _ c.gates hc
+  wellFormed_run c hc := cnotMinGates_inRange _ _ c.gates hc
+  flagsOk_run c _ := Circuit.flagsOk_withGates _ _
   correct c hc := cnotMinGates_correct _ _ c.gates hc
 
 end
