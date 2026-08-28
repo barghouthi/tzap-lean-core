@@ -141,11 +141,23 @@ Both directions of that are now in `SuperOptTests`.
 One difference remains, and it is the greedy schedule. Rust keeps every live window open at
 once, sorts the candidates a gate completes by anchor age, and lets the first one with a
 shorter replacement claim its gates (`RewriteSet`, `windows_by_qubit`); this port grows one
-window at a time from the earliest anchor, commits its first hit, and continues past it. For
-overlapping candidates the two can pick different locally optimal rewrites, so the final gate
-counts can differ in either direction. Closing that means the simultaneous-window scan, and
-with it a proof that a *set* of disjoint rewrites composes rather than one rewrite at a time —
-a redesign of `sweepOnce` and everything proved about it, not a local change.
+window at a time from the earliest anchor, commits its first hit, and continues past it. The
+two therefore pick different rewrites whenever candidates overlap — Rust selects the window
+that *completes* earliest, this one the window that *starts* earliest.
+
+Measured, on the `feynman` set at `--passes CnotMin,CancelGates,SuperOpt --fixpoint` (the
+deterministic pipeline, so the comparison is the scan and nothing else), the two agree
+everywhere checked except `adder_8`, where Rust reaches 825 gates and this reaches 832 — 0.8%.
+At `-O3` the picture is mixed rather than one-sided, because phase folding differs too: of ten
+circuits, seven are identical, this port is *ahead* on `barenco_tof_5` (126 against 128) and
+`qcla_com_7` (309 against 313), and behind on `adder_8` (688 against 677). Dropping phase
+folding shows both of those wins to be its doing, not the scan's.
+
+Closing the schedule difference means the simultaneous-window scan, and with it a theorem this
+development does not have: that a *set* of disjoint rewrites, each spliced in at its own
+anchor, composes. One rewrite at a time is what `sweepOnce` proves, and the batch version is a
+permutation argument over the whole gate list rather than a local one — a redesign of the
+sweep and everything proved about it.
 
 The per-qubit index is the other place this shows. `anchorMayFire` replays a window's growth
 through the index to decide whether the verified scan is worth running, and it has no cheap
