@@ -485,6 +485,21 @@ def SynthTable.hasShorter (tbl : SynthTable) (k : Nat) (M : FlatMat) (len : Nat)
       | none => false
       | some node => (w.circuitOf node).length < len
 
+/-- Look a unitary up from the flat matrix the scan carries, rather than from an `ExactMat`.
+
+The same lookup as `synthesize`, on the representation the search actually holds — the scan
+never builds an `ExactMat`, because the checker that vets its answer does that once per
+*selected* rewrite instead of once per window examined. Unverified, like every other part of
+the search. -/
+def SynthTable.synthesizeFlat (tbl : SynthTable) (k : Nat) (M : FlatMat) : Option (List Gate) :=
+  match tbl.widths[k]? with
+  | none => none
+  | some w =>
+      let N := M.normalize
+      match w.keys.get? (fingerprintFlat N.den N.data) with
+      | none => none
+      | some node => some ((w.circuitOf node).map LibGate.toGate)
+
 /-- Look a unitary up. A hit is the shortest circuit the enumeration found for it; the
 caller still re-verifies before rewriting. -/
 def SynthTable.synthesize (tbl : SynthTable) (k : Nat) (M : ExactMat k) : Option (List Gate) :=

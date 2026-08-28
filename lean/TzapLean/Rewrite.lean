@@ -231,10 +231,11 @@ decreasing_by
   · simp
   · exact Nat.lt_succ_of_le (unclaimed_length_le w rest)
 
-/-- Every gate of the result is either one of the input's or one a replacement supplied. -/
+/-- Every gate of the result is either one of the input's or one supplied by a replacement
+that actually claims something. -/
 theorem mem_applyAll (repl : Nat → List Gate) :
     ∀ (xs : List Tagged) (g : Gate), g ∈ applyAll repl xs →
-      g ∈ untag xs ∨ ∃ w, g ∈ repl w := by
+      g ∈ untag xs ∨ ∃ w, (∃ p ∈ xs, p.2 = some w) ∧ g ∈ repl w := by
   intro xs
   induction xs using applyAll.induct with
   | case1 => intro g hg; rw [applyAll] at hg; exact absurd hg (by simp)
@@ -243,20 +244,22 @@ theorem mem_applyAll (repl : Nat → List Gate) :
       rw [applyAll] at hg
       rcases List.mem_cons.1 hg with rfl | hg
       · exact Or.inl (by simp)
-      · rcases ih g hg with h | h
+      · rcases ih g hg with h | ⟨w, hw, h⟩
         · exact Or.inl (by simp only [untag_cons, List.mem_cons]; exact Or.inr h)
-        · exact Or.inr h
+        · exact Or.inr ⟨w, ⟨hw.choose, List.mem_cons_of_mem _ hw.choose_spec.1,
+            hw.choose_spec.2⟩, h⟩
   | case3 x w rest ih =>
       intro g hg
       rw [applyAll] at hg
       rcases List.mem_append.1 hg with h | h
-      · exact Or.inr ⟨w, h⟩
-      · rcases ih g h with h' | h'
+      · exact Or.inr ⟨w, ⟨_, List.mem_cons_self, rfl⟩, h⟩
+      · rcases ih g h with h' | ⟨v, hv, h'⟩
         · refine Or.inl ?_
           simp only [untag, List.mem_map] at h' ⊢
           obtain ⟨q, hq, rfl⟩ := h'
           exact ⟨q, List.mem_cons_of_mem _ (mem_unclaimed hq), rfl⟩
-        · exact Or.inr h'
+        · exact Or.inr ⟨v, ⟨hv.choose, List.mem_cons_of_mem _ (mem_unclaimed hv.choose_spec.1),
+            hv.choose_spec.2⟩, h'⟩
 
 /-- **A set of rewrites, spliced in at once, preserves the circuit.**
 
@@ -307,12 +310,13 @@ theorem applyAll_correct {n m : Nat} (supp : Nat → List Qubit) (repl : Nat →
 /-- Any property of gates that the input and every replacement have, the result has: it is
 built from nothing else. Both halves of the structural invariant go through this. -/
 theorem applyAll_pred {P : Gate → Prop} (repl : Nat → List Gate) (xs : List Tagged)
-    (hin : ∀ g ∈ untag xs, P g) (hr : ∀ w, ∀ g ∈ repl w, P g) :
+    (hin : ∀ g ∈ untag xs, P g)
+    (hr : ∀ w, (∃ p ∈ xs, p.2 = some w) → ∀ g ∈ repl w, P g) :
     ∀ g ∈ applyAll repl xs, P g := by
   intro g hg
-  rcases mem_applyAll repl xs g hg with h | ⟨w, h⟩
+  rcases mem_applyAll repl xs g hg with h | ⟨w, hw, h⟩
   · exact hin g h
-  · exact hr w g h
+  · exact hr w hw g h
 
 /-! ## Deciding the two conditions
 
@@ -419,5 +423,86 @@ theorem onSuppB_sound {supp : Nat → List Qubit} {xs : List Tagged}
   rw [hw] at this
   simp only [Bool.and_eq_true, List.all_eq_true] at this
   exact ⟨fun q hq => List.mem_of_elem_eq_true (this.1 q hq), this.2⟩
+
+/-! ## Dropping the rewrites that do not check out
+
+A proposal is vetted one rewrite at a time: those that fail are untagged, and the rest still
+stand. Untagging only ever *removes* obligations, so neither `Sep` nor `OnSupp` has to be
+rechecked because of it. -/
+
+/-- Keep only the rewrites `keep` accepts. -/
+def vettedBy (keep : Nat → Bool) (xs : List Tagged) : List Tagged :=
+  xs.map fun p =>
+    match p.2 with
+    | none => p
+    | some w => if keep w then p else (p.1, none)
+
+@[simp] theorem vettedBy_nil (keep : Nat → Bool) : vettedBy keep [] = [] := rfl
+
+theorem vettedBy_cons_none (keep : Nat → Bool) (g : Gate) (rest : List Tagged) :
+    vettedBy keep ((g, none) :: rest) = (g, none) :: vettedBy keep rest := rfl
+
+theorem vettedBy_cons_keep {keep : Nat → Bool} {w : Nat} (h : keep w = true) (g : Gate)
+    (rest : List Tagged) :
+    vettedBy keep ((g, some w) :: rest) = (g, some w) :: vettedBy keep rest := by
+  simp [vettedBy, h]
+
+theorem vettedBy_cons_drop {keep : Nat → Bool} {w : Nat} (h : keep w = false) (g : Gate)
+    (rest : List Tagged) :
+    vettedBy keep ((g, some w) :: rest) = (g, none) :: vettedBy keep rest := by
+  simp [vettedBy, h]
+
+@[simp] theorem untag_vettedBy (keep : Nat → Bool) : ∀ xs : List Tagged,
+    untag (vettedBy keep xs) = untag xs := by
+  intro xs
+  induction xs with
+  | nil => rfl
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none => rw [vettedBy_cons_none, untag_cons, untag_cons, ih]
+      | some w =>
+          by_cases hk : keep w
+          · rw [vettedBy_cons_keep hk, untag_cons, untag_cons, ih]
+          · rw [vettedBy_cons_drop (by simpa using hk), untag_cons, untag_cons, ih]
+
+theorem claimedBy_vettedBy (keep : Nat → Bool) (w : Nat) : ∀ xs : List Tagged,
+    claimedBy w (vettedBy keep xs) = if keep w then claimedBy w xs else [] := by
+  intro xs
+  induction xs with
+  | nil => simp only [vettedBy_nil, claimedBy_nil]; split <;> rfl
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none =>
+          rw [vettedBy_cons_none, claimedBy_cons_other _ _ (by simp),
+            claimedBy_cons_other _ _ (by simp), ih]
+      | some v =>
+          by_cases hk : keep v
+          · rw [vettedBy_cons_keep hk]
+            by_cases hvw : v = w
+            · subst hvw
+              rw [claimedBy_cons_self, claimedBy_cons_self, ih, if_pos hk]
+              simp [hk]
+            · rw [claimedBy_cons_other _ _ (by simpa using hvw),
+                claimedBy_cons_other _ _ (by simpa using hvw), ih]
+          · rw [vettedBy_cons_drop (by simpa using hk), claimedBy_cons_other _ _ (by simp), ih]
+            by_cases hvw : v = w
+            · subst hvw
+              rw [if_neg (by simpa using hk), if_neg (by simpa using hk)]
+            · rw [claimedBy_cons_other _ _ (by simpa using hvw)]
+
+/-- A rewrite that survives vetting is one `keep` accepted. -/
+theorem keep_of_mem_vettedBy {keep : Nat → Bool} {w : Nat} {xs : List Tagged}
+    (h : ∃ p ∈ vettedBy keep xs, p.2 = some w) : keep w = true := by
+  obtain ⟨p, hp, hpw⟩ := h
+  rcases List.mem_map.1 hp with ⟨⟨g, t⟩, -, rfl⟩
+  cases t with
+  | none => exact absurd hpw (by simp)
+  | some v =>
+      by_cases hk : keep v
+      · simp only [hk, if_true, Option.some.injEq] at hpw
+        exact hpw ▸ hk
+      · simp [hk] at hpw
 
 end TzapLean

@@ -18,6 +18,7 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/Support.lean` | Locality (`SupportedOn`) and the theorem that operators on disjoint wires commute. |
 | `TzapLean/GateAlgebra.lean` | Gate-matrix algebra: products of one-wire gates, permutations and diagonals, the self-inverse squares, and the four Hadamard-reduction identities. |
 | `TzapLean/Equivalence.lean` | `Equivalent`: equality of channels. Congruence, commutation, and the fact that global phase is invisible. |
+| `TzapLean/Rewrite.lean` | Applying a *set* of scattered, interleaved rewrites at once: the tagging, `applyAll`, and the two conditions that make the splice sound. |
 | `TzapLean/Pass.lean` | The `Pass` structure — a transformation *plus* proofs — with composition and pipelines. |
 | `TzapLean/RandPass.lean` | `RandPass`: a pass with a seed distribution and a bound on its failure probability. Deterministic passes are the `error = 0` case. |
 | `TzapLean/Pipeline.lean` | The three deterministic passes as `RandPass`es, at error `0`. The pipeline itself lives with the driver, in `Optimize.lean`. |
@@ -35,8 +36,8 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/Locality.lean` | `pad`: an operator on a few wires is itself ⊗ identity. Products, scalars, and every gate. |
 | `TzapLean/SynthTable.lean` | The bounded synthesis table: flat builder matrices, fingerprints, the library gate set, and the breadth-first build. |
 | `TzapLean/TableCache.lean` | The on-disk table cache — the port of `table.rs`'s persistence. |
-| `TzapLean/SuperOpt.lean` | `SuperOpt`: one forward window scan, with the window closed over its wires, and the verified rewrite. |
-| `TzapLean/SuperOptProof.lean` | The window invariant, the partition lemma that turns a window into its rewrite target, and the pass. |
+| `TzapLean/SuperOpt.lean` | `SuperOpt`: one forward scan with every window open at once, greedy selection over the whole circuit. Unverified — it proposes. |
+| `TzapLean/SuperOptProof.lean` | `checkRewrite` — what vets one proposed rewrite — and the pass. |
 | `TzapLean/SemanticsCheck.lean` | Independent validation of the semantics: unitarity of every gate, trace preservation, concrete amplitudes, and the `src/unitary.rs` suite. |
 | `TzapLean/Tests.lean` | The Rust test suites of `circuit.rs`, `pass.rs`, `cancel.rs` and `cnot_min.rs`, as `#guard` checks. |
 | `TzapLean/PhaseFoldTests.lean` | The `phase_fold_rand.rs` suite: 108 `#guard` checks. |
@@ -138,34 +139,42 @@ wire, which meant it systematically missed every rewrite that has to be discover
 `x q0; h q1; cx q0,q1; x q0` came back unchanged where Rust finds a three-gate replacement.
 Both directions of that are now in `SuperOptTests`.
 
-One difference remains, and it is the greedy schedule. Rust keeps every live window open at
-once, sorts the candidates a gate completes by anchor age, and lets the first one with a
-shorter replacement claim its gates (`RewriteSet`, `windows_by_qubit`); this port grows one
-window at a time from the earliest anchor, commits its first hit, and continues past it. The
-two therefore pick different rewrites whenever candidates overlap — Rust selects the window
-that *completes* earliest, this one the window that *starts* earliest.
+The greedy schedule matches too, and getting there was the larger half. Rust keeps every live
+window open at once, sorts the candidates a gate completes by anchor age, and lets the first
+one with a shorter replacement claim its gates; anything overlapping a claimed gate is refused
+afterwards, and one final pass splices every selection in at its window's anchor
+(`RewriteSet`). Selecting the window that *completes* earliest rather than the one that
+*starts* earliest is only expressible if the windows are all alive together, which is a
+different shape of algorithm from "grow one window, commit its first hit, move on" — and a
+different shape of theorem, because the rewrites are then chosen as a *set* over the original
+gate list, scattered and interleaved.
 
-Measured, on the `feynman` set at `--passes CnotMin,CancelGates,SuperOpt --fixpoint` (the
-deterministic pipeline, so the comparison is the scan and nothing else), the two agree
-everywhere checked except `adder_8`, where Rust reaches 825 gates and this reaches 832 — 0.8%.
-At `-O3` the picture is mixed rather than one-sided, because phase folding differs too: of ten
-circuits, seven are identical, this port is *ahead* on `barenco_tof_5` (126 against 128) and
-`qcla_com_7` (309 against 313), and behind on `adder_8` (688 against 677). Dropping phase
-folding shows both of those wins to be its doing, not the scan's.
+That theorem is `applyAll_correct`. The trick that makes it tractable is to stop talking about
+indices: a selection is a **tagging**, every gate carrying the rewrite that claims it, so
+splicing is a structural recursion and its correctness a list induction rather than a
+permutation argument over positions. Two conditions carry it, and both survive taking
+sublists, which is exactly what the recursion does to the list:
 
-Closing the schedule difference means the simultaneous-window scan, and with it a theorem this
-development does not have: that a *set* of disjoint rewrites, each spliced in at its own
-anchor, composes. One rewrite at a time is what `sweepOnce` proves, and the batch version is a
-permutation argument over the whole gate list rather than a local one — a redesign of the
-sweep and everything proved about it.
+* `OnSupp` — a claimed gate is unitary and lives on its rewrite's wires;
+* `Sep` — a gate that a later gate's rewrite does not claim misses that rewrite's wires.
 
-The per-qubit index is the other place this shows. `anchorMayFire` replays a window's growth
-through the index to decide whether the verified scan is worth running, and it has no cheap
-way to replay `closeSpan` — so it answers "may fire" whenever a gate bridges in a wire that
-earlier gates already touch, and lets the verified scan decide. That is the safe direction (a
-filter may only ever over-approximate, or it would lose the very rewrites the closure exists
-to find), and it is what the closure costs: about 15% on `gf2^8`. Replaying the closure over
-the index — Rust's `gates_by_qubit` walk — would recover it.
+`gather_equiv` is where they are spent: a rewrite's scattered gates can be gathered at the
+first of them because everything they cross on the way is disjoint from them.
+
+The scan itself is **unverified, and no longer needs to be otherwise**. It proposes a tagging;
+`checkRewrite` vets each rewrite against the gates it claims by exact matrix comparison, and
+`sepB`/`onSuppB` decide the two conditions. A rewrite that fails is untagged and the rest
+still stand; if the two conditions fail, nothing is rewritten. That is a strictly larger
+freedom than the old arrangement, where the window search had to carry an invariant through
+its own proof — and it is faster, because the exact matrix is now built once per *selected*
+rewrite rather than once per window that got past a filter. `gf2^32` at `-O3`: 14.1 s → 8.4 s
+across this work, same output.
+
+Measured against Rust on the `feynman` set at `--passes CnotMin,CancelGates,SuperOpt
+--fixpoint` — the deterministic pipeline, so the comparison is the scan and nothing else — the
+two now agree everywhere checked, `adder_8` included, where this port had been 7 gates behind
+and is now 4 ahead (821 against 825). At `-O3` seven of ten circuits are identical and the
+three that differ are phase folding's doing, not the scan's.
 
 The other passes still pay the full scan. Rust keeps **per-qubit tracks** — for each wire, the indices of the
 gates touching it — so a lookahead visits only gates on the two wires it cares about and
