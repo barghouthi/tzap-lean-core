@@ -40,8 +40,10 @@ structure Pass where
   /-- Passes preserve well-formedness, so the obligation below composes. -/
   wf_run : ∀ c, c.Wf → (run c).Wf
   /-- Passes keep every operand in range: they never invent a wire the register does not
-  have, so the output is a circuit the QASM back end is allowed to print. -/
-  wellFormed_run : ∀ c, c.WellFormed → (run c).WellFormed
+  have, so the output is a circuit the QASM back end is allowed to print. Conditional on `Wf`
+  for the same reason `correct` is — `SuperOpt` reads the operands of the gates it absorbs
+  into a window, and a repeated operand would not name the wire it appears to. -/
+  wellFormed_run : ∀ c, c.Wf → c.WellFormed → (run c).WellFormed
   /-- Passes leave the cached `has*` flags describing the gates that came out, not the ones
   that went in. Every pass here rebuilds them outright, so the hypothesis is unused — it is
   there only so that the identity is a pass. -/
@@ -58,7 +60,7 @@ def comp (p q : Pass) : Pass where
   numQubits_run c := by simp [q.numQubits_run, p.numQubits_run]
   numCbits_run c := by simp [q.numCbits_run, p.numCbits_run]
   wf_run c hc := q.wf_run _ (p.wf_run c hc)
-  wellFormed_run c hc := q.wellFormed_run _ (p.wellFormed_run c hc)
+  wellFormed_run c hwf hc := q.wellFormed_run _ (p.wf_run c hwf) (p.wellFormed_run c hwf hc)
   flagsOk_run c hc := q.flagsOk_run _ (p.flagsOk_run c hc)
   correct c hc := by
     have h₁ : Equivalent c.numQubits c.numCbits (p.run c).gates c.gates := p.correct c hc
@@ -89,11 +91,11 @@ theorem wf_runAll (ps : List Pass) (c : Circuit) (hc : c.Wf) : (runAll ps c).Wf 
   | nil => exact hc
   | cons p ps ih => exact ih _ (p.wf_run c hc)
 
-theorem wellFormed_runAll (ps : List Pass) (c : Circuit) (hc : c.WellFormed) :
+theorem wellFormed_runAll (ps : List Pass) (c : Circuit) (hwf : c.Wf) (hc : c.WellFormed) :
     (runAll ps c).WellFormed := by
   induction ps generalizing c with
   | nil => exact hc
-  | cons p ps ih => exact ih _ (p.wellFormed_run c hc)
+  | cons p ps ih => exact ih _ (p.wf_run c hwf) (p.wellFormed_run c hwf hc)
 
 theorem flagsOk_runAll (ps : List Pass) (c : Circuit) (hc : c.FlagsOk) :
     (runAll ps c).FlagsOk := by
@@ -106,7 +108,7 @@ theorem flagsOk_runAll (ps : List Pass) (c : Circuit) (hc : c.FlagsOk) :
 accepts, this closes the loop: the CLI can only ever write out a valid circuit. -/
 theorem structural_runAll (ps : List Pass) (c : Circuit) (hwf : c.Wf) (hs : c.Structural) :
     (runAll ps c).Wf ∧ (runAll ps c).Structural :=
-  ⟨wf_runAll ps c hwf, wellFormed_runAll ps c hs.1, flagsOk_runAll ps c hs.2⟩
+  ⟨wf_runAll ps c hwf, wellFormed_runAll ps c hwf hs.1, flagsOk_runAll ps c hs.2⟩
 
 /-- **Composed correctness**: any pipeline of passes preserves the semantics. -/
 theorem correct_runAll (ps : List Pass) (c : Circuit) (hc : c.Wf) :

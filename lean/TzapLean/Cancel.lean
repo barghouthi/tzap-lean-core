@@ -2026,7 +2026,7 @@ def CancelGates : Pass where
   numQubits_run _ := rfl
   numCbits_run _ := rfl
   wf_run c hc := cancelGates_wf hc
-  wellFormed_run c hc := cancelGates_inRange hc
+  wellFormed_run c _ hc := cancelGates_inRange hc
   flagsOk_run c _ := Circuit.flagsOk_withGates _ _
   correct c hc := cancelGates_correct c.gates hc
 

@@ -133,6 +133,24 @@ def passCases : List (String × Nat × List Gate × List Gate) :=
       [h 2, cnot 1 2, tdg 2, cnot 0 2, t 2, cnot 1 2, tdg 2, cnot 0 2, t 1, t 2, h 2],
       [h 2, cnot 1 2, tdg 2, cnot 0 2, t 2, cnot 1 2, tdg 2, cnot 0 2, t 1, t 2, h 2]) ]
 
+/-! ## Retroactive closure
+
+A gate that brings a new wire into the window pulls in the earlier gates on that wire too.
+Before the window was closed over its wires, a skipped gate touching the newly-bridged wire
+killed the window outright, and every rewrite that has to be discovered that way was
+systematically missed. Each of these needs exactly that: the `h q1` is skipped while the
+window sits on wire 0, and only becomes reachable when the `cnot` bridges the two. -/
+def bridgeCases : List (String × Nat × List Gate × List Gate) :=
+  [ ("bridge x", 2, [x 0, h 1, cnot 0 1, x 0], [h 1, x 1, cnot 0 1]),
+    ("bridge t", 2, [t 0, h 1, cnot 0 1, tdg 0], [h 1, cnot 0 1]) ]
+
+def bridgeFailures : List String :=
+  let tbl := buildTable tcfg
+  bridgeCases.filterMap fun (name, n, inp, want) =>
+    if superOptGates cfg tbl n inp == want then none else some name
+
+#guard bridgeFailures.isEmpty
+
 /-- Iterate the scan to a fixpoint, as the driver does.
 
 `superOptGates` is *one forward scan*, because `SuperOpt::run` is one forward scan: a case

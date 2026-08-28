@@ -250,6 +250,293 @@ theorem trySynth_correct {n m : Nat} {tbl : SynthTable} {w : Win} {repl : List G
             (omega_pow_unit p) (by rw [hlocal]; exact h3)
         · exact absurd h (by simp)
 
+theorem disjoint_of_notMem {g g' : Gate} (h : ∀ q ∈ g.qubitsOf, q ∉ g'.qubitsOf) :
+    Wires.Disjoint g.support g'.support := by
+  intro q hq
+  rcases hq' : g'.support q with _ | _
+  · rfl
+  · exact absurd ((Gate.support_iff g' q).1 (by simp [hq'])) (h q ((Gate.support_iff g q).1 hq))
+
+/-! ## What closing the window does
+
+`closeSpan` is the one step that moves gates from one side of the window's partition to the
+other, so it is the one step that has to be shown to keep the invariant. Four facts do it: the
+span's gates are untouched, the support only grows, the members' wires stay inside it, and —
+the point of iterating to a fixpoint — when a sweep reports no change, *every* remaining
+skipped gate misses the support.
+
+`absorbPass` is order-agnostic, so these are stated for the stored span (most recent first)
+and used on it directly. -/
+
+/-- Absorbing changes flags, not gates. -/
+theorem absorbPass_gates : ∀ (span : Span) (S : List Qubit),
+    spanGates (absorbPass S span).2.1 = spanGates span := by
+  intro span
+  induction span with
+  | nil => intro S; rfl
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S
+      cases b with
+      | true => rw [absorbPass_true]; simp only [spanGates_cons]; rw [ih]
+      | false =>
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h]; simp only [spanGates_cons]; rw [ih]
+          · rw [absorbPass_false_touch rest h]; simp only [spanGates_cons]; rw [ih]
+
+/-- The support only grows. -/
+theorem absorbPass_support : ∀ (span : Span) (S : List Qubit) {q : Qubit},
+    q ∈ S → q ∈ (absorbPass S span).1 := by
+  intro span
+  induction span with
+  | nil => intro S q h; exact h
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S q hq
+      cases b with
+      | true => rw [absorbPass_true]; exact ih S hq
+      | false =>
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h]; exact ih S hq
+          · rw [absorbPass_false_touch rest h]
+            exact ih _ (subset_widen _ _ hq)
+
+/-- Every wire it adds comes from a gate it absorbed — which is a member afterwards. That is
+what lets the bounds check, which vets the members, stand in for a check on the wires. -/
+theorem absorbPass_support_src : ∀ (span : Span) (S : List Qubit) {q : Qubit},
+    q ∈ (absorbPass S span).1 →
+      q ∈ S ∨ ∃ x ∈ spanMembers (absorbPass S span).2.1, q ∈ x.qubitsOf := by
+  intro span
+  induction span with
+  | nil => intro S q h; exact Or.inl h
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S q hq
+      cases b with
+      | true =>
+          rw [absorbPass_true] at hq ⊢
+          rcases ih S hq with h' | ⟨x, hx, hqx⟩
+          · exact Or.inl h'
+          · exact Or.inr ⟨x, by simp [hx], hqx⟩
+      | false =>
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h] at hq ⊢
+            rcases ih S hq with h' | ⟨x, hx, hqx⟩
+            · exact Or.inl h'
+            · exact Or.inr ⟨x, by simpa using hx, hqx⟩
+          · rw [absorbPass_false_touch rest h] at hq ⊢
+            rcases ih _ hq with hw | ⟨x, hx, hqx⟩
+            · rcases mem_widen _ _ hw with h' | h'
+              · exact Or.inl h'
+              · exact Or.inr ⟨g, by simp, h'⟩
+            · exact Or.inr ⟨x, by simp [hx], hqx⟩
+
+/-- Distinctness survives. -/
+theorem absorbPass_nodup : ∀ (span : Span) (S : List Qubit),
+    S.Nodup → (absorbPass S span).1.Nodup := by
+  intro span
+  induction span with
+  | nil => intro S h; exact h
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S hnd
+      cases b with
+      | true => rw [absorbPass_true]; exact ih S hnd
+      | false =>
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h]; exact ih S hnd
+          · rw [absorbPass_false_touch rest h]; exact ih _ (nodup_widen _ _ hnd)
+
+/-- Members stay on the support. -/
+theorem absorbPass_sub : ∀ (span : Span) (S : List Qubit),
+    (∀ x ∈ spanMembers span, ∀ q ∈ x.qubitsOf, q ∈ S) →
+      ∀ x ∈ spanMembers (absorbPass S span).2.1, ∀ q ∈ x.qubitsOf,
+        q ∈ (absorbPass S span).1 := by
+  intro span
+  induction span with
+  | nil => intro S _ x hx; simp at hx
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S hsub
+      cases b with
+      | true =>
+          rw [absorbPass_true]
+          simp only [spanMembers_cons_true]
+          intro x hx q hq
+          rcases List.mem_cons.1 hx with rfl | hx
+          · exact absorbPass_support rest S (hsub x (by simp) q hq)
+          · exact ih S (fun y hy => hsub y (by simp [hy])) x hx q hq
+      | false =>
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h]
+            simp only [spanMembers_cons_false]
+            exact ih S (fun y hy => hsub y (by simpa using hy))
+          · rw [absorbPass_false_touch rest h]
+            simp only [spanMembers_cons_true]
+            intro x hx q hq
+            rcases List.mem_cons.1 hx with rfl | hx
+            · exact absorbPass_support rest _ (mem_widen_of_mem _ _ hq)
+            · refine ih _ (fun y hy q' hq' => ?_) x hx q hq
+              exact subset_widen _ _ (hsub y (by simpa using hy) q' hq')
+
+/-- Members stay members. -/
+theorem absorbPass_members : ∀ (span : Span) (S : List Qubit),
+    ∀ x ∈ spanMembers span, x ∈ spanMembers (absorbPass S span).2.1 := by
+  intro span
+  induction span with
+  | nil => intro S x hx; exact hx
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S x hx
+      cases b with
+      | true =>
+          rw [absorbPass_true]
+          simp only [spanMembers_cons_true] at hx ⊢
+          rcases List.mem_cons.1 hx with rfl | hx
+          · simp
+          · exact List.mem_cons_of_mem _ (ih S x hx)
+      | false =>
+          simp only [spanMembers_cons_false] at hx
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h]
+            simp only [spanMembers_cons_false]
+            exact ih S x hx
+          · rw [absorbPass_false_touch rest h]
+            simp only [spanMembers_cons_true]
+            exact List.mem_cons_of_mem _ (ih _ x hx)
+
+/-- Gates only move from skipped to member. -/
+theorem absorbPass_skipped : ∀ (span : Span) (S : List Qubit),
+    ∀ x ∈ spanSkipped (absorbPass S span).2.1, x ∈ spanSkipped span := by
+  intro span
+  induction span with
+  | nil => intro S x hx; exact hx
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S x hx
+      cases b with
+      | true =>
+          rw [absorbPass_true] at hx
+          simp only [spanSkipped_cons_true] at hx ⊢
+          exact ih S x hx
+      | false =>
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h] at hx
+            simp only [spanSkipped_cons_false] at hx ⊢
+            rcases List.mem_cons.1 hx with rfl | hx
+            · simp
+            · exact List.mem_cons_of_mem _ (ih S x hx)
+          · rw [absorbPass_false_touch rest h] at hx
+            simp only [spanSkipped_cons_true] at hx
+            simp only [spanSkipped_cons_false]
+            exact List.mem_cons_of_mem _ (ih _ x hx)
+
+/-- **A sweep that reports no change is a closed window.** Nothing moved, so the support never
+widened during it, so the check every skipped gate failed was against the final support. -/
+theorem absorbPass_stable : ∀ (span : Span) (S : List Qubit),
+    (absorbPass S span).2.2 = false →
+      (absorbPass S span).1 = S ∧ (absorbPass S span).2.1 = span ∧
+        ∀ x ∈ spanSkipped span, touches S x = false := by
+  intro span
+  induction span with
+  | nil =>
+      intro S _
+      refine ⟨rfl, rfl, ?_⟩
+      intro x hx
+      exact absurd hx (by simp)
+  | cons p rest ih =>
+      obtain ⟨g, b⟩ := p
+      intro S hch
+      cases b with
+      | true =>
+          rw [absorbPass_true] at hch ⊢
+          obtain ⟨h1, h2, h3⟩ := ih S hch
+          refine ⟨h1, ?_, ?_⟩
+          · simp only [h2]
+          · simpa using h3
+      | false =>
+          rcases h : touches S g with _ | _
+          · rw [absorbPass_false_miss rest h] at hch ⊢
+            obtain ⟨h1, h2, h3⟩ := ih S hch
+            refine ⟨h1, by simp only [h2], ?_⟩
+            intro x hx
+            simp only [spanSkipped_cons_false] at hx
+            rcases List.mem_cons.1 hx with rfl | hx
+            · exact h
+            · exact h3 x hx
+          · rw [absorbPass_false_touch rest h] at hch
+            exact absurd hch (by simp)
+
+/-- What closing a window guarantees, as one object: the span's gates are untouched, the
+support grew from the wires of that span, and the result is *closed* — every gate still on the
+skipped side misses the support. -/
+structure CloseOk (S S' : List Qubit) (span span' : Span) : Prop where
+  /-- Flags changed; gates did not. -/
+  gates : spanGates span' = spanGates span
+  /-- The support only grew. -/
+  grow : ∀ q ∈ S, q ∈ S'
+  /-- …and only by wires of gates it absorbed, which are members afterwards. -/
+  src : ∀ q ∈ S', q ∈ S ∨ ∃ x ∈ spanMembers span', q ∈ x.qubitsOf
+  /-- Members stay members. -/
+  members : ∀ x ∈ spanMembers span, x ∈ spanMembers span'
+  /-- Distinctness survives. -/
+  nodup : S.Nodup → S'.Nodup
+  /-- Members stay on the support. -/
+  sub : (∀ x ∈ spanMembers span, ∀ q ∈ x.qubitsOf, q ∈ S) →
+        ∀ x ∈ spanMembers span', ∀ q ∈ x.qubitsOf, q ∈ S'
+  /-- Gates only move from skipped to member. -/
+  skipped : ∀ x ∈ spanSkipped span', x ∈ spanSkipped span
+
+theorem CloseOk.trans {S S₁ S' : List Qubit} {span span₁ span' : Span}
+    (h : CloseOk S S₁ span span₁) (h' : CloseOk S₁ S' span₁ span') : CloseOk S S' span span' where
+  gates := h'.gates.trans h.gates
+  grow q hq := h'.grow q (h.grow q hq)
+  src q hq := by
+    rcases h'.src q hq with hq' | ⟨x, hx, hqx⟩
+    · rcases h.src q hq' with hq'' | ⟨y, hy, hqy⟩
+      · exact Or.inl hq''
+      · exact Or.inr ⟨y, h'.members y hy, hqy⟩
+    · exact Or.inr ⟨x, hx, hqx⟩
+  members x hx := h'.members x (h.members x hx)
+  nodup hnd := h'.nodup (h.nodup hnd)
+  sub hs := h'.sub (h.sub hs)
+  skipped x hx := h.skipped x (h'.skipped x hx)
+
+/-- One sweep, packaged. Being *closed* is not among these: only a sweep that reports no
+change gives that, which is what iterating buys and `closeSpan_spec` records separately. -/
+theorem absorbPass_closeOk (S : List Qubit) (span : Span) :
+    CloseOk S (absorbPass S span).1 span (absorbPass S span).2.1 where
+  gates := absorbPass_gates span S
+  grow _ hq := absorbPass_support span S hq
+  src _ hq := absorbPass_support_src span S hq
+  members := absorbPass_members span S
+  nodup := absorbPass_nodup span S
+  sub := absorbPass_sub span S
+  skipped := absorbPass_skipped span S
+
+/-- **What `closeSpan` returns is a closed window**: a sequence of sweeps, and the last of
+them reported nothing left to move. -/
+theorem closeSpan_spec : ∀ (fuel : Nat) (S : List Qubit) (span : Span) {S' : List Qubit}
+    {span' : Span}, closeSpan fuel S span = some (S', span') →
+      CloseOk S S' span span' ∧ ∀ x ∈ spanSkipped span', touches S' x = false := by
+  intro fuel
+  induction fuel with
+  | zero => intro S span S' span' h; rw [closeSpan] at h; exact absurd h (by simp)
+  | succ fuel ih =>
+      intro S span S' span' h
+      rw [closeSpan] at h
+      split at h
+      · obtain ⟨hok, hcl⟩ := ih _ _ h
+        exact ⟨(absorbPass_closeOk S span).trans hok, hcl⟩
+      · rename_i hstable
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        obtain ⟨h1, h2, h3⟩ := absorbPass_stable span S (by simpa using hstable)
+        refine ⟨absorbPass_closeOk S span, ?_⟩
+        intro x hx
+        rw [h1]
+        exact h3 x (h2 ▸ hx)
+
 /-! ## The scan's invariant -/
 
 /-- What the scan maintains about a window: its support is a set of real wires, its members
@@ -260,6 +547,8 @@ structure WinOk (n m : Nat) (w : Win) : Prop where
   nodup : w.support.Nodup
   /-- All of them are wires of the register. -/
   range : ∀ q ∈ w.support, q < n
+  /-- The memoized member list is the span's. -/
+  memEq : w.members = spanMembers w.span
   /-- Members live on the support. -/
   sub : ∀ g ∈ w.members, ∀ q ∈ g.qubitsOf, q ∈ w.support
   /-- Members are well-formed… -/
@@ -270,15 +559,149 @@ structure WinOk (n m : Nat) (w : Win) : Prop where
   wfsk : ∀ g ∈ w.skipped, g.Wf
   /-- No skipped gate touches the support. -/
   disj : ∀ g ∈ w.skipped, ∀ q ∈ g.qubitsOf, q ∉ w.support
-  /-- Pulling the members to the front of the span is meaning-preserving. -/
-  equiv : Equivalent n m (w.members ++ w.skipped) w.consumed
 
-theorem disjoint_of_notMem {g g' : Gate} (h : ∀ q ∈ g.qubitsOf, q ∉ g'.qubitsOf) :
-    Wires.Disjoint g.support g'.support := by
-  intro q hq
-  rcases hq' : g'.support q with _ | _
-  · rfl
-  · exact absurd ((Gate.support_iff g' q).1 (by simp [hq'])) (h q ((Gate.support_iff g q).1 hq))
+/-! ### Pulling the members to the front
+
+The window is a *partition* of its span: members, which live on the support, and skipped
+gates, which miss it entirely. Every skipped gate therefore commutes with every member, and
+the span can be rewritten as its members followed by its skipped gates. This is the one fact
+about a window the rewrite consumes, and it is a theorem about the invariant rather than
+something the scan has to carry along and re-establish at every step — which matters now that
+a step can move gates from one side of the partition to the other. -/
+
+/-- **A window's span is its members followed by its skipped gates.** -/
+theorem equivalent_span {n m : Nat} (S : List Qubit) :
+    ∀ (span : Span),
+      (∀ p ∈ span, p.2 = true → (∀ q ∈ p.1.qubitsOf, q ∈ S) ∧ p.1.isUnitary = true) →
+      (∀ p ∈ span, p.2 = false → ∀ q ∈ p.1.qubitsOf, q ∉ S) →
+      Equivalent n m (spanMembers span ++ spanSkipped span) (spanGates span) := by
+  intro span
+  induction span with
+  | nil => intro _ _; exact Equivalent.refl _ _ _
+  | cons p rest ih =>
+      intro hmem hsk
+      obtain ⟨g, b⟩ := p
+      have ihr := ih (fun q hq => hmem q (by simp [hq])) (fun q hq => hsk q (by simp [hq]))
+      have hprop : ∀ x ∈ spanMembers rest,
+          (∀ q ∈ x.qubitsOf, q ∈ S) ∧ x.isUnitary = true := fun x hx =>
+        hmem (x, true) (List.mem_cons_of_mem _ (mem_spanMembers_iff.1 hx)) rfl
+      cases b with
+      | true =>
+          -- a member stays at the front of both sides
+          simp only [spanMembers_cons_true, spanSkipped_cons_true, spanGates_cons,
+            List.cons_append]
+          exact Equivalent.append_left [g] ihr
+      | false =>
+          -- a skipped gate has to travel back past the members, which it misses entirely
+          have hmove : Equivalent n m (spanMembers rest ++ [g]) ([g] ++ spanMembers rest) :=
+            Equivalent.append_comm _ _ (fun x hx => (hprop x hx).2) (fun x hx y hy => by
+              rw [List.mem_singleton.1 hy]
+              refine disjoint_of_notMem ?_
+              intro q hq hq'
+              exact hsk (g, false) (by simp) rfl q hq' ((hprop x hx).1 q hq))
+          simp only [spanMembers_cons_false, spanSkipped_cons_false, spanGates_cons]
+          have step₁ : Equivalent n m (spanMembers rest ++ g :: spanSkipped rest)
+              (([g] ++ spanMembers rest) ++ spanSkipped rest) := by
+            have := Equivalent.append_right (n := n) (m := m) (spanSkipped rest) hmove
+            simpa using this
+          refine Equivalent.trans step₁ ?_
+          simpa using Equivalent.append_left [g] ihr
+
+/-- **The window's rewrite target, in the order the rewrite emits it.** -/
+theorem WinOk.equiv {n m : Nat} {w : Win} (h : WinOk n m w) :
+    Equivalent n m (w.members ++ w.skipped) w.consumed := by
+  rw [h.memEq]
+  refine equivalent_span (n := n) (m := m) w.support w.span ?_ ?_
+  · intro p hp hpt
+    obtain ⟨x, b⟩ := p
+    cases b with
+    | false => exact absurd hpt (by simp)
+    | true =>
+        have hx : x ∈ spanMembers w.span :=
+          mem_spanMembers_iff.2 hp
+        exact ⟨fun q hq => h.sub x (h.memEq ▸ hx) q hq, h.unit x (h.memEq ▸ hx)⟩
+  · intro p hp hpf
+    obtain ⟨x, b⟩ := p
+    cases b with
+    | true => exact absurd hpf (by simp)
+    | false =>
+        have hx : x ∈ w.skipped := List.mem_filterMap.2 ⟨(x, false), hp, rfl⟩
+        exact h.disj x hx
+
+theorem acceptWindow_spec {cfg : SuperOptConfig} {n : Nat} {sup : List Qubit}
+    {members : List Gate} {revSpan : Span} {w' : Win}
+    (h : acceptWindow cfg n sup members revSpan = some w') :
+    w' = ⟨sup, members, revSpan⟩ ∧ membersOk n members = true := by
+  rw [acceptWindow] at h
+  split at h
+  · rename_i hb
+    simp only [Option.some.injEq] at h
+    simp only [Bool.and_eq_true] at hb
+    exact ⟨h.symm, hb.2⟩
+  · exact absurd h (by simp)
+
+/-- **Growing a window keeps its invariant.**
+
+Closing over a new wire is the one step that moves gates between the two sides of the
+partition, so it is the one step that has to be shown safe. It is, and cheaply: the closure
+only ever absorbs, so every wire it adds belongs to a gate that is a *member* afterwards — and
+the members are exactly what `acceptWindow` then vets. What is left on the skipped side misses
+the support because the last sweep reported nothing to move. -/
+theorem growWindow_spec {n m : Nat} {cfg : SuperOptConfig} {w w' : Win} {g : Gate}
+    (hok : WinOk n m w) (h : growWindow cfg n w g = some w') :
+    WinOk n m w' ∧ w'.consumed = w.consumed ++ [g] := by
+  rw [growWindow] at h
+  rcases hclose : closeSpan (w.revSpan.length + 2) (widen w.support g.qubitsOf)
+      ((g, true) :: w.revSpan) with _ | ⟨sup, revSpan⟩
+  · rw [hclose] at h; exact absurd h (by simp)
+  rw [hclose] at h
+  simp only [Option.bind_some] at h
+  obtain ⟨rfl, hmok⟩ := acceptWindow_spec h
+  obtain ⟨hco, hclosed⟩ := closeSpan_spec _ _ _ hclose
+  -- what `acceptWindow` vetted, unpacked once
+  have hmemOk : ∀ x ∈ spanMembers revSpan.reverse,
+      isWindowGate x = true ∧ (∀ q ∈ x.qubitsOf, q < n) ∧ x.Wf := by
+    intro x hx
+    have hall := (List.all_eq_true.1 hmok) x hx
+    simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true] at hall
+    exact ⟨hall.1.1, fun q hq => hall.1.2 q hq, hall.2⟩
+  have hmemRev : ∀ x, x ∈ spanMembers revSpan ↔ x ∈ spanMembers revSpan.reverse :=
+    fun _ => mem_spanMembers_reverse.symm
+  -- every old member, and `g` itself, sits on the widened support
+  have hsubIn : ∀ x ∈ spanMembers ((g, true) :: w.revSpan), ∀ q ∈ x.qubitsOf,
+      q ∈ widen w.support g.qubitsOf := by
+    intro x hx q hq
+    simp only [spanMembers_cons_true] at hx
+    rcases List.mem_cons.1 hx with rfl | hx
+    · exact mem_widen_of_mem _ _ hq
+    · refine subset_widen _ _ (hok.sub x ?_ q hq)
+      rw [hok.memEq, Win.span]
+      exact mem_spanMembers_reverse.2 hx
+  refine ⟨⟨hco.nodup (nodup_widen _ _ hok.nodup), ?_, rfl, ?_, ?_, ?_, ?_, ?_⟩, ?_⟩
+  · -- every support wire is a wire of the register
+    intro q hq
+    rcases hco.src q hq with hq' | ⟨x, hx, hqx⟩
+    · rcases mem_widen _ _ hq' with h' | h'
+      · exact hok.range q h'
+      · exact (hmemOk g ((hmemRev g).1 (hco.members g (by simp)))).2.1 q h'
+    · exact (hmemOk x ((hmemRev x).1 hx)).2.1 q hqx
+  · -- members live on the support
+    intro x hx q hq
+    exact hco.sub hsubIn x ((hmemRev x).2 hx) q hq
+  · exact fun x hx => (hmemOk x hx).2.2
+  · exact fun x hx => isWindowGate_isUnitary (hmemOk x hx).1
+  · -- skipped gates were skipped before, so they came from the circuit
+    intro x hx
+    have hx' := hco.skipped x (mem_spanSkipped_reverse.1 hx)
+    simp only [spanSkipped_cons_true] at hx'
+    exact hok.wfsk x (mem_spanSkipped_reverse.2 hx')
+  · -- …and none of them touches the support: the last sweep found nothing to move
+    intro x hx
+    exact touches_false (hclosed x (mem_spanSkipped_reverse.1 hx))
+  · -- the consumed span gained exactly `g`
+    show spanGates (Win.span ⟨sup, spanMembers revSpan.reverse, revSpan⟩) = w.consumed ++ [g]
+    simp only [Win.span, spanGates_reverse, hco.gates, spanGates_cons, List.reverse_cons]
+    simp [Win.consumed, Win.span]
 
 theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
     ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (cnt : Nat)
@@ -293,51 +716,12 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
       intro fm w cnt repl sk tail k hok hwfr h
       rw [tryWindow] at h
       split at h
-      · -- the gate touches the window
-        rename_i htouch
+      · -- the gate touches the window: grow it
         split at h
-        · rename_i hchecks
-          simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, Bool.not_eq_true',
-            List.any_eq_false] at hchecks
-          obtain ⟨⟨⟨⟨⟨hwin, hrangeg⟩, hwfg⟩, -⟩, -⟩, hskip⟩ := hchecks
-          have hu : g.isUnitary = true := isWindowGate_isUnitary hwin
-          set sup := widen w.support g.qubitsOf with hsup
-          have hdisj' : ∀ s ∈ w.skipped, ∀ q ∈ s.qubitsOf, q ∉ sup := by
-            intro s hs
-            exact touches_false (by simpa using hskip s hs)
-          have hok' : WinOk n m ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ := by
-            refine ⟨nodup_widen _ _ hok.nodup, ?_, ?_, ?_, ?_, hok.wfsk, hdisj', ?_⟩
-            · intro q hq
-              rcases mem_widen _ _ hq with hq' | hq'
-              · exact hok.range q hq'
-              · exact hrangeg q hq'
-            · intro x hx q hq
-              rcases List.mem_append.1 hx with hx | hx
-              · exact subset_widen _ _ (hok.sub x hx q hq)
-              · rw [List.mem_singleton.1 hx] at hq
-                exact mem_widen_of_mem _ _ hq
-            · intro x hx
-              rcases List.mem_append.1 hx with hx | hx
-              · exact hok.wf x hx
-              · rw [List.mem_singleton.1 hx]; exact hwfg
-            · intro x hx
-              rcases List.mem_append.1 hx with hx | hx
-              · exact hok.unit x hx
-              · rw [List.mem_singleton.1 hx]; exact hu
-            · simp only [Win.skipped_extend, Win.consumed_extend]
-              have hgd : ∀ s ∈ w.skipped, Wires.Disjoint g.support s.support := by
-                intro s hs
-                refine disjoint_of_notMem ?_
-                intro q hq hq'
-                exact hdisj' s hs q hq' (mem_widen_of_mem _ _ hq)
-              have e1 : Equivalent n m ((w.members ++ w.skipped) ++ [g]) (w.consumed ++ [g]) :=
-                Equivalent.append_right [g] hok.equiv
-              have e2 : Equivalent n m ((w.members ++ [g]) ++ w.skipped)
-                  ((w.members ++ w.skipped) ++ [g]) := by
-                have := Equivalent.append_left (n := n) (m := m) w.members
-                  (Equivalent.move_back hu w.skipped hgd)
-                simpa using this
-              exact e2.trans e1
+        · exact absurd h (by simp)
+        · rename_i w' hgrow
+          obtain ⟨hok', hcons⟩ := growWindow_spec hok hgrow
+          dsimp only at h
           split at h
           · -- a rewrite was found; the tail is what is left of `rest`
             rename_i repl₀ hsynth
@@ -347,43 +731,47 @@ theorem tryWindow_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
             obtain ⟨heq, hwfrepl, -, -⟩ :=
               trySynth_correct (m := m) hok'.nodup hok'.range hok'.sub hok'.wf
                 (trySynthFiltered_eq hsynth)
-            refine ⟨?_, hwfrepl, hok.wfsk, fun x hx => hwfr x (by simp [hx])⟩
-            have e1 : Equivalent n m (repl₀ ++ w.skipped) ((w.members ++ [g]) ++ w.skipped) :=
-              Equivalent.append_right w.skipped heq
-            have e2 : Equivalent n m (repl₀ ++ w.skipped) (w.consumed ++ [g]) := by
-              refine e1.trans ?_
-              simpa using hok'.equiv
+            refine ⟨?_, hwfrepl, hok'.wfsk, fun x hx => hwfr x (by simp [hx])⟩
+            have e1 : Equivalent n m (repl₀ ++ w'.skipped) (w'.members ++ w'.skipped) :=
+              Equivalent.append_right w'.skipped heq
+            have e2 : Equivalent n m (repl₀ ++ w'.skipped) (w.consumed ++ [g]) :=
+              e1.trans (hcons ▸ hok'.equiv)
             have := Equivalent.append_right (n := n) (m := m) rest e2
             simpa using this
           · -- keep scanning
             obtain ⟨heq, h1, h2, h3⟩ :=
-              ih _ ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ _ repl sk tail k hok'
-                (fun x hx => hwfr x (by simp [hx])) h
-            exact ⟨by simpa using heq, h1, h2, h3⟩
-        · exact absurd h (by simp)
+              ih _ w' _ repl sk tail k hok' (fun x hx => hwfr x (by simp [hx])) h
+            refine ⟨?_, h1, h2, h3⟩
+            rw [hcons] at heq
+            simpa using heq
       · -- the gate misses the window: skip it
         rename_i htouch
         have hmiss : ∀ q ∈ g.qubitsOf, q ∉ w.support := touches_false (by simpa using htouch)
-        have hok' : WinOk n m ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ := by
-          refine ⟨hok.nodup, hok.range, hok.sub, hok.wf, hok.unit, ?_, ?_, ?_⟩
-          · simp only [Win.skipped_skip]
-            intro x hx
-            rcases List.mem_append.1 hx with hx | hx
-            · exact hok.wfsk x hx
-            · rw [List.mem_singleton.1 hx]; exact hwfr g (by simp)
-          · simp only [Win.skipped_skip]
-            intro x hx q hq
-            rcases List.mem_append.1 hx with hx | hx
-            · exact hok.disj x hx q hq
-            · rw [List.mem_singleton.1 hx] at hq
-              exact hmiss q hq
-          · simp only [Win.skipped_skip, Win.consumed_skip]
-            have := Equivalent.append_right (n := n) (m := m) [g] hok.equiv
-            simpa using this
+        have hspan : (Win.mk w.support w.members ((g, false) :: w.revSpan)).span
+            = w.span ++ [(g, false)] := by simp [Win.span]
+        have hsk : (Win.mk w.support w.members ((g, false) :: w.revSpan)).skipped
+            = w.skipped ++ [g] := by simp [Win.skipped, hspan]
+        have hok' : WinOk n m ⟨w.support, w.members, (g, false) :: w.revSpan⟩ := by
+          refine ⟨hok.nodup, hok.range, ?_, hok.sub, hok.wf, hok.unit, ?_, ?_⟩
+          · rw [hspan]; simpa using hok.memEq
+          · intro x hx
+            rw [hsk] at hx
+            rcases List.mem_append.1 hx with hx' | hx'
+            · exact hok.wfsk x hx'
+            · rw [List.mem_singleton.1 hx']; exact hwfr g (by simp)
+          · intro x hx
+            rw [hsk] at hx
+            rcases List.mem_append.1 hx with hx' | hx'
+            · exact hok.disj x hx'
+            · rw [List.mem_singleton.1 hx']; exact hmiss
         obtain ⟨heq, h1, h2, h3⟩ :=
-          ih _ ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ _ repl sk tail k hok'
+          ih _ ⟨w.support, w.members, (g, false) :: w.revSpan⟩ _ repl sk tail k hok'
             (fun x hx => hwfr x (by simp [hx])) h
-        exact ⟨by simpa using heq, h1, h2, h3⟩
+        refine ⟨?_, h1, h2, h3⟩
+        have hcons : (Win.mk w.support w.members ((g, false) :: w.revSpan)).consumed
+            = w.consumed ++ [g] := by simp [Win.consumed, hspan]
+        rw [hcons] at heq
+        simpa using heq
 
 /-! ## The pass -/
 
@@ -420,7 +808,7 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
             · rename_i repl sk tail consumed hw
               -- the window's own invariant, at the anchor
               have hok : WinOk n m (Win.start g) := by
-                refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, ?_, by simp, by simp, ?_⟩
+                refine ⟨qubitsOf_nodup hwfg, hrangeg, rfl, ?_, ?_, ?_, by simp, by simp⟩
                 · intro x hx q hq
                   rw [List.mem_singleton.1 hx] at hq
                   exact hq
@@ -428,7 +816,6 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
                 · intro x hx
                   rw [List.mem_singleton.1 hx]
                   exact isWindowGate_isUnitary hwin
-                · simpa using Equivalent.refl n m [g]
               obtain ⟨heq, hrepl, hsk, htail⟩ :=
                 tryWindow_correct rest _ (Win.start g) 0 repl sk tail consumed hok
                   (fun x hx => hwf x (by simp [hx])) hw
@@ -470,54 +857,49 @@ on the window's wires and are unitary. `canAnchor` and the scan's own check keep
 wires below `n`, and a unitary gate has no classical operand, so a replacement is in range
 without any assumption about what the table contains. -/
 
-/-- The part of `WinOk` the range argument uses, plus the skipped gates' ranges. -/
-structure WinCore (n m : Nat) (w : Win) : Prop where
-  /-- The support lists distinct wires. -/
-  nodup : w.support.Nodup
-  /-- All of them are wires of the register. -/
-  range : ∀ q ∈ w.support, q < n
-  /-- Members live on the support. -/
-  sub : ∀ g ∈ w.members, ∀ q ∈ g.qubitsOf, q ∈ w.support
-  /-- Members are well-formed. -/
-  wf : ∀ g ∈ w.members, g.Wf
-  /-- Skipped gates are in range — they came from the circuit. -/
-  skRange : ∀ g ∈ w.skipped, g.InRange n m
+/-! ## Operand ranges
+
+`WinOk` carries what the equivalence argument needs; the range argument needs less, but it
+needs the same closure reasoning — the ranges of the gates a closure absorbs are exactly what
+`acceptWindow` vets — so it reuses `growWindow_spec` rather than re-deriving it, and carries
+the skipped gates' ranges alongside. -/
 
 theorem tryWindow_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
     ∀ (rest : List Gate) (fm : Option FlatMat) (w : Win) (cnt : Nat)
-      (repl sk tail : List Gate) (k : Nat), WinCore n m w →
-      (∀ g ∈ rest, g.InRange n m) →
+      (repl sk tail : List Gate) (k : Nat), WinOk n m w → (∀ g ∈ w.skipped, g.InRange n m) →
+      (∀ g ∈ rest, g.Wf) → (∀ g ∈ rest, g.InRange n m) →
       tryWindow cfg tbl n fm w cnt rest = some (repl, sk, tail, k) →
       (∀ g ∈ repl, g.InRange n m) ∧ (∀ g ∈ sk, g.InRange n m) ∧
         (∀ g ∈ tail, g.InRange n m) := by
   intro rest
   induction rest with
-  | nil => intro fm w cnt repl sk tail k _ _ h; rw [tryWindow] at h; exact absurd h (by simp)
+  | nil =>
+      intro fm w cnt repl sk tail k _ _ _ _ h
+      rw [tryWindow] at h; exact absurd h (by simp)
   | cons g rest ih =>
-      intro fm w cnt repl sk tail k hok hin h
+      intro fm w cnt repl sk tail k hok hsk hwfr hin h
+      have hgwf : g.Wf := hwfr g (by simp)
       rw [tryWindow] at h
       split at h
       · split at h
-        · rename_i hchecks
-          simp only [Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true, Bool.not_eq_true',
-            List.any_eq_false] at hchecks
-          obtain ⟨⟨⟨⟨⟨-, hrangeg⟩, hwfg⟩, -⟩, -⟩, -⟩ := hchecks
-          set sup := widen w.support g.qubitsOf with hsup
-          have hok' : WinCore n m ⟨sup, w.members ++ [g], w.revSkipped, g :: w.revConsumed⟩ := by
-            refine ⟨nodup_widen _ _ hok.nodup, ?_, ?_, ?_, hok.skRange⟩
-            · intro q hq
-              rcases mem_widen _ _ hq with hq' | hq'
-              · exact hok.range q hq'
-              · exact hrangeg q hq'
-            · intro x hx q hq
-              rcases List.mem_append.1 hx with hx | hx
-              · exact subset_widen _ _ (hok.sub x hx q hq)
-              · rw [List.mem_singleton.1 hx] at hq
-                exact mem_widen_of_mem _ _ hq
-            · intro x hx
-              rcases List.mem_append.1 hx with hx | hx
-              · exact hok.wf x hx
-              · rw [List.mem_singleton.1 hx]; exact hwfg
+        · exact absurd h (by simp)
+        · rename_i w' hgrow
+          obtain ⟨hok', hcons⟩ := growWindow_spec (m := m) hok hgrow
+          -- the skipped gates of the grown window were skipped before
+          have hsk' : ∀ x ∈ w'.skipped, x.InRange n m := by
+            intro x hx
+            rw [growWindow] at hgrow
+            rcases hclose : closeSpan (w.revSpan.length + 2) (widen w.support g.qubitsOf)
+                ((g, true) :: w.revSpan) with _ | ⟨sup, revSpan⟩
+            · rw [hclose] at hgrow; exact absurd hgrow (by simp)
+            rw [hclose] at hgrow
+            simp only [Option.bind_some] at hgrow
+            obtain ⟨rfl, -⟩ := acceptWindow_spec hgrow
+            obtain ⟨hco, -⟩ := closeSpan_spec _ _ _ hclose
+            have hx' := hco.skipped x (mem_spanSkipped_reverse.1 hx)
+            simp only [spanSkipped_cons_true] at hx'
+            exact hsk x (mem_spanSkipped_reverse.2 hx')
+          dsimp only at h
           split at h
           · rename_i repl₀ hsynth
             simp only [Option.some.injEq, Prod.mk.injEq] at h
@@ -527,30 +909,47 @@ theorem tryWindow_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} 
               trySynth_correct (n := n) (m := m) hok'.nodup hok'.range hok'.sub hok'.wf
                 (trySynthFiltered_eq hsynth)
             refine ⟨fun x hx => ⟨fun q hq => hok'.range q (hsub' x hx q hq), fun b hb => ?_⟩,
-              hok.skRange, fun x hx => hin x (by simp [hx])⟩
+              hsk', fun x hx => hin x (by simp [hx])⟩
             rw [Gate.cbitsOf_eq_nil_of_isUnitary (hu' x hx)] at hb
             exact absurd hb (by simp)
-          · exact ih _ _ _ repl sk tail k hok' (fun x hx => hin x (by simp [hx])) h
-        · exact absurd h (by simp)
+          · exact ih _ w' _ repl sk tail k hok' hsk' (fun x hx => hwfr x (by simp [hx]))
+              (fun x hx => hin x (by simp [hx])) h
       · rename_i htouch
-        have hok' : WinCore n m ⟨w.support, w.members, g :: w.revSkipped, g :: w.revConsumed⟩ := by
-          refine ⟨hok.nodup, hok.range, hok.sub, hok.wf, ?_⟩
-          simp only [Win.skipped_skip]
-          intro x hx
-          rcases List.mem_append.1 hx with hx | hx
-          · exact hok.skRange x hx
-          · rw [List.mem_singleton.1 hx]; exact hin g (by simp)
-        exact ih _ _ _ repl sk tail k hok' (fun x hx => hin x (by simp [hx])) h
+        have hmiss : ∀ q ∈ g.qubitsOf, q ∉ w.support := touches_false (by simpa using htouch)
+        have hspan : (Win.mk w.support w.members ((g, false) :: w.revSpan)).skipped
+            = w.skipped ++ [g] := by simp [Win.skipped, Win.span]
+        have hok' : WinOk n m ⟨w.support, w.members, (g, false) :: w.revSpan⟩ := by
+          refine ⟨hok.nodup, hok.range, ?_, hok.sub, hok.wf, hok.unit, ?_, ?_⟩
+          · simp only [Win.span, List.reverse_cons, spanMembers_append, spanMembers_cons_false,
+              spanMembers_nil, List.append_nil]
+            exact hok.memEq
+          · intro x hx
+            rw [hspan] at hx
+            rcases List.mem_append.1 hx with hx' | hx'
+            · exact hok.wfsk x hx'
+            · rw [List.mem_singleton.1 hx']; exact hgwf
+          · intro x hx
+            rw [hspan] at hx
+            rcases List.mem_append.1 hx with hx' | hx'
+            · exact hok.disj x hx'
+            · rw [List.mem_singleton.1 hx']; exact hmiss
+        refine ih _ ⟨w.support, w.members, (g, false) :: w.revSpan⟩ _ repl sk tail k hok' ?_
+          (fun x hx => hwfr x (by simp [hx])) (fun x hx => hin x (by simp [hx])) h
+        intro x hx
+        rw [hspan] at hx
+        rcases List.mem_append.1 hx with hx' | hx'
+        · exact hsk x hx'
+        · rw [List.mem_singleton.1 hx']; exact hin g (by simp)
 
 theorem sweep_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
     (arr : Array Gate) (tracks : Array (Array Nat)) :
-    ∀ (fuel at_ : Nat) (gs : List Gate), (∀ g ∈ gs, g.InRange n m) →
+    ∀ (fuel at_ : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) → (∀ g ∈ gs, g.InRange n m) →
       ∀ g ∈ sweepOnce cfg tbl n arr tracks fuel at_ gs, g.InRange n m := by
   intro fuel
   induction fuel with
-  | zero => intro at_ gs h; exact h
+  | zero => intro at_ gs _ h; exact h
   | succ fuel ih =>
-      intro at_ gs hin
+      intro at_ gs hwf hin
       cases gs with
       | nil => simp [sweepOnce]
       | cons g rest =>
@@ -559,39 +958,45 @@ theorem sweep_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
             intro j x hx
             rcases List.mem_cons.1 hx with rfl | hx
             · exact hin x (by simp)
-            · exact ih j rest (fun y hy => hin y (by simp [hy])) x hx
+            · exact ih j rest (fun y hy => hwf y (by simp [hy]))
+                (fun y hy => hin y (by simp [hy])) x hx
           rw [sweepOnce]
           split
           · rename_i hanchor
             simp only [canAnchor, Bool.and_eq_true, decide_eq_true_eq,
               List.all_eq_true] at hanchor
-            obtain ⟨⟨⟨⟨-, -⟩, hrangeg⟩, hwfg⟩, -⟩ := hanchor
+            obtain ⟨⟨⟨⟨hwin, -⟩, hrangeg⟩, hwfg⟩, -⟩ := hanchor
             split
             · rename_i repl sk tail consumed hw
-              have hok : WinCore n m (Win.start g) := by
-                refine ⟨qubitsOf_nodup hwfg, hrangeg, ?_, ?_, by simp⟩
+              have hok : WinOk n m (Win.start g) := by
+                refine ⟨qubitsOf_nodup hwfg, hrangeg, rfl, ?_, ?_, ?_, by simp, by simp⟩
                 · intro x hx q hq
                   rw [List.mem_singleton.1 hx] at hq
                   exact hq
                 · intro x hx; rw [List.mem_singleton.1 hx]; exact hwfg
+                · intro x hx
+                  rw [List.mem_singleton.1 hx]
+                  exact isWindowGate_isUnitary hwin
               obtain ⟨h1, h2, h3⟩ :=
-                tryWindow_inRange rest _ (Win.start g) 0 repl sk tail consumed hok
-                  (fun x hx => hin x (by simp [hx])) hw
+                tryWindow_inRange rest _ (Win.start g) 0 repl sk tail consumed hok (by simp)
+                  (fun x hx => hwf x (by simp [hx])) (fun x hx => hin x (by simp [hx])) hw
               intro x hx
               rcases List.mem_append.1 hx with hx | hx
               · rcases List.mem_append.1 hx with hx | hx
                 · exact h1 x hx
                 · exact h2 x hx
-              · exact ih (at_ + 1 + consumed) tail h3 x hx
+              · have htailwf := (tryWindow_correct (m := m) rest _ (Win.start g) 0 repl sk tail
+                  consumed hok (fun y hy => hwf y (by simp [hy])) hw).2.2.2
+                exact ih (at_ + 1 + consumed) tail htailwf h3 x hx
             · exact keep _
           · exact keep _
 
 /-- **Superoptimization keeps every operand in range.** -/
 theorem superOptGates_inRange {n m : Nat} (cfg : SuperOptConfig) (tbl : SynthTable)
-    (gs : List Gate) (hin : ∀ g ∈ gs, g.InRange n m) :
+    (gs : List Gate) (hwf : ∀ g ∈ gs, g.Wf) (hin : ∀ g ∈ gs, g.InRange n m) :
     ∀ g ∈ superOptGates cfg tbl n gs, g.InRange n m :=
   sweep_inRange (n := n) (m := m) (cfg := cfg) (tbl := tbl)
-    gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hin
+    gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hwf hin
 
 /-- `SuperOpt`, as a `Pass`: the rewrite is decided by exact matrix comparison, so the proof
 obligation is discharged by the check the pass already runs. -/
@@ -601,7 +1006,7 @@ def SuperOpt (cfg : SuperOptConfig) (tbl : SynthTable) : Pass where
   numQubits_run _ := rfl
   numCbits_run _ := rfl
   wf_run c hc := superOptGates_wf cfg tbl c.gates hc
-  wellFormed_run c hc := superOptGates_inRange cfg tbl c.gates hc
+  wellFormed_run c hwf hc := superOptGates_inRange cfg tbl c.gates hwf hc
   flagsOk_run c _ := Circuit.flagsOk_withGates _ _
   correct c hc := superOptGates_correct cfg tbl c.gates hc
 

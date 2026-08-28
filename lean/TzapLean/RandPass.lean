@@ -59,7 +59,7 @@ structure RandPass where
   /-- Passes preserve well-formedness, whatever the seed. -/
   wf_run : ∀ c s, c.Wf → (run c s).Wf
   /-- Passes keep every operand in range, whatever the seed. -/
-  wellFormed_run : ∀ c s, c.WellFormed → (run c s).WellFormed
+  wellFormed_run : ∀ c s, c.Wf → c.WellFormed → (run c s).WellFormed
   /-- Passes leave the cached `has*` flags describing the gates that came out. -/
   flagsOk_run : ∀ c s, c.FlagsOk → (run c s).FlagsOk
   /-- **The correctness obligation**: the output denotes the same channel as the input,
@@ -86,7 +86,7 @@ def _root_.TzapLean.Pass.toRand (p : Pass) : RandPass where
   numQubits_run c _ := p.numQubits_run c
   numCbits_run c _ := p.numCbits_run c
   wf_run c _ hc := p.wf_run c hc
-  wellFormed_run c _ hc := p.wellFormed_run c hc
+  wellFormed_run c _ hwf hc := p.wellFormed_run c hwf hc
   flagsOk_run c _ hc := p.flagsOk_run c hc
   correct c hc := by
     have hempty : {s : Unit | ¬ Equivalent c.numQubits c.numCbits (p.run c).gates c.gates} = ∅ := by
@@ -111,7 +111,7 @@ def id : RandPass where
   numQubits_run _ _ := rfl
   numCbits_run _ _ := rfl
   wf_run _ _ hc := hc
-  wellFormed_run _ _ hc := hc
+  wellFormed_run _ _ _ hc := hc
   flagsOk_run _ _ hc := hc
   correct c _ := by
     have hempty : {s : Unit | ¬ Equivalent c.numQubits c.numCbits c.gates c.gates} = ∅ := by
@@ -165,10 +165,10 @@ def compWhen (p q : RandPass) (cond : Circuit → Circuit → Bool) : RandPass w
     split
     · exact q.wf_run _ _ (p.wf_run c s.1 hc)
     · exact p.wf_run c s.1 hc
-  wellFormed_run c s hc := by
+  wellFormed_run c s hwf hc := by
     split
-    · exact q.wellFormed_run _ _ (p.wellFormed_run c s.1 hc)
-    · exact p.wellFormed_run c s.1 hc
+    · exact q.wellFormed_run _ _ (p.wf_run c s.1 hwf) (p.wellFormed_run c s.1 hwf hc)
+    · exact p.wellFormed_run c s.1 hwf hc
   flagsOk_run c s hc := by
     split
     · exact q.flagsOk_run _ _ (p.flagsOk_run c s.1 hc)

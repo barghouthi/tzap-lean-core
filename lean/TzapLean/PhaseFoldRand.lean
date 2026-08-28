@@ -324,7 +324,7 @@ def PhaseFoldRand (k : Nat) : RandPass where
   numQubits_run _ _ := rfl
   numCbits_run _ _ := rfl
   wf_run c s hc := phaseFoldGates_wf (wordsOf k (liftSample s)) hc
-  wellFormed_run c s hc := phaseFoldGates_inRange (wordsOf k (liftSample s)) hc
+  wellFormed_run c s _ hc := phaseFoldGates_inRange (wordsOf k (liftSample s)) hc
   flagsOk_run c _ _ := Circuit.flagsOk_withGates _ _
   correct c hc := by
     refine le_trans ((PMF.uniformOfFintype (Sample (varBound c) k)).toOuterMeasure_mono ?_)

@@ -248,10 +248,10 @@ theorem tzapRun_exact {names : List PassName} (h : PassName.PhaseFoldRand ∉ na
 honest `has*` flags, from `RandPass`'s structural obligations. With `Qasm.parse_valid`, which
 establishes the same of whatever the front end accepts, this holds from parse to emit. -/
 theorem tzapRun_structural (cfg : SuperOptConfig) (tbl : SynthTable) (names : List PassName)
-    (fuel : Nat) (c : Circuit) (hc : c.Structural)
+    (fuel : Nat) (c : Circuit) (hwf : c.Wf) (hc : c.Structural)
     (s : (tzapRun cfg tbl names fuel).Seed c) :
     ((tzapRun cfg tbl names fuel).run c s).Structural :=
-  ⟨(tzapRun cfg tbl names fuel).wellFormed_run c s hc.1,
+  ⟨(tzapRun cfg tbl names fuel).wellFormed_run c s hwf hc.1,
    (tzapRun cfg tbl names fuel).flagsOk_run c s hc.2⟩
 
 /-! ## Running -/

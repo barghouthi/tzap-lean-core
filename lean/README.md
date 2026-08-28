@@ -35,8 +35,8 @@ lake build           # library + tests (the `#guard` checks run at build time)
 | `TzapLean/Locality.lean` | `pad`: an operator on a few wires is itself ⊗ identity. Products, scalars, and every gate. |
 | `TzapLean/SynthTable.lean` | The bounded synthesis table: flat builder matrices, fingerprints, the library gate set, and the breadth-first build. |
 | `TzapLean/TableCache.lean` | The on-disk table cache — the port of `table.rs`'s persistence. |
-| `TzapLean/SuperOpt.lean` | `SuperOpt`: window scan and verified rewrite. |
-| `TzapLean/SuperOptProof.lean` | The window invariant, and the pass. |
+| `TzapLean/SuperOpt.lean` | `SuperOpt`: one forward window scan, with the window closed over its wires, and the verified rewrite. |
+| `TzapLean/SuperOptProof.lean` | The window invariant, the partition lemma that turns a window into its rewrite target, and the pass. |
 | `TzapLean/SemanticsCheck.lean` | Independent validation of the semantics: unitarity of every gate, trace preservation, concrete amplitudes, and the `src/unitary.rs` suite. |
 | `TzapLean/Tests.lean` | The Rust test suites of `circuit.rs`, `pass.rs`, `cancel.rs` and `cnot_min.rs`, as `#guard` checks. |
 | `TzapLean/PhaseFoldTests.lean` | The `phase_fold_rand.rs` suite: 108 `#guard` checks. |
@@ -122,14 +122,38 @@ and safe in both directions by construction: a false negative would cost an opti
 false positive one wasted scan. The whole correctness proof is untouched by it.
 
 That took `SuperOpt` on `gf2^16` from 12.2 s to 5.7 s, and `-O3` on the same circuit from
-7.2 s to 2.6 s, but it did **not** make the pass linear, and the reason is worth recording
-because it is not the one that motivated the index. `superOptAux` re-sweeps while the circuit
-keeps shrinking, and the number of sweeps grows with the circuit: 6 for `gf2^8`, 14 for
-`gf2^16`. Rust needs 2. Its scan keeps every live window open at once and collects all
-non-overlapping rewrites in a single pass (`RewriteSet`, `windows_by_qubit`), where this port
-anchors one window at a time and jumps past each rewrite it takes — so it finds fewer rewrites
-per sweep and needs more sweeps. Closing that means the simultaneous-window scan, and a proof
-that a *set* of disjoint rewrites composes rather than one rewrite at a time.
+7.2 s to 2.6 s. The pass used to sweep to its own fixpoint on top of that, which was both
+slower and *stronger than Rust*, whose `SuperOpt::run` makes one forward scan and leaves
+repetition to the optimizer around it; it is one scan now, and `gf2^32` at `-O3` went from
+14.1 s to 10.8 s for identical output.
+
+### Where the windows differ from Rust's
+
+A window is the connected closure of its anchor: the gates of a span that reach the anchor
+through shared wires, with everything else in the span disjoint from the window's wires and so
+commuting past it. A gate that brings in a *new* wire therefore pulls in the earlier gates on
+that wire, retroactively — `expand_component_closure` in Rust, `closeSpan` here. This port
+used to abandon a window instead whenever an already-skipped gate touched a newly-bridged
+wire, which meant it systematically missed every rewrite that has to be discovered that way:
+`x q0; h q1; cx q0,q1; x q0` came back unchanged where Rust finds a three-gate replacement.
+Both directions of that are now in `SuperOptTests`.
+
+One difference remains, and it is the greedy schedule. Rust keeps every live window open at
+once, sorts the candidates a gate completes by anchor age, and lets the first one with a
+shorter replacement claim its gates (`RewriteSet`, `windows_by_qubit`); this port grows one
+window at a time from the earliest anchor, commits its first hit, and continues past it. For
+overlapping candidates the two can pick different locally optimal rewrites, so the final gate
+counts can differ in either direction. Closing that means the simultaneous-window scan, and
+with it a proof that a *set* of disjoint rewrites composes rather than one rewrite at a time —
+a redesign of `sweepOnce` and everything proved about it, not a local change.
+
+The per-qubit index is the other place this shows. `anchorMayFire` replays a window's growth
+through the index to decide whether the verified scan is worth running, and it has no cheap
+way to replay `closeSpan` — so it answers "may fire" whenever a gate bridges in a wire that
+earlier gates already touch, and lets the verified scan decide. That is the safe direction (a
+filter may only ever over-approximate, or it would lose the very rewrites the closure exists
+to find), and it is what the closure costs: about 15% on `gf2^8`. Replaying the closure over
+the index — Rust's `gates_by_qubit` walk — would recover it.
 
 The other passes still pay the full scan. Rust keeps **per-qubit tracks** — for each wire, the indices of the
 gates touching it — so a lookahead visits only gates on the two wires it cares about and
@@ -149,20 +173,16 @@ from 3.2 s to 0.065 s, and `gf2^64` parses in 0.28 s.
 one on the same parity, where Rust makes one pass keyed by a parity-to-group hash map — but
 the constant is now small enough that it is no longer what dominates.
 
-`-Osuper` is faster than Rust (2.9 s against 16.4 s) only because it does much less: Rust
-builds a 5,000,000-entry table across 5 wires, this builds 800,000 across 4.
-
-**`-O1`–`-O3` use Rust's own `SuperOpt` bounds** — 3 wires, 25-gate windows, 200,000 entries,
-with the same `table_gates = window_gates - 1` mapping. `-Osuper` does not: Rust uses 5 wires
-and 5,000,000 entries, which a single-threaded builder cannot reach in a sensible time, so it
-uses 4 wires and 200,000 entries (800,000 unitaries, 70 s to build, 0.12 s to load).
-`--superopt-qubits`, `--superopt-window-gates` and `--superopt-table-entries` override any of
-them.
+**Every level uses Rust's own `SuperOpt` bounds** — 3 wires, 25-gate windows, 200,000 entries,
+with the same `table_gates = window_gates - 1` mapping. `--superopt-qubits`,
+`--superopt-window-gates` and `--superopt-table-entries` override any of the three. There used
+to be a `-Osuper` tier at 4 wires and 200,000 entries against Rust's 5 and 5,000,000, because
+a single-threaded builder cannot reach the latter in a sensible time; it has been removed
+rather than left inviting a comparison it could not survive.
 
 `-O3` is `-O2` run to a true fixpoint; Rust's `-O3` also ends with a one-shot Clifford
-re-synthesis, which is not ported. The synthesis table is built per run rather than cached to
-disk, so the level presets are scaled to keep a cold start near a tenth of a second
-(`-Osuper` trades that for reach, as in Rust).
+re-synthesis, which is not ported. The table is cached to disk (`TableCache`), so the 76 s
+cold build is paid once and a warm run loads its 549,456 unitaries in 0.07 s.
 
 ## The obligation
 
@@ -173,7 +193,7 @@ structure Pass where
   numQubits_run : ∀ c, (run c).numQubits = c.numQubits
   numCbits_run : ∀ c, (run c).numCbits = c.numCbits
   wf_run : ∀ c, c.Wf → (run c).Wf
-  wellFormed_run : ∀ c, c.WellFormed → (run c).WellFormed
+  wellFormed_run : ∀ c, c.Wf → c.WellFormed → (run c).WellFormed
   flagsOk_run : ∀ c, c.FlagsOk → (run c).FlagsOk
   correct : ∀ c, c.Wf → Equivalent c.numQubits c.numCbits (run c).gates c.gates
 ```

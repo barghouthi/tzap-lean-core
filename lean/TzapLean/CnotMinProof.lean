@@ -1342,7 +1342,7 @@ def CnotMin : Pass where
   numQubits_run _ := rfl
   numCbits_run _ := rfl
   wf_run c hc := cnotMinGates_wf _ _ c.gates hc
-  wellFormed_run c hc := cnotMinGates_inRange _ _ c.gates hc
+  wellFormed_run c _ hc := cnotMinGates_inRange _ _ c.gates hc
   flagsOk_run c _ := Circuit.flagsOk_withGates _ _
   correct c hc := cnotMinGates_correct _ _ c.gates hc
 
