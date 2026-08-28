@@ -111,7 +111,7 @@ def parseAccepts (src : String) : Bool := (parse src).toOption.isSome
 #guard (PassName.all.filter (fun p => !p.2.1.verified)).map (·.1) == ["PhaseFoldRand"]
 -- `O1` is the only level that skips the table.
 #guard !Level.O1.usesSuperOpt
-#guard Level.O2.usesSuperOpt && Level.O3.usesSuperOpt && Level.Osuper.usesSuperOpt
+#guard Level.O2.usesSuperOpt && Level.O3.usesSuperOpt && !Level.O1.usesSuperOpt
 -- `O2` is the bounded tier.
 #guard Level.O2.maxRounds == some 2
 #guard Level.O3.maxRounds == none

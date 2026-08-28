@@ -133,23 +133,59 @@ def passCases : List (String × Nat × List Gate × List Gate) :=
       [h 2, cnot 1 2, tdg 2, cnot 0 2, t 2, cnot 1 2, tdg 2, cnot 0 2, t 1, t 2, h 2],
       [h 2, cnot 1 2, tdg 2, cnot 0 2, t 2, cnot 1 2, tdg 2, cnot 0 2, t 1, t 2, h 2]) ]
 
-/-- Cases whose output differs from what is expected — empty when all pass. One table serves
+/-- Iterate the scan to a fixpoint, as the driver does.
+
+`superOptGates` is *one forward scan*, because `SuperOpt::run` is one forward scan: a case
+needing two rewrites on the same wires needs two of them, and it is the pipeline that repeats
+the pass, not the pass that repeats itself. -/
+def superOptFix (tbl : SynthTable) (n : Nat) : Nat → List Gate → List Gate
+  | 0, gs => gs
+  | fuel + 1, gs =>
+      let gs' := superOptGates cfg tbl n gs
+      if gs'.length < gs.length then superOptFix tbl n fuel gs' else gs'
+
+/-- Cases whose fixpoint differs from what is expected — empty when all pass. One table serves
 every case. -/
 def passFailures : List String :=
   let tbl := buildTable tcfg
   passCases.filterMap fun (name, n, inp, want) =>
-    if superOptGates cfg tbl n inp == want then none else some name
+    if superOptFix tbl n inp.length inp == want then none else some name
 
 #guard passFailures.isEmpty
 
-/-- Running the pass on its own output changes nothing further. -/
-def idempotentFailures : List String :=
+/-- The cases above where a *single* scan does not already finish, and what it leaves for the
+driver's next round. Recorded rather than hidden: this is the whole difference between one
+invocation of the pass and the pipeline that repeats it. -/
+def oneScanCases : List (String × Nat × List Gate × List Gate) :=
+  [ ("ssss", 2, [s 0, s 0, s 0, s 0], [z 0, z 0]),
+    ("tttt", 1, [t 0, t 0, t 0, t 0], [s 0, s 0]),
+    ("s tttt", 1, [s 0, t 0, t 0, t 0, t 0], [z 0, s 0]),
+    ("(hs)^3", 1, [h 0, s 0, h 0, s 0, h 0, s 0], [sdg 0, h 0, h 0, s 0]) ]
+
+def oneScanFailures : List String :=
+  let tbl := buildTable tcfg
+  oneScanCases.filterMap fun (name, n, inp, want) =>
+    if superOptGates cfg tbl n inp == want then none else some name
+
+#guard oneScanFailures.isEmpty
+
+/-- Every other case *is* finished by a single scan. -/
+def singleScanSuffices : List String :=
+  let tbl := buildTable tcfg
+  passCases.filterMap fun (name, n, inp, want) =>
+    if oneScanCases.any (·.1 == name) then none
+    else if superOptGates cfg tbl n inp == want then none else some name
+
+#guard singleScanSuffices.isEmpty
+
+/-- Iterating reaches a fixpoint: one more scan over the settled circuit changes nothing. -/
+def fixpointFailures : List String :=
   let tbl := buildTable tcfg
   passCases.filterMap fun (name, n, inp, _) =>
-    let once := superOptGates cfg tbl n inp
-    if superOptGates cfg tbl n once == once then none else some name
+    let done := superOptFix tbl n inp.length inp
+    if superOptGates cfg tbl n done == done then none else some name
 
-#guard idempotentFailures.isEmpty
+#guard fixpointFailures.isEmpty
 
 /-! ## Three-wire windows
 

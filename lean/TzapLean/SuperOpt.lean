@@ -345,19 +345,18 @@ def sweepOnce (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : Array Ga
         | none => g :: sweepOnce cfg tbl n gs tracks fuel (at_ + 1) rest
       else g :: sweepOnce cfg tbl n gs tracks fuel (at_ + 1) rest
 
-/-- Sweep until a sweep changes nothing. One sweepOnce already takes every rewrite it can see; a
-second is only needed because a rewrite can expose a new window. -/
-def superOptAux (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) : Nat → List Gate → List Gate
-  | 0, gs => gs
-  | fuel + 1, gs =>
-      let arr := gs.toArray
-      let gs' := sweepOnce cfg tbl n arr (buildTracks n arr) gs.length 0 gs
-      if gs'.length < gs.length then superOptAux cfg tbl n fuel gs' else gs'
+/-- Peephole superoptimization of a gate list over `n` wires: **one forward scan**, as
+`SuperOpt::run` is one forward scan.
 
-/-- Peephole superoptimization of a gate list over `n` wires. -/
+It used to sweep to its own fixpoint, which made a single explicit `--passes SuperOpt`
+stronger than a single Rust invocation, and — in the default pipeline — meant the pass
+exhausted itself before phase folding got another turn, where Rust interleaves one scan with
+the other passes each round. Repetition is the driver's job (`runToFixpoint`, and the
+`fixpointShrink` it models), not the pass's. -/
 def superOptGates (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : List Gate) :
     List Gate :=
-  superOptAux cfg tbl n gs.length gs
+  let arr := gs.toArray
+  sweepOnce cfg tbl n arr (buildTracks n arr) gs.length 0 gs
 
 /-- Peephole superoptimization of a circuit. -/
 def superOpt (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) : Circuit :=

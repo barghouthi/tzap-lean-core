@@ -102,7 +102,6 @@ def printHelp : IO Unit := do
   IO.println "    \x1b[1m-O1\x1b[0m              Fastest: phase folding + gate cancellation only"
   IO.println "    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1 (2 rounds)"
   IO.println "    \x1b[1m-O3\x1b[0m              Runs -O2 to a fixpoint (default)"
-  IO.println "    \x1b[1m-Osuper\x1b[0m          Fixpoint optimization with a larger SuperOpt window/table"
   IO.println "                     (slower first run: the table is built from scratch)"
   IO.println "    \x1b[1m-h, --help\x1b[0m       Print this help message"
   IO.println "    \x1b[1m-v, --version\x1b[0m    Print the version"
@@ -150,11 +149,11 @@ partial def parseArgs (args : List String) : IO Opts := do
     | "--seed" =>
         i := i + 1
         seed := some (← parseUsize args i "--seed")
-    | "-O1" | "-O2" | "-O3" | "-Osuper" =>
+    | "-O1" | "-O2" | "-O3" =>
         if level.isSome then
-          argError "-O1, -O2, -O3, and -Osuper cannot be combined — pick exactly one"
+          argError "-O1, -O2 and -O3 cannot be combined — pick exactly one"
         level := some (match arg with
-          | "-O1" => .O1 | "-O2" => .O2 | "-Osuper" => .Osuper | _ => .O3)
+          | "-O1" => .O1 | "-O2" => .O2 | _ => .O3)
     | "-o" =>
         i := i + 1
         let some p := args[i]? | argError "-o requires an output file path"
@@ -182,11 +181,11 @@ partial def parseArgs (args : List String) : IO Opts := do
     i := i + 1
   let some inPath := inputPath |
     argError "missing required <input.qasm> argument\n\n  \
-              Usage: tzap-lean <input.qasm> [-o output.qasm] [-O1|-O2|-O3|-Osuper] \
+              Usage: tzap-lean <input.qasm> [-o output.qasm] [-O1|-O2|-O3] \
               [--passes <list>] [--fixpoint]\n  \
               Run `tzap-lean --help` for the full option list."
   if level.isSome && (passes.isSome || fixpoint) then
-    argError "-O1, -O2, -O3, and -Osuper cannot be combined with --passes or --fixpoint"
+    argError "-O1, -O2 and -O3 cannot be combined with --passes or --fixpoint"
   return { inputPath := inPath, outputPath,
            options := { level := level.getD .O3, passes, fixpoint, seed, verbose,
                         superopt := ⟨soQubits, soWindow, soEntries⟩ } }

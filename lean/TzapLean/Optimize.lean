@@ -62,8 +62,6 @@ inductive Level where
   | O2
   /-- Like `O2`, run to a true fixpoint. The default. -/
   | O3
-  /-- Fixpoint optimization with wider `SuperOpt` bounds. -/
-  | Osuper
 deriving Repr, DecidableEq, Inhabited
 
 /-- A pass selectable by name in `--passes`. -/
@@ -135,21 +133,15 @@ structure Options where
   verbose : Bool := false
 deriving Repr, Inhabited
 
-/-- The window/table bounds a level implies.
+/-- The window/table bounds a level implies: Rust's own — 3 wires, 25-gate windows, a
+200,000-entry table, with the same `table_gates = window_gates - 1` mapping.
 
-`O1`–`O3` use Rust's own bounds: 3 wires, 25-gate windows, a 200,000-entry table. That table
-takes about 76 seconds to build here against Rust's parallel builder, which is affordable only
-because it is built once and cached (`TableCache`) — a warm run loads its 549,456 unitaries in
-0.07 s.
-
-`Osuper` is where this parts company with Rust, which uses 5 wires and 5,000,000 entries: at
-that size a single-threaded build is not worth waiting for. 4 wires and 200,000 entries is the
-widest tier that builds in a tolerable time — 800,000 unitaries in 70 s, then 0.12 s a run. -/
+That table takes about 76 seconds to build here against Rust's parallel builder, which is
+affordable only because it is built once and cached (`TableCache`): a warm run loads its
+549,456 unitaries in 0.07 s. `--superopt-qubits`, `--superopt-window-gates` and
+`--superopt-table-entries` override any of the three. -/
 def Level.bounds : Level → Nat × Nat × Nat
-  | .O1 => (3, 25, 200000)
-  | .O2 => (3, 25, 200000)
-  | .O3 => (3, 25, 200000)
-  | .Osuper => (4, 40, 200000)
+  | _ => (3, 25, 200000)
 
 /-- Resolve the bounds for a run: level preset, then any explicit override. -/
 def resolveBounds (o : Options) : SuperOptConfig × SuperOptTableConfig :=

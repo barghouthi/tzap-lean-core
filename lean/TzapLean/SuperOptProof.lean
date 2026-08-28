@@ -451,32 +451,15 @@ theorem sweep_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
             · exact keep _
           · exact keep _
 
-theorem superOptAux_correct {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
-    ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.Wf) →
-      Equivalent n m (superOptAux cfg tbl n fuel gs) gs ∧
-        (∀ g ∈ superOptAux cfg tbl n fuel gs, g.Wf) := by
-  intro fuel
-  induction fuel with
-  | zero => intro gs hwf; exact ⟨Equivalent.refl n m gs, hwf⟩
-  | succ fuel ih =>
-      intro gs hwf
-      obtain ⟨heq, hwf'⟩ :=
-        sweep_correct (m := m) gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hwf
-      rw [superOptAux]
-      split
-      · obtain ⟨heq', hwf''⟩ := ih _ hwf'
-        exact ⟨heq'.trans heq, hwf''⟩
-      · exact ⟨heq, hwf'⟩
-
 /-- **Superoptimization preserves meaning.** -/
 theorem superOptGates_correct {n m : Nat} (cfg : SuperOptConfig) (tbl : SynthTable)
     (gs : List Gate) (hwf : ∀ g ∈ gs, g.Wf) :
     Equivalent n m (superOptGates cfg tbl n gs) gs :=
-  (superOptAux_correct gs.length gs hwf).1
+  (sweep_correct (m := m) gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hwf).1
 
 theorem superOptGates_wf {n : Nat} (cfg : SuperOptConfig) (tbl : SynthTable) (gs : List Gate)
     (hwf : ∀ g ∈ gs, g.Wf) : ∀ g ∈ superOptGates cfg tbl n gs, g.Wf :=
-  (superOptAux_correct (n := n) (m := 0) gs.length gs hwf).2
+  (sweep_correct (n := n) (m := 0) gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hwf).2
 
 /-! ## Operand ranges
 
@@ -603,26 +586,12 @@ theorem sweep_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable}
             · exact keep _
           · exact keep _
 
-theorem superOptAux_inRange {n m : Nat} {cfg : SuperOptConfig} {tbl : SynthTable} :
-    ∀ (fuel : Nat) (gs : List Gate), (∀ g ∈ gs, g.InRange n m) →
-      ∀ g ∈ superOptAux cfg tbl n fuel gs, g.InRange n m := by
-  intro fuel
-  induction fuel with
-  | zero => intro gs h; exact h
-  | succ fuel ih =>
-      intro gs hin
-      have h' := sweep_inRange (n := n) (m := m) (cfg := cfg) (tbl := tbl)
-        gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hin
-      rw [superOptAux]
-      split
-      · exact ih _ h'
-      · exact h'
-
 /-- **Superoptimization keeps every operand in range.** -/
 theorem superOptGates_inRange {n m : Nat} (cfg : SuperOptConfig) (tbl : SynthTable)
     (gs : List Gate) (hin : ∀ g ∈ gs, g.InRange n m) :
     ∀ g ∈ superOptGates cfg tbl n gs, g.InRange n m :=
-  superOptAux_inRange gs.length gs hin
+  sweep_inRange (n := n) (m := m) (cfg := cfg) (tbl := tbl)
+    gs.toArray (buildTracks n gs.toArray) gs.length 0 gs hin
 
 /-- `SuperOpt`, as a `Pass`: the rewrite is decided by exact matrix comparison, so the proof
 obligation is discharged by the check the pass already runs. -/
