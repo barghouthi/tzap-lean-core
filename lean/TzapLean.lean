@@ -3,6 +3,7 @@ import TzapLean.Semantics
 import TzapLean.Support
 import TzapLean.GateAlgebra
 import TzapLean.Equivalence
+import TzapLean.Rewrite
 import TzapLean.Pass
 import TzapLean.Cancel
 import TzapLean.CnotMin
