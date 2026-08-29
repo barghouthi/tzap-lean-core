@@ -14,11 +14,11 @@ without losing any unitary: a child never follows its parent's inverse, and amon
 qubit-disjoint neighbours only the canonically ordered interleaving is expanded.
 
 The enumeration needs a *key*: a matrix, canonicalized so that any two representatives of the
-same operator hash alike. `ExactMat.key` supplies it — normalize the `√2` denominator, rotate
-to the canonical global phase, flatten the coefficients. Rust hashes this down to 64 bits and
-guards against collisions by re-comparing matrices; here the key is the exact coefficient
-list, so a hit is already exact. Either way the pass re-verifies before rewriting, so the
-table is a *source of candidates* and never load-bearing for correctness.
+same operator hash alike. Normalize the `√2` denominator, rotate to the canonical global
+phase, flatten the coefficients, then hash them to the 64-bit fingerprint the table stores.
+As in Rust, the pass independently re-verifies a candidate before rewriting, so a collision
+can cost an optimization but cannot make the output wrong. The table is a source of
+candidates and never load-bearing for correctness.
 
 Circuits are stored prefix-shared, as in `synthesis_arena.rs`: BFS only ever extends a
 circuit by one gate, so the entries form a tree and each node records just its last gate and

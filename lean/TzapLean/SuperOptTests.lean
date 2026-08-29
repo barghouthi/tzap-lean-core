@@ -114,6 +114,9 @@ def passCases : List (String × Nat × List Gate × List Gate) :=
     ("(hs)^3", 1, [h 0, s 0, h 0, s 0, h 0, s 0], []),
     ("x on control", 2, [x 0, cnot 0 1, x 0], [x 1, cnot 0 1]),
     ("t through control", 2, [t 0, cnot 0 1, tdg 0], [cnot 0 1]),
+    -- physical support order must not reverse a synthesized CNOT
+    ("sparse cnot forward", 5, [h 3, cz 1 3, h 3], [cnot 1 3]),
+    ("sparse cnot reverse", 5, [h 1, cz 3 1, h 1], [cnot 3 1]),
     -- CZ is not in the library, so `h·cx·h` has no replacement the pass may emit
     ("h cx h stays", 2, [h 1, cnot 0 1, h 1], [h 1, cnot 0 1, h 1]),
     -- a SWAP is already optimal
@@ -150,6 +153,21 @@ def bridgeFailures : List String :=
     if superOptGates cfg tbl n inp == want then none else some name
 
 #guard bridgeFailures.isEmpty
+
+/-! ## Greedy completion order
+
+The `ss` window on wire 1 completes before the older `x` window on wire 0 reaches it through
+the final bridge. Rust therefore claims the two `s` gates first. This distinguishes the
+simultaneous-window scan from the old earliest-anchor scan, which looked through the bridge
+before giving the `s` anchor a turn. -/
+def completionOrderOk : Bool :=
+  let inp := [x 0, s 1, s 1, cnot 0 1]
+  let tbl := buildTable tcfg
+  let st := proposeRewrites cfg tbl 2 inp.toArray
+  st.tags.toList == [none, some 0, some 0, none] &&
+    superOptGates cfg tbl 2 inp == [x 0, z 1, cnot 0 1]
+
+#guard completionOrderOk
 
 /-- Iterate the scan to a fixpoint, as the driver does.
 

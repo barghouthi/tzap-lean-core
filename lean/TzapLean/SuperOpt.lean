@@ -203,8 +203,9 @@ one that *starts* earliest, is what this arrangement buys, and it is the reason 
 has to be alive together.
 
 **None of this is verified.** What comes out is a *tagging* — each gate labelled with the
-rewrite that claims it — and `checkProposal` vets it before anything is spliced. A bug here
-costs an optimization, or a rewrite that is refused, never a wrong circuit. -/
+rewrite that claims it. `checkRewrite` vets each selected rewrite, then `onSuppB` and `sepB`
+vet the whole tagging before anything is spliced. A bug here costs an optimization, or a
+rewrite that is refused, never a wrong circuit. -/
 
 /-- Whether a gate may anchor a window. -/
 def canAnchor (cfg : SuperOptConfig) (n : Nat) (g : Gate) : Bool :=

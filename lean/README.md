@@ -128,7 +128,7 @@ slower and *stronger than Rust*, whose `SuperOpt::run` makes one forward scan an
 repetition to the optimizer around it; it is one scan now, and `gf2^32` at `-O3` went from
 14.1 s to 10.8 s for identical output.
 
-### Where the windows differ from Rust's
+### Matching Rust's window and greedy schedule
 
 A window is the connected closure of its anchor: the gates of a span that reach the anchor
 through shared wires, with everything else in the span disjoint from the window's wires and so
@@ -389,11 +389,11 @@ a child never follows its parent's inverse, and among qubit-disjoint neighbours 
 canonically ordered interleaving is expanded — and circuits are stored prefix-shared, each
 node recording just its last gate and its parent.
 
-The enumeration needs a *key*, and that is what `ExactMat.key` is for: normalize the `√2`
+The enumeration needs a *key*, and that is what `ExactMat.key` describes: normalize the `√2`
 denominator, rotate to the canonical global phase (the power of `ω` making the first nonzero
-entry's coefficients lexicographically least — no division, no rounding), flatten the
-coefficients. Rust hashes this to 64 bits and re-compares matrices to guard against
-collisions; here the key is the exact coefficient list.
+entry's coefficients lexicographically least — no division, no rounding), and flatten the
+coefficients. The table stores a 64-bit fingerprint of that key, as Rust does. A lookup is
+only a proposal; the pass re-computes the exact matrices before accepting it.
 
 The library the table draws from is deliberately **not** every gate the pass can read: `ccx`
 and `cz` are excluded, so superoptimization never *introduces* them — a Toffoli costs about
@@ -408,8 +408,8 @@ be replaced by Rust's on-disk cache, or by a smarter enumeration, without touchi
 the proof. The identities in the test file — `h·z·h = x`, `x·cx·x = x⊗cx`, `(HS)³ = 1`, a `T`
 commuting through a `CNOT` control — are *discovered*, not listed.
 
-One deliberate departure from Rust: **skipped gates move to just after the replacement**
-rather than staying interleaved. They commute with every window gate, so this is invisible.
+As in Rust, skipped gates stay interleaved. `applyAll` emits a replacement at its first
+claimed gate, removes its other claimed gates, and copies every unclaimed gate in place.
 
 ### Persisting the table
 
