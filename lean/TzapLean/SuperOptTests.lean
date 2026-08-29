@@ -60,6 +60,14 @@ def sampleCycs : List Cyc :=
 -- The one-step `ω^p` the table builder uses is the recursive one, for every `p` mod 8.
 #guard sampleCycs.all fun x => (List.range 24).all fun p => x.timesOmegaFast p == x.timesOmega p
 
+/-! ## Canonical window-shape cache -/
+
+-- Physical wire names disappear from the key, but operand order does not.
+#guard compactShapeKey [3, 7] #[h 3, cnot 3 7, t 7] [0, 1, 2] ==
+  compactShapeKey [11, 2] #[h 11, cnot 11 2, t 2] [0, 1, 2]
+#guard compactShapeKey [3, 7] #[cnot 3 7] [0] !=
+  compactShapeKey [3, 7] #[cnot 7 3] [0]
+
 /-! ## The library gate set
 
 `library_gates(k)` has `7k` one-wire gates and `k(k−1)` `CNOT`s — Rust asserts exactly these
@@ -168,6 +176,17 @@ def completionOrderOk : Bool :=
     superOptGates cfg tbl 2 inp == [x 0, z 1, cnot 0 1]
 
 #guard completionOrderOk
+
+/-- The second pair has the same support-local shape as the first pair on another physical
+wire, so its synthesis answer comes from the scan-local cache. -/
+def shapeCacheReusesAnswer : Bool :=
+  let tbl := buildTable tcfg
+  let inp := #[h 0, h 0, h 1, h 1]
+  let st := proposeRewrites cfg tbl 2 inp
+  st.shapeHits > 0 && st.shapeMisses > 0 &&
+    superOptGates cfg tbl 2 inp.toList == []
+
+#guard shapeCacheReusesAnswer
 
 /-- Iterate the scan to a fixpoint, as the driver does.
 

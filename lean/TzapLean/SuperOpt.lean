@@ -212,6 +212,59 @@ def canAnchor (cfg : SuperOptConfig) (n : Nat) (g : Gate) : Bool :=
   isWindowGate g && g.qubitsOf.length ≤ cfg.maxQubits &&
     g.qubitsOf.all (fun q => q < n) && decide g.Wf
 
+/-! ## Canonical window-shape cache
+
+Two windows with the same gate kinds and support-local operands have the same matrix,
+regardless of their physical wires. Cache the synthesis answer for that exact shape, including
+`none`, so a recurring shape does not rebuild and fingerprint its flat matrix. This is the
+first layer of Rust's `MatrixStore`; transition states and persistence across scans are kept
+separate so their effects can be measured independently. -/
+
+/-- A compact, exact encoding of a window's support-local gate sequence. -/
+structure ShapeKey where
+  /-- Width is explicit so keys remain unambiguous even if a future scan carries idle wires. -/
+  width : Nat
+  /-- One 16-bit code per gate. -/
+  gates : List UInt16
+deriving BEq, Hashable
+
+/-- Encode one support-local gate. Four bits per operand supports widths up to 16; larger
+experimental configurations conservatively bypass the cache. -/
+def compactGateCode : Gate → Option UInt16
+  | .x q => one 0 q
+  | .h q => one 1 q
+  | .s q => one 2 q
+  | .sdg q => one 3 q
+  | .z q => one 4 q
+  | .t q => one 5 q
+  | .tdg q => one 6 q
+  | .cnot c t => two 7 c t
+  | .cz c t => two 8 c t
+  | .ccx a b t => three 9 a b t
+  | .ccz a b t => three 10 a b t
+  | .rz _ _ | .measure _ _ | .reset _ => none
+where
+  one (tag q : Nat) : Option UInt16 :=
+    if q < 16 then some (UInt16.ofNat (tag * 4096 + q)) else none
+  two (tag a b : Nat) : Option UInt16 :=
+    if a < 16 && b < 16 then some (UInt16.ofNat (tag * 4096 + a * 16 + b)) else none
+  three (tag a b c : Nat) : Option UInt16 :=
+    if a < 16 && b < 16 && c < 16 then
+      some (UInt16.ofNat (tag * 4096 + a * 256 + b * 16 + c))
+    else none
+
+/-- Canonical key for physical gates `mem`, localized to `support`. Builds no localized gate
+list, leaving that allocation and matrix construction to the cache-miss path. -/
+def compactShapeKey (support : List Qubit) (gs : Array Gate) (mem : List Nat) : Option ShapeKey :=
+  go mem []
+where
+  go : List Nat → List UInt16 → Option ShapeKey
+    | [], acc => some ⟨support.length, acc.reverse⟩
+    | i :: is, acc =>
+        match compactGateCode (localizeGate support gs[i]!) with
+        | none => none
+        | some code => go is (code :: acc)
+
 /-- The scan's state. -/
 structure Scan where
   /-- Every window ever anchored, by id — ids ascend with anchor position. -/
@@ -230,6 +283,12 @@ structure Scan where
   supports : Array (List Qubit)
   /-- Rewrite → its replacement, in support-local form. -/
   cands : Array (List Gate)
+  /-- Canonical window shape → the table's answer; inner `none` is a cached miss. -/
+  shapeCache : Std.HashMap ShapeKey (Option (List Gate))
+  /-- Cache hits in this scan, retained for tests and profiling. -/
+  shapeHits : Nat
+  /-- Newly resolved canonical shapes in this scan. -/
+  shapeMisses : Nat
 
 /-- The state a scan starts from. -/
 def Scan.initial (n : Nat) (count : Nat) : Scan where
@@ -241,6 +300,9 @@ def Scan.initial (n : Nat) (count : Nat) : Scan where
   tags := Array.replicate count none
   supports := #[]
   cands := #[]
+  shapeCache := ∅
+  shapeHits := 0
+  shapeMisses := 0
 
 /-- Retire a window. -/
 def Scan.retire (st : Scan) (wid : Nat) : Scan := { st with alive := st.alive.set! wid false }
@@ -254,20 +316,40 @@ def Scan.select (st : Scan) (mem : List Nat) (sup : List Qubit) (cand : List Gat
     supports := st.supports.push sup
     cands := st.cands.push cand }
 
+/-- Offer one cached or freshly synthesized answer to greedy selection. -/
+def Scan.offer (st : Scan) (mem : List Nat) (sup : List Qubit)
+    (answer : Option (List Gate)) : Scan × Bool :=
+  match answer with
+  | none => (st, false)
+  | some cand =>
+      if cand.length < mem.length then (st.select mem sup cand, true) else (st, false)
+
 /-- Offer a window to the table: select it when the table holds something strictly shorter and
 nothing it claims is claimed already. -/
 def Scan.consider (st : Scan) (tbl : SynthTable) (gs : Array Gate) (sup : List Qubit)
     (mem : List Nat) : Scan × Bool :=
   if mem.any (st.claimed[·]!) then (st, false)
   else
-    let members := mem.map (gs[·]!)
-    match FlatMat.ofGates sup.length (localizeGates sup members) with
-    | none => (st, false)
-    | some fm =>
-        match tbl.synthesizeFlat sup.length fm with
-        | none => (st, false)
-        | some cand =>
-            if cand.length < mem.length then (st.select mem sup cand, true) else (st, false)
+    match compactShapeKey sup gs mem with
+    | some key =>
+        match st.shapeCache.get? key with
+        | some answer =>
+            let st := { st with shapeHits := st.shapeHits + 1 }
+            st.offer mem sup answer
+        | none =>
+            let members := mem.map (gs[·]!)
+            let answer :=
+              (FlatMat.ofGates sup.length (localizeGates sup members)).bind
+                (tbl.synthesizeFlat sup.length)
+            let st := { st with shapeCache := st.shapeCache.insert key answer,
+                                shapeMisses := st.shapeMisses + 1 }
+            st.offer mem sup answer
+    | none =>
+        let members := mem.map (gs[·]!)
+        let answer :=
+          (FlatMat.ofGates sup.length (localizeGates sup members)).bind
+            (tbl.synthesizeFlat sup.length)
+        st.offer mem sup answer
 
 /-- Offer one live window the current gate. -/
 def Scan.step (cfg : SuperOptConfig) (tbl : SynthTable) (gs : Array Gate) (st : Scan)
