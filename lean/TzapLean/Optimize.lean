@@ -44,13 +44,34 @@ structure Metrics where
   rz : Nat := 0
 deriving Repr, Inhabited, DecidableEq
 
-/-- Measure a circuit. -/
-def Metrics.of (c : Circuit) : Metrics where
-  gates := c.gates.length
-  twoQubit := count2q c
-  depth := TzapLean.depth c
-  t := countT c
-  rz := countRz c
+/-- Measure a structurally valid circuit in one gate-list walk.
+
+`TzapLean.depth` is the readable specification: it builds a chain of functions and then
+queries that chain once per qubit, which costs `O(gates × qubits)`. The driver has already
+established that every operand is below `numQubits`, so its reporting path can keep the same
+next-free-layer state in an array and compute all five counters alongside it in `O(gates)`.
+Metrics are presentation only; no optimizer decision or correctness proof depends on them. -/
+def Metrics.of (c : Circuit) : Metrics := Id.run do
+  let mut next : Array Nat := Array.replicate c.numQubits 0
+  let mut gates := 0
+  let mut twoQubit := 0
+  let mut depth := 0
+  let mut t := 0
+  let mut rz := 0
+  for g in c.gates do
+    gates := gates + 1
+    match g with
+    | .cnot .. | .cz .. => twoQubit := twoQubit + 1
+    | .t _ | .tdg _ => t := t + 1
+    | .rz _ _ => rz := rz + 1
+    | _ => pure ()
+    let mut layer := 1
+    for q in g.qubitsOf do
+      if q < next.size then layer := max layer (next[q]! + 1)
+    for q in g.qubitsOf do
+      if q < next.size then next := next.set! q layer
+    depth := max depth layer
+  return ⟨gates, twoQubit, depth, t, rz⟩
 
 /-! ## Levels and passes -/
 

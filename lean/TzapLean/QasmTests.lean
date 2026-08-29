@@ -13,6 +13,14 @@ namespace TzapLean
 
 open Qasm
 
+/-! ## Driver metrics -/
+
+def metricsSample : Circuit := Circuit.ofGates 3 0
+  [Gate.h 0, Gate.h 1, Gate.cnot 0 2, Gate.t 1, Gate.rz (1/4) 2, Gate.cz 1 2]
+
+#guard Metrics.of metricsSample ==
+  { gates := 6, twoQubit := 2, depth := 4, t := 1, rz := 1 }
+
 /-- Parse and render compactly: qubit count, cbit count, gates. -/
 def render (r : Except String Circuit) : String :=
   match r with

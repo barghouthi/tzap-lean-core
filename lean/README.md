@@ -71,62 +71,61 @@ can lower. The front end says so at the door.
 
 ### Where this differs from Rust, measured
 
-On `benchmarks/feynman/gf2^8_mult.qasm` (24 qubits, 1,139 gates, pure Clifford+T) every level
-produces **byte-identical output** to the Rust optimizer — 1,139 → 709 gates, T/Tdg 448 → 264,
-depth 307 → 235. The timings still differ, by roughly 50× at `-O3` (1.5 s against 0.03 s).
+The current deterministic comparison uses a warm synthesis-table cache and
+`--passes CnotMin,CancelGates,SuperOpt --fixpoint`. Median wall-clock times from three runs
+on the same machine were:
 
-Per pass, on the same input:
+| circuit | gates | Lean | Rust | ratio |
+|---|---:|---:|---:|---:|
+| `gf2^8` | 1,139 | 0.82 s | 0.01 s | 82× |
+| `gf2^16` | 4,459 | 2.62 s | 0.02 s | 131× |
+| `gf2^32` | 17,658 | 10.10 s | 0.05 s | 202× |
 
-| pass | Lean | Rust |
-|---|---|---|
-| CnotMin | 0.019 s | 0.000 s |
-| CancelGates | 0.013 s | 0.000 s |
-| SuperOpt | 0.97 s | 0.012 s |
-| PhaseFoldRand | 0.14 s | 0.000 s |
+Both implementations produce the same gate counts on this pipeline: 874, 3,384, and 13,331.
+Depth can differ slightly because independent gates may be emitted in a different order.
+The Rust times are so short that process startup and table loading materially affect the first
+two ratios; the conclusion is the scale of the gap, not the last digit.
 
-Two of the four are already within a rounding error of Rust, which is the useful part of the
-comparison: the gap is not Lean's code generation, or boxing, or the verification. It is
-concentrated in the two passes that build and compare matrices.
-
-What is left in `SuperOpt` is the cost of `ExactMat` being indexed by a *function*: every
-entry access walks the chain of gates applied so far. Profiling the compiled binary puts the
-remainder in reference counting, closure application, and allocation inside that layer rather
-than in any one place, so closing it means giving the pass a flat matrix representation
-throughout — the builder already has one (`FlatMat`), and `windowMayHold` uses it as a filter,
-but the verified path still goes through `ExactMat` because that is what the proofs are stated
-about.
+One unrelated cost was hiding the pass comparison: `Metrics.of` computed depth by replaying
+the entire gate list once per qubit, and the driver called it around every pass. It now computes
+all counters and depth in one array-backed gate walk. On `gf2^32`, a `CnotMin` invocation fell
+from about 12.1 s total to 0.13 s, and the deterministic pipeline fell from about 28.1 s to
+10.1 s. This changes reporting only, not optimizer decisions or output.
 
 ### Scaling
 
 The `gf2^k_mult` family is the useful stress test, because gate count grows quadratically in
 `k` while qubit count grows linearly — so *gates per qubit* doubles at every step:
 
-| circuit | qubits | gates | gates/qubit | `-O3` |
+| circuit | qubits | gates | gates/qubit | Lean deterministic pipeline |
 |---|---|---|---|---|
-| `gf2^8` | 24 | 1,142 | 47 | 0.43 s |
-| `gf2^16` | 48 | 4,462 | 92 | 1.4 s |
-| `gf2^32` | 96 | 17,661 | 183 | 8.0 s |
+| `gf2^8` | 24 | 1,139 | 47 | 0.82 s |
+| `gf2^16` | 48 | 4,459 | 93 | 2.62 s |
+| `gf2^32` | 96 | 17,658 | 184 | 10.10 s |
 
-That is not linear either, though it is far closer than it was — `gf2^32` took 82 s before
-this work. The shape says why. Every pass here walks the gate list, and a
-lookahead — for a `CNOT`'s twin, for the next rotation on a parity, for a window's next
-member — walks *every* gate in between, most of which are on other wires. The expected
-distance to the next gate on a given wire is `gates/qubit`, so a sweep costs
-`O(gates × gates/qubit)`: quadratic in gates at fixed width, and exactly the doubling seen
-above as the ratio doubles.
+Lean time grows 3.2× and 3.9× as gate count grows 3.9× and 4.0×. The scan is therefore close
+to linear in gates on this family now; the remaining problem is the very large constant.
+Post-fix sampling puts nearly all useful time under `SuperOpt`, principally below
+`Scan.consider`: for every live-window extension Lean materializes the member gates,
+localizes them, rebuilds a `FlatMat`, normalizes it, fingerprints it, and probes the table.
 
-`SuperOpt` now has the index (`buildTracks`, `nextOn`, `anchorMayFire`), used as an
-*unverified filter*: it replays the window's growth through the index, visiting only the gates
-that touch the window, and answers "would this anchor produce a rewrite?" before the verified
-scan runs. Measured on `gf2^16` it is exact — 1,057 fires, 1,057 real, zero false positives —
-and safe in both directions by construction: a false negative would cost an optimization, a
-false positive one wasted scan. The whole correctness proof is untouched by it.
+Rust avoids repeating that work with a process-persistent `MatrixStore`:
 
-That took `SuperOpt` on `gf2^16` from 12.2 s to 5.7 s, and `-O3` on the same circuit from
-7.2 s to 2.6 s. The pass used to sweep to its own fixpoint on top of that, which was both
-slower and *stronger than Rust*, whose `SuperOpt::run` makes one forward scan and leaves
-repetition to the optimizer around it; it is one scan now, and `gf2^32` at `-O3` went from
-14.1 s to 10.8 s for identical output.
+1. A compact support-local gate-sequence key interns each distinct window shape. The cached
+   value contains both its matrix and its synthesis result, including a failed lookup.
+2. A live window remembers its interned state. When one gate extends the same support, a
+   `(state, gate-code)` transition normally finds the successor without rebuilding or hashing
+   the sequence.
+3. The store survives fixpoint rounds, and incremental mode only permits anchors near gates
+   changed by the previous round.
+
+Lean currently has none of those three caches. Its scan already has Rust-style per-qubit
+indices (`Scan.byQubit` for live windows and `Scan.gbq` for gate history), so window discovery
+is not the main gap. The highest-value next port is the compact canonical-shape store,
+including negative synthesis results; then add transition states to `LiveWin`, persist the
+store in the optimizer driver, and finally carry an incremental anchor frontier between
+rounds. These are search-only changes: the existing proposal checker remains the soundness
+boundary, so the proof does not need to trust the cache.
 
 ### Matching Rust's window and greedy schedule
 
@@ -167,8 +166,9 @@ The scan itself is **unverified, and no longer needs to be otherwise**. It propo
 still stand; if the two conditions fail, nothing is rewritten. That is a strictly larger
 freedom than the old arrangement, where the window search had to carry an invariant through
 its own proof — and it is faster, because the exact matrix is now built once per *selected*
-rewrite rather than once per window that got past a filter. `gf2^32` at `-O3`: 14.1 s → 8.4 s
-across this work, same output.
+rewrite rather than once per window that got past a filter. The unverified search still builds
+the flat matrix per emitted window; the canonical-shape cache described above is what should
+remove that repetition.
 
 Measured against Rust on the `feynman` set at `--passes CnotMin,CancelGates,SuperOpt
 --fixpoint` — the deterministic pipeline, so the comparison is the scan and nothing else — the
@@ -176,15 +176,10 @@ two now agree everywhere checked, `adder_8` included, where this port had been 7
 and is now 4 ahead (821 against 825). At `-O3` seven of ten circuits are identical and the
 three that differ are phase folding's doing, not the scan's.
 
-The other passes still pay the full scan. Rust keeps **per-qubit tracks** — for each wire, the indices of the
-gates touching it — so a lookahead visits only gates on the two wires it cares about and
-skips the rest without looking at them (`cancel_commuting_pairs_pass`), and the window scan
-finds the windows a gate touches through the same index rather than by scanning
-(`windows_by_qubit`). That is what makes its passes linear, and it is the one structural
-thing this port does not have. Adding it means giving each pass an index alongside the gate
-list and re-proving the sweeps against it — the correctness arguments are unaffected in
-substance (they are about what a rewrite does, not how it was found), but every sweep's
-statement changes shape.
+Some other Lean passes still use list-based repeated scans where Rust uses per-qubit tracks;
+`CancelGates.cancelCommutingPairs` is the clearest example. They are not visible bottlenecks on
+this family after fixing metrics, so indexing them is lower priority than caching SuperOpt's
+canonical window shapes.
 
 Parsing *was* quadratic for the same family of reason — `Circuit.apply` appends with
 `gates ++ [g]`, so folding it copied the list per gate — and is now linear: `gf2^32` went
