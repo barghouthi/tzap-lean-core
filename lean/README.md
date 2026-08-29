@@ -77,9 +77,9 @@ on the same machine were:
 
 | circuit | gates | Lean | Rust | ratio |
 |---|---:|---:|---:|---:|
-| `gf2^8` | 1,139 | 0.82 s | 0.01 s | 82× |
-| `gf2^16` | 4,459 | 2.62 s | 0.02 s | 131× |
-| `gf2^32` | 17,658 | 10.10 s | 0.05 s | 202× |
+| `gf2^8` | 1,139 | 0.22 s | 0.01 s | 22× |
+| `gf2^16` | 4,459 | 0.33 s | 0.02 s | 17× |
+| `gf2^32` | 17,658 | 1.09 s | 0.05 s | 22× |
 
 Both implementations produce the same gate counts on this pipeline: 874, 3,384, and 13,331.
 Depth can differ slightly because independent gates may be emitted in a different order.
@@ -92,6 +92,11 @@ all counters and depth in one array-backed gate walk. On `gf2^32`, a `CnotMin` i
 from about 12.1 s total to 0.13 s, and the deterministic pipeline fell from about 28.1 s to
 10.1 s. This changes reporting only, not optimizer decisions or output.
 
+The larger remaining win was a scan-local canonical-shape cache. Two windows with the same
+support-local gate sequence now share one matrix construction and synthesis result, including
+a failed lookup. That took the same deterministic pipeline from 0.82/2.62/10.10 s to the
+0.22/0.33/1.09 s above, again with unchanged output.
+
 ### Scaling
 
 The `gf2^k_mult` family is the useful stress test, because gate count grows quadratically in
@@ -99,17 +104,17 @@ The `gf2^k_mult` family is the useful stress test, because gate count grows quad
 
 | circuit | qubits | gates | gates/qubit | Lean deterministic pipeline |
 |---|---|---|---|---|
-| `gf2^8` | 24 | 1,139 | 47 | 0.82 s |
-| `gf2^16` | 48 | 4,459 | 93 | 2.62 s |
-| `gf2^32` | 96 | 17,658 | 184 | 10.10 s |
+| `gf2^8` | 24 | 1,139 | 47 | 0.22 s |
+| `gf2^16` | 48 | 4,459 | 93 | 0.33 s |
+| `gf2^32` | 96 | 17,658 | 184 | 1.09 s |
 
-Lean time grows 3.2× and 3.9× as gate count grows 3.9× and 4.0×. The scan is therefore close
-to linear in gates on this family now; the remaining problem is the very large constant.
-Post-fix sampling puts nearly all useful time under `SuperOpt`, principally below
-`Scan.consider`: for every live-window extension Lean materializes the member gates,
-localizes them, rebuilds a `FlatMat`, normalizes it, fingerprints it, and probes the table.
+Lean time grows 1.5× and 3.3× as gate count grows 3.9× and 4.0×. The scan is close to linear
+in gates on this family now; the remaining problem is its constant factor relative to Rust.
+On a cache miss, `Scan.consider` still materializes the member gates, localizes them, builds a
+`FlatMat`, normalizes it, fingerprints it, and probes the table. Hits still allocate and hash
+a linked support-local gate-code list.
 
-Rust avoids repeating that work with a process-persistent `MatrixStore`:
+Rust's `MatrixStore` goes further:
 
 1. A compact support-local gate-sequence key interns each distinct window shape. The cached
    value contains both its matrix and its synthesis result, including a failed lookup.
@@ -119,13 +124,29 @@ Rust avoids repeating that work with a process-persistent `MatrixStore`:
 3. The store survives fixpoint rounds, and incremental mode only permits anchors near gates
    changed by the previous round.
 
-Lean currently has none of those three caches. Its scan already has Rust-style per-qubit
-indices (`Scan.byQubit` for live windows and `Scan.gbq` for gate history), so window discovery
-is not the main gap. The highest-value next port is the compact canonical-shape store,
-including negative synthesis results; then add transition states to `LiveWin`, persist the
-store in the optimizer driver, and finally carry an incremental anchor frontier between
-rounds. These are search-only changes: the existing proposal checker remains the soundness
-boundary, so the proof does not need to trust the cache.
+Lean now has the first layer. The other Rust layers were ported one at a time, measured, and
+removed when they failed to improve this workload:
+
+| experiment | single `SuperOpt`, `gf2^8/16/32` | deterministic pipeline | result |
+|---|---|---|---|
+| no shape cache | 0.44 / 1.22 / 6.06 s | 0.82 / 2.62 / 10.10 s | baseline |
+| canonical shape cache | 0.21 / 0.37 / 2.68 s | 0.22 / 0.33 / 1.09 s | kept |
+| `(state, gate)` transitions | 0.21 / 0.38 / 2.84 s | 0.21 / 0.34 / 1.06 s | noise / slower |
+| cache across rounds | 0.21 / 0.36 / 2.70 s | 0.19 / 0.31 / 1.07 s | within noise |
+| incremental anchor frontier | 0.22 / 0.38 / 2.70 s | 0.23 / 0.36 / 1.09 s | slower |
+| contiguous `Array UInt16` key | 0.23 / 0.39 / 2.76 s | 0.23 / 0.34 / 1.08 s | slower |
+
+The transitions add a second hash probe after the scan-local cache has already captured most
+recurrence. Cross-round reuse saves matrix work that is no longer material. On these densely
+connected multipliers, dilating a changed region by the 25-gate window bound marks nearly the
+whole circuit, so the frontier costs more than it suppresses. Lean's copy-on-write array key
+also costs more to build than list cons plus one reverse.
+
+The scan already has Rust-style per-qubit indices (`Scan.byQubit` for live windows and
+`Scan.gbq` for gate history), so window discovery is not the main gap. A next attempt should
+target the representation as a unit — reused mutable key storage, a cheaper hasher, and less
+persistent-state copying — rather than adding another cache layer. These remain search-only
+changes: the existing proposal checker is the soundness boundary and need not trust them.
 
 ### Matching Rust's window and greedy schedule
 
