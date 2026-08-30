@@ -670,20 +670,20 @@ equivalence for every well-formed input. -/
 def runCnotMin (c : Circuit) : Circuit := Pass.run CnotMin c
 
 -- invert_identity_is_identity
-#guard invert ((List.range 5).map (2 ^ ·)) 5 = some ((List.range 5).map (2 ^ ·))
+#guard invert ((Array.range 5).map (2 ^ ·)) 5 = some ((Array.range 5).map (2 ^ ·))
 
 -- invert_rejects_singular
-#guard invert [1, 1, 4] 3 = none
+#guard invert #[1, 1, 4] 3 = none
 
 -- linear_synth_emits_nothing_for_identity
-#guard linearSynth ((List.range 4).map (2 ^ ·)) ((List.range 4).map (2 ^ ·)) [0,1,2,3] = some []
+#guard linearSynth ((Array.range 4).map (2 ^ ·)) ((Array.range 4).map (2 ^ ·)) #[0,1,2,3] = some []
 
 -- gray_synth_on_no_phases_emits_nothing
-#guard graySynth 4 [] ((List.range 4).map (2 ^ ·)) [0,1,2,3]
-  = ([], (List.range 4).map (2 ^ ·))
+#guard graySynth 4 [] ((Array.range 4).map (2 ^ ·)) #[0,1,2,3]
+  = ([], (Array.range 4).map (2 ^ ·))
 
 -- gray_synth_places_every_rotation_on_its_own_parity (one rotation per singleton parity)
-#guard (graySynth 2 [(1, (1:ℚ)/4), (2, (1:ℚ)/4)] [1, 2] [0,1]).1.length ≤ 4
+#guard (graySynth 2 [(1, (1:ℚ)/4), (2, (1:ℚ)/4)] #[1, 2] #[0,1]).1.length ≤ 4
 
 -- preserves_a_cnot_ladder
 #guard (runCnotMin (Circuit.ofGates 4 0
@@ -864,21 +864,24 @@ def applyCnotList (state : List Parity) : List Gate → List Parity
       | _ => applyCnotList state gs
 
 -- invert_composed_with_original_is_identity
-#guard (let m := [3, 2, 4]
+#guard (let m : Array Parity := #[3, 2, 4]
         match invert m 3 with
         | some inv => (List.range 3).map (fun i => rowTimesMatrix m[i]! inv)
         | none => []) = (List.range 3).map (2 ^ ·)
 
 -- linear_synth_realizes_random_maps (fixed maps, checked by replaying the CNOTs)
-#guard (let n := 4; let frm := (List.range n).map (2 ^ ·); let tgt := [1, 3, 5, 8]
-        match linearSynth frm tgt (List.range n) with
-        | some gs => applyCnotList frm gs == tgt
+#guard (let n := 4
+        let frm : Array Parity := (Array.range n).map (2 ^ ·)
+        let tgt : Array Parity := #[1, 3, 5, 8]
+        match linearSynth frm tgt (Array.range n) with
+        | some gs => applyCnotList frm.toList gs == tgt.toList
         | none => false)
 
 -- linear_synth_realizes_maps_from_a_nonidentity_start
-#guard (let frm := [3, 2, 4]; let tgt := [1, 3, 4]
-        match linearSynth frm tgt [0, 1, 2] with
-        | some gs => applyCnotList frm gs == tgt
+#guard (let frm : Array Parity := #[3, 2, 4]
+        let tgt : Array Parity := #[1, 3, 4]
+        match linearSynth frm tgt #[0, 1, 2] with
+        | some gs => applyCnotList frm.toList gs == tgt.toList
         | none => false)
 
 /-! ### Caps and sweeps

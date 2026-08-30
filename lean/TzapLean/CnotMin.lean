@@ -174,40 +174,54 @@ structure Pt where
   vectors : List (Parity × ℚ)
 
 /-- Pick the column whose 0/1 split of `vectors` leaves the largest side — the Rust
-`best_split`. -/
+`best_split`.
+
+The fold carries the incumbent's score rather than recomputing it. `score` is a full pass
+over `vectors`, and the original spelling evaluated it on both sides of the comparison, so
+the incumbent's was recomputed once per candidate. -/
 def bestSplit (candidates : List Nat) (vectors : List (Parity × ℚ)) (fallback : Nat) :
     List (Parity × ℚ) × Nat × List Nat × List (Parity × ℚ) :=
   let score := fun c =>
     let ones := (vectors.filter fun v => v.1.testBit c).length
     max ones (vectors.length - ones)
-  let best := candidates.foldl (fun acc c => if score c ≥ score acc then c else acc) fallback
+  let best :=
+    (candidates.foldl (fun (acc, sa) c =>
+      let sc := score c
+      if sc ≥ sa then (c, sc) else (acc, sa)) (fallback, score fallback)).1
   let ones := vectors.filter fun v => v.1.testBit best
   let zeros := vectors.filter fun v => !v.1.testBit best
   (zeros, best, candidates.filter (· != best), ones)
 
 /-- Gray-code phase synthesis: emit CNOTs walking the qubits through every parity that
 carries a rotation, applying each rotation as its parity comes up. Returns the gates and the
-linear map the emitted CNOTs left behind. -/
-def graySynthLoop : Nat → List Qubit → List Pt → List Parity → List Gate →
-    List Gate × List Parity
+linear map the emitted CNOTs left behind.
+
+`state` and `qs` are arrays: this loop reads and updates them once per emitted gate, and on a
+128-wire block that is the pass's inner loop. `acc` is built in reverse for the same reason —
+`acc ++ [gate]` copies the whole accumulator, so emitting `g` gates cost `O(g²)`. `graySynth`
+puts the order back. None of this is proof-carrying (see the header), so the representation
+is free to be whatever runs fastest. -/
+def graySynthLoop : Nat → Array Qubit → List Pt → Array Parity → List Gate →
+    List Gate × Array Parity
   | 0, _, _, state, acc => (acc, state)
-  | _ + 1, qs, [], state, acc => (acc, state)
+  | _ + 1, _, [], state, acc => (acc, state)
   | fuel + 1, qs, node :: stack, state, acc =>
       if node.vectors.isEmpty then graySynthLoop fuel qs stack state acc
       else
         match node.target, node.pending with
         | some t, some p =>
             let gate := Gate.cnot qs[p]! qs[t]!
-            let state' := state.set t (state[t]! ^^^ state[p]!)
+            let state' := state.set! t (state[t]! ^^^ state[p]!)
             let stack' := stack.map fun other =>
               { other with vectors := other.vectors.map fun v =>
                   if v.1.testBit t then (v.1 ^^^ 2 ^ p, v.2) else v }
-            graySynthLoop fuel qs ({ node with pending := none } :: stack') state' (acc ++ [gate])
+            graySynthLoop fuel qs ({ node with pending := none } :: stack') state' (gate :: acc)
         | _, _ =>
             match node.candidates with
             | [] =>
                 match node.target, node.vectors with
-                | some t, [(_, a)] => graySynthLoop fuel qs stack state (acc ++ emitRotation qs[t]! a)
+                | some t, [(_, a)] =>
+                    graySynthLoop fuel qs stack state ((emitRotation qs[t]! a).reverse ++ acc)
                 | _, _ => graySynthLoop fuel qs stack state acc
             | first :: _ =>
                 let (zeros, col, rest, ones) := bestSplit node.candidates node.vectors first
@@ -223,73 +237,92 @@ def graySynthLoop : Nat → List Qubit → List Pt → List Parity → List Gate
 
 /-- `graySynth` at a fuel bound that always suffices: the recursion tree has at most one
 leaf per phase and depth at most `n`, and each node costs a constant number of steps. -/
-def graySynth (n : Nat) (phases : List (Parity × ℚ)) (state : List Parity) (qs : List Qubit) :
-    List Gate × List Parity :=
+def graySynth (n : Nat) (phases : List (Parity × ℚ)) (state : Array Parity) (qs : Array Qubit) :
+    List Gate × Array Parity :=
   if phases.isEmpty then ([], state)
   else
-    graySynthLoop (4 * (phases.length + 1) * (n + 1) + 8) qs
-      [{ candidates := List.range n, target := none, pending := none, vectors := phases }]
-      state []
+    let (acc, state') :=
+      graySynthLoop (4 * (phases.length + 1) * (n + 1) + 8) qs
+        [{ candidates := List.range n, target := none, pending := none, vectors := phases }]
+        state []
+    (acc.reverse, state')
 
 /-- XOR together the rows of `m` selected by the set bits of `row`. -/
-def rowTimesMatrix (row : Parity) (m : List Parity) : Parity :=
-  (m.zipIdx).foldl (fun acc (r, i) => if row.testBit i then acc ^^^ r else acc) 0
+def rowTimesMatrix (row : Parity) (m : Array Parity) : Parity := Id.run do
+  let mut acc : Parity := 0
+  let mut i := 0
+  for r in m do
+    if row.testBit i then acc := acc ^^^ r
+    i := i + 1
+  return acc
 
-/-- Invert an `n × n` bit matrix by Gauss-Jordan, or `none` if singular. -/
-def invert (rows : List Parity) (n : Nat) : Option (List Parity) := Id.run do
+/-- Invert an `n × n` bit matrix by Gauss-Jordan, or `none` if singular.
+
+Gauss-Jordan is `O(n³)` row operations, and on a `List` every one of those pays another
+`O(n)` to reach the row and `O(n)` to copy the spine — `O(n⁴)` overall, which at the 128-wire
+chunk cap is the difference between a pass that finishes and one that does not. `Array.set!`
+updates in place while the reference is unique, so the elimination costs what it says. -/
+def invert (rows : Array Parity) (n : Nat) : Option (Array Parity) := Id.run do
   let mut a := rows
-  let mut inv := (List.range n).map (2 ^ ·)
+  let mut inv : Array Parity := (Array.range n).map (2 ^ ·)
   for col in List.range n do
     match (List.range n).find? (fun r => r ≥ col && a[r]!.testBit col) with
     | none => return none
     | some pivot =>
         let ac := a[col]!; let ap := a[pivot]!
-        a := (a.set col ap).set pivot ac
+        a := (a.set! col ap).set! pivot ac
         let ic := inv[col]!; let ip := inv[pivot]!
-        inv := (inv.set col ip).set pivot ic
+        inv := (inv.set! col ip).set! pivot ic
         for r in List.range n do
           if r != col && a[r]!.testBit col then
-            a := a.set r (a[r]! ^^^ a[col]!)
-            inv := inv.set r (inv[r]! ^^^ inv[col]!)
+            a := a.set! r (a[r]! ^^^ a[col]!)
+            inv := inv.set! r (inv[r]! ^^^ inv[col]!)
   return some inv
 
 /-- Emit CNOTs taking the qubits from parities `frm` to parities `to`, by Gauss-Jordan on
-`to · frm⁻¹` — the Rust `linear_synth`. -/
-def linearSynth (frm tgt : List Parity) (qs : List Qubit) : Option (List Gate) := Id.run do
-  let n := frm.length
+`to · frm⁻¹` — the Rust `linear_synth`.
+
+`ops` is consed rather than appended: the loop emits up to `n²/2` of them, and building that
+with `ops ++ [op]` copies the list every time. Consing produces exactly the order the old
+trailing `.reverse` did, so the emitted gates are unchanged. -/
+def linearSynth (frm tgt : Array Parity) (qs : Array Qubit) : Option (List Gate) := Id.run do
+  let n := frm.size
   if frm == tgt then return some []
   match invert frm n with
   | none => return none
   | some inverse =>
-      let mut m := tgt.map (fun row => rowTimesMatrix row inverse)
+      let mut m : Array Parity := tgt.map (fun row => rowTimesMatrix row inverse)
       let mut ops : List (Nat × Nat) := []
       for col in List.range n do
         if !(m[col]!.testBit col) then
           match (List.range n).find? (fun r => r > col && m[r]!.testBit col) with
           | none => return none
           | some r =>
-              m := m.set col (m[col]! ^^^ m[r]!)
-              ops := ops ++ [(r, col)]
+              m := m.set! col (m[col]! ^^^ m[r]!)
+              ops := (r, col) :: ops
         for r in List.range n do
           if r != col && m[r]!.testBit col then
-            m := m.set r (m[r]! ^^^ m[col]!)
-            ops := ops ++ [(col, r)]
-      return some (ops.reverse.map fun (c, t) => Gate.cnot qs[c]! qs[t]!)
+            m := m.set! r (m[r]! ^^^ m[col]!)
+            ops := (col, r) :: ops
+      return some (ops.map fun (c, t) => Gate.cnot qs[c]! qs[t]!)
 
 /-- Synthesize a block: Gray-code phase synthesis, the linear fix-up, then the `x` gates the
-affine part calls for. -/
+affine part calls for. The block's wire list and linear map cross into array form here, once,
+and stay there for the rest of the synthesis. -/
 def synthesize (qs : List Qubit) (st : BlockState) : Option (List Gate) :=
   let n := qs.length
+  let qa := qs.toArray
   let phases :=
     ((st.terms.filter fun t => !BlockState.angleIsZero t.2).map fun t =>
       (t.1, BlockState.angleMod t.2)).mergeSort fun a b => a.1 ≤ b.1
-  let state := (List.range n).map (2 ^ ·)
-  let (gs₁, state') := graySynth n phases state qs
-  match linearSynth state' st.parity qs with
+  let state : Array Parity := (Array.range n).map (2 ^ ·)
+  let (gs₁, state') := graySynth n phases state qa
+  match linearSynth state' st.parity.toArray qa with
   | none => none
   | some gs₂ =>
-      let xs := (st.consts.zipIdx).filterMap fun (k, i) => if k = true then some (Gate.x qs[i]!) else none
+      let xs := (st.consts.zipIdx).filterMap fun (k, i) => if k = true then some (Gate.x qa[i]!) else none
       some (gs₁ ++ gs₂ ++ xs)
+
 
 /-! ## Chunking -/
 
