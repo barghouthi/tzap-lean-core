@@ -77,11 +77,13 @@ on the same machine were:
 
 | circuit | gates | Lean | Rust | ratio |
 |---|---:|---:|---:|---:|
-| `gf2^8` | 1,139 | 0.22 s | 0.01 s | 22× |
-| `gf2^16` | 4,459 | 0.33 s | 0.02 s | 17× |
-| `gf2^32` | 17,658 | 1.09 s | 0.05 s | 22× |
+| `gf2^8` | 1,139 | 0.18 s | 0.01 s | 18× |
+| `gf2^16` | 4,459 | 0.25 s | 0.02 s | 13× |
+| `gf2^32` | 17,658 | 0.63 s | 0.04 s | 16× |
+| `gf2^64` | 70,075 | 2.82 s | 0.28 s | 10× |
 
-Both implementations produce the same gate counts on this pipeline: 874, 3,384, and 13,331.
+Both implementations produce the same gate counts on this pipeline: 874, 3,384, 13,331, and
+52,781.
 Depth can differ slightly because independent gates may be emitted in a different order.
 The Rust times are so short that process startup and table loading materially affect the first
 two ratios; the conclusion is the scale of the gap, not the last digit.
@@ -92,10 +94,17 @@ all counters and depth in one array-backed gate walk. On `gf2^32`, a `CnotMin` i
 from about 12.1 s total to 0.13 s, and the deterministic pipeline fell from about 28.1 s to
 10.1 s. This changes reporting only, not optimizer decisions or output.
 
-The larger remaining win was a scan-local canonical-shape cache. Two windows with the same
+An earlier large win was a scan-local canonical-shape cache. Two windows with the same
 support-local gate sequence now share one matrix construction and synthesis result, including
 a failed lookup. That took the same deterministic pipeline from 0.82/2.62/10.10 s to the
-0.22/0.33/1.09 s above, again with unchanged output.
+former 0.22/0.33/1.09 s for `gf2^8/16/32`, again with unchanged output.
+
+The current improvement attacks the wider-input costs directly. `CnotMin` constructs candidates
+with native 128-bit parities, hash-backed phase terms, array Gray-code worklists, and Rust's
+gate budget, but still certifies every candidate with the proved reference analysis. `SuperOpt`
+now groups all claims in one traversal, stops its separation check after the final claimed gate,
+and performs the final rewrite splice left-to-right. On `gf2^64`, these changes reduce the full
+pipeline from about 14.6 s to 2.82 s without changing any output gate count.
 
 ### Scaling
 
@@ -104,12 +113,15 @@ The `gf2^k_mult` family is the useful stress test, because gate count grows quad
 
 | circuit | qubits | gates | gates/qubit | Lean deterministic pipeline |
 |---|---|---|---|---|
-| `gf2^8` | 24 | 1,139 | 47 | 0.22 s |
-| `gf2^16` | 48 | 4,459 | 93 | 0.33 s |
-| `gf2^32` | 96 | 17,658 | 184 | 1.09 s |
+| `gf2^8` | 24 | 1,139 | 47 | 0.18 s |
+| `gf2^16` | 48 | 4,459 | 93 | 0.25 s |
+| `gf2^32` | 96 | 17,658 | 184 | 0.63 s |
+| `gf2^64` | 192 | 70,075 | 365 | 2.82 s |
 
-Lean time grows 1.5× and 3.3× as gate count grows 3.9× and 4.0×. The scan is close to linear
-in gates on this family now; the remaining problem is its constant factor relative to Rust.
+Lean time grows much more gently than the old implementation as the family widens. The scan
+is close to linear in gates through `gf2^32`; `gf2^64` exposes the superlinear CNOT synthesis
+work, but remains a 2.82 s run instead of the previous 14.6 s. The remaining gap is chiefly
+Lean's allocation and constant-factor cost relative to Rust.
 On a cache miss, `Scan.consider` still materializes the member gates, localizes them, builds a
 `FlatMat`, normalizes it, fingerprints it, and probes the table. Hits still allocate and hash
 a linked support-local gate-code list.

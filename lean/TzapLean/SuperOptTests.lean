@@ -68,6 +68,27 @@ def sampleCycs : List Cyc :=
 #guard compactShapeKey [3, 7] #[cnot 3 7] [0] !=
   compactShapeKey [3, 7] #[cnot 7 3] [0]
 
+/-! ## Batched rewrite certificates -/
+
+def sampleTagged : List Tagged :=
+  [(h 0, some 0), (x 2, none), (t 0, some 0),
+   (h 1, some 1), (z 2, none), (h 1, some 1)]
+
+def sampleRepl : Nat → List Gate
+  | 0 => [s 0]
+  | 1 => []
+  | _ => []
+
+#guard groupedClaim sampleTagged 0 = claimedBy 0 sampleTagged
+#guard groupedClaim sampleTagged 1 = claimedBy 1 sampleTagged
+#guard applyAllLinear sampleRepl [] sampleTagged = applyAll sampleRepl sampleTagged
+#guard sepAllB (fun w => if w = 0 then [0] else [1]) sampleTagged =
+  sepB (fun w => if w = 0 then [0] else [1]) [] sampleTagged
+
+def blockedTagged : List Tagged := [(h 0, some 0), (x 0, none), (h 0, some 0)]
+#guard !sepAllB (fun _ => [0]) blockedTagged
+#guard sepAllB (fun _ => [0]) blockedTagged = sepB (fun _ => [0]) [] blockedTagged
+
 /-! ## The library gate set
 
 `library_gates(k)` has `7k` one-wire gates and `k(k−1)` `CNOT`s — Rust asserts exactly these

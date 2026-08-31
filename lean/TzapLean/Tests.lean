@@ -682,6 +682,17 @@ def runCnotMin (c : Circuit) : Circuit := Pass.run CnotMin c
 #guard graySynth 4 [] ((Array.range 4).map (2 ^ ·)) #[0,1,2,3]
   = ([], (Array.range 4).map (2 ^ ·))
 
+-- The native parity path covers both halves of the 128-wire chunk bound.
+#guard (FastParity.basis 63).testBit 63
+#guard (FastParity.basis 64).testBit 64
+#guard !((FastParity.basis 63).xor (FastParity.basis 64)).testBit 62
+#guard ((FastParity.basis 63).xor (FastParity.basis 64)).testBit 63
+#guard ((FastParity.basis 63).xor (FastParity.basis 64)).testBit 64
+
+-- A spent synthesis budget is a pure early rejection.
+#guard (SynthBudget.push { maxCount := 0, maxTwoQ := 0 } (Gate.cnot 0 1)).isNone
+#guard (SynthBudget.push { maxCount := 1, maxTwoQ := 1 } (Gate.cnot 0 1)).isSome
+
 -- gray_synth_places_every_rotation_on_its_own_parity (one rotation per singleton parity)
 #guard (graySynth 2 [(1, (1:ℚ)/4), (2, (1:ℚ)/4)] #[1, 2] #[0,1]).1.length ≤ 4
 

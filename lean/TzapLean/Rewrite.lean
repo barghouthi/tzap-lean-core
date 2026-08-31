@@ -45,6 +45,31 @@ def untag (xs : List Tagged) : List Gate := xs.map (·.1)
 def claimedBy (w : Nat) (xs : List Tagged) : List Gate :=
   xs.filterMap fun p => if p.2 = some w then some p.1 else none
 
+/-! ### Gathering every claim in one pass
+
+`claimedBy` is the proof-friendly specification for one rewrite.  Calling it once per
+rewrite is quadratic in a rewrite-heavy circuit, so the executable checker groups every tag
+once and indexes the result. -/
+
+/-- One past the largest rewrite id appearing in a tagging. -/
+def claimBound : List Tagged → Nat
+  | [] => 0
+  | (_, none) :: xs => claimBound xs
+  | (_, some w) :: xs => max (w + 1) (claimBound xs)
+
+/-- Group claims in circuit order, with a fixed output bound. -/
+def groupClaimsAux (count : Nat) : List Tagged → Array (List Gate)
+  | [] => Array.replicate count []
+  | (_, none) :: xs => groupClaimsAux count xs
+  | (g, some w) :: xs =>
+      let groups := groupClaimsAux count xs
+      if w < count then groups.set! w (g :: groups[w]!) else groups
+
+/-- The indexed form of `claimedBy`; unlike its specification, all ids are gathered by one
+shared traversal when the surrounding `let` is evaluated. -/
+def groupedClaim (xs : List Tagged) (w : Nat) : List Gate :=
+  (groupClaimsAux (claimBound xs) xs)[w]?.getD []
+
 /-- What is left of `xs` once rewrite `w`'s gates are taken out. -/
 def unclaimed (w : Nat) (xs : List Tagged) : List Tagged :=
   xs.filter fun p => p.2 ≠ some w
@@ -62,6 +87,82 @@ theorem claimedBy_cons_self (w : Nat) (g : Gate) (xs : List Tagged) :
 theorem claimedBy_cons_other {w : Nat} {t : Claim} (g : Gate) (xs : List Tagged)
     (h : t ≠ some w) : claimedBy w ((g, t) :: xs) = claimedBy w xs := by
   simp [claimedBy, h]
+
+@[simp] theorem groupClaimsAux_size (count : Nat) : ∀ xs,
+    (groupClaimsAux count xs).size = count := by
+  intro xs
+  induction xs with
+  | nil => simp [groupClaimsAux]
+  | cons p xs ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none => simpa [groupClaimsAux] using ih
+      | some v =>
+          rw [groupClaimsAux]
+          split
+          · exact (Array.size_set! _ _ _).trans ih
+          · exact ih
+
+theorem groupClaimsAux_get (count : Nat) {w : Nat} (hw : w < count) : ∀ xs,
+    (groupClaimsAux count xs)[w]! = claimedBy w xs := by
+  intro xs
+  induction xs with
+  | nil => simp [groupClaimsAux, claimedBy, hw]
+  | cons p xs ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none => simpa [groupClaimsAux, claimedBy] using ih
+      | some v =>
+          by_cases hv : v < count
+          · by_cases hvw : v = w
+            · subst v
+              have hwsize : w < (groupClaimsAux count xs).size := by
+                simpa [groupClaimsAux_size] using hw
+              rw [groupClaimsAux, if_pos hv,
+                Array.getElem!_set!_self _ _ _ hwsize, ih]
+              simp [claimedBy]
+            · rw [groupClaimsAux, if_pos hv,
+                Array.getElem!_set!_ne _ _ _ _ hvw, ih]
+              simp [claimedBy, hvw]
+          · have hvw : v ≠ w := by rintro rfl; exact hv hw
+            rw [groupClaimsAux, if_neg hv, ih]
+            simp [claimedBy, hvw]
+
+theorem claimedBy_eq_nil_of_bound_le {w : Nat} : ∀ xs,
+    claimBound xs ≤ w → claimedBy w xs = [] := by
+  intro xs
+  induction xs with
+  | nil => simp
+  | cons p xs ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none => simpa [claimBound, claimedBy] using ih
+      | some v =>
+          intro h
+          have hrest : claimBound xs ≤ w := le_trans (Nat.le_max_right _ _) h
+          have hvlt : v < w := by
+            have : v + 1 ≤ w := le_trans (Nat.le_max_left _ _) h
+            omega
+          have hv : some v ≠ some w := by simp [Nat.ne_of_lt hvlt]
+          rw [claimedBy_cons_other (w := w) g xs hv]
+          exact ih hrest
+
+/-- The batched implementation is exactly the one-rewrite specification. -/
+theorem groupedClaim_eq_claimedBy (xs : List Tagged) (w : Nat) :
+    groupedClaim xs w = claimedBy w xs := by
+  by_cases hw : w < claimBound xs
+  · have hwsize : w < (groupClaimsAux (claimBound xs) xs).size := by
+      simpa [groupClaimsAux_size] using hw
+    rw [groupedClaim, Array.getElem?_eq_getElem hwsize]
+    simp only [Option.getD_some]
+    have hget := groupClaimsAux_get (claimBound xs) hw xs
+    rw [getElem!_pos (groupClaimsAux (claimBound xs) xs) w hwsize] at hget
+    exact hget
+  · have hsize : (groupClaimsAux (claimBound xs) xs).size = claimBound xs :=
+      groupClaimsAux_size _ _
+    have hout : w ≥ (groupClaimsAux (claimBound xs) xs).size := by omega
+    rw [groupedClaim, Array.getElem?_eq_none hout]
+    simp [claimedBy_eq_nil_of_bound_le (xs := xs) (w := w) (by omega)]
 
 theorem unclaimed_cons_self (w : Nat) (g : Gate) (xs : List Tagged) :
     unclaimed w ((g, some w) :: xs) = unclaimed w xs := by
@@ -231,6 +332,67 @@ decreasing_by
   · simp
   · exact Nat.lt_succ_of_le (unclaimed_length_le w rest)
 
+/-! The definition above mirrors its correctness proof, but filtering the whole suffix after
+every first claim is quadratic in rewrite-heavy circuits.  The executable form remembers
+which replacements were emitted and traverses the tagging once. -/
+
+def dropStarted (started : List Nat) : List Tagged → List Tagged
+  | [] => []
+  | (g, none) :: rest => (g, none) :: dropStarted started rest
+  | (g, some w) :: rest =>
+      if started.contains w then dropStarted started rest
+      else (g, some w) :: dropStarted started rest
+
+def applyAllLinear (repl : Nat → List Gate) : List Nat → List Tagged → List Gate
+  | _, [] => []
+  | started, (g, none) :: rest => g :: applyAllLinear repl started rest
+  | started, (_, some w) :: rest =>
+      if started.contains w then applyAllLinear repl started rest
+      else repl w ++ applyAllLinear repl (w :: started) rest
+
+theorem dropStarted_cons (w : Nat) (started : List Nat) : ∀ xs,
+    dropStarted (w :: started) xs = unclaimed w (dropStarted started xs) := by
+  intro xs
+  induction xs with
+  | nil => simp [dropStarted, unclaimed]
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none => simp [dropStarted, unclaimed, ih]
+      | some v =>
+          by_cases hvw : v = w
+          · subst v
+            by_cases hws : w ∈ started <;>
+              simp [dropStarted, unclaimed, ih, hws, List.contains_eq_mem]
+          · by_cases hvs : v ∈ started <;>
+              simp [dropStarted, unclaimed, ih, hvw, hvs, List.contains_eq_mem]
+
+theorem applyAllLinear_eq (repl : Nat → List Gate) : ∀ started xs,
+    applyAllLinear repl started xs = applyAll repl (dropStarted started xs) := by
+  intro started xs
+  induction xs generalizing started with
+  | nil => simp [applyAllLinear, applyAll, dropStarted]
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none => simp [applyAllLinear, applyAll, dropStarted, ih]
+      | some w =>
+          by_cases hw : w ∈ started
+          · simp [applyAllLinear, dropStarted, hw, ih, List.contains_eq_mem]
+          · simp [applyAllLinear, applyAll, dropStarted, hw, ih, dropStarted_cons,
+              List.contains_eq_mem]
+
+@[simp] theorem dropStarted_nil (xs : List Tagged) : dropStarted [] xs = xs := by
+  induction xs with
+  | nil => simp [dropStarted]
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      cases t <;> simp [dropStarted, ih, List.contains_eq_mem]
+
+theorem applyAllLinear_initial (repl : Nat → List Gate) (xs : List Tagged) :
+    applyAllLinear repl [] xs = applyAll repl xs := by
+  rw [applyAllLinear_eq, dropStarted_nil]
+
 /-- Every gate of the result is either one of the input's or one supplied by a replacement
 that actually claims something. -/
 theorem mem_applyAll (repl : Nat → List Gate) :
@@ -376,6 +538,154 @@ theorem sepOneB_sound (S : List Qubit) (w : Nat) :
         simp only [Bool.not_eq_true'] at hnc
         rw [List.contains_eq_mem, decide_eq_false_iff_not] at hnc
         exact hnc hmem
+
+/-! `sepOneB` has a small proof-friendly specification, but its right-to-left traversal must
+visit the whole suffix before it knows where the last claim is.  The executable whole-set
+checker already knows each rewrite's member count.  `sepUntilB` consumes that count while
+walking left-to-right and stops immediately after the last claim. -/
+
+def sepUntilB (S : List Qubit) (w : Nat) : Nat → List Tagged → Bool
+  | 0, _ => true
+  | _ + 1, [] => false
+  | k + 1, (g, t) :: rest =>
+      if t = some w then sepUntilB S w k rest
+      else (g.qubitsOf.all fun q => !S.contains q) && sepUntilB S w (k + 1) rest
+
+theorem sepOne_of_no_claims (S : List Qubit) (w : Nat) : ∀ xs,
+    claimedBy w xs = [] → SepOne S w xs := by
+  intro xs
+  induction xs with
+  | nil => simp [SepOne]
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      intro h
+      by_cases ht : t = some w
+      · subst t
+        simp [claimedBy] at h
+      · have hr : claimedBy w rest = [] := by simpa [claimedBy, ht] using h
+        refine ⟨?_, ih hr⟩
+        intro _ hex
+        obtain ⟨r, hrmem, hrw⟩ := hex
+        have hm : r.1 ∈ claimedBy w rest := by
+          apply List.mem_filterMap.2
+          exact ⟨r, hrmem, by simp [hrw]⟩
+        simp [hr] at hm
+
+theorem sepUntilB_sound (S : List Qubit) (w : Nat) : ∀ k xs,
+    (claimedBy w xs).length = k → sepUntilB S w k xs = true → SepOne S w xs := by
+  intro k xs
+  induction xs generalizing k with
+  | nil => simp [SepOne]
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      by_cases ht : t = some w
+      · subst t
+        intro hlen hcheck
+        cases k with
+        | zero => simp [claimedBy] at hlen
+        | succ k =>
+            have hrest : (claimedBy w rest).length = k := by
+              simpa [claimedBy] using hlen
+            refine ⟨fun hne _ => absurd rfl hne, ih k hrest ?_⟩
+            simpa [sepUntilB] using hcheck
+      · intro hlen hcheck
+        have hrest : (claimedBy w rest).length = k := by
+          simpa [claimedBy, ht] using hlen
+        cases k with
+        | zero =>
+            have hn : claimedBy w rest = [] := List.eq_nil_of_length_eq_zero hrest
+            refine ⟨?_, sepOne_of_no_claims S w rest hn⟩
+            intro _ hex
+            obtain ⟨r, hr, hrw⟩ := hex
+            have hm : r.1 ∈ claimedBy w rest := by
+              apply List.mem_filterMap.2
+              exact ⟨r, hr, by simp [hrw]⟩
+            simp [hn] at hm
+        | succ k =>
+            simp only [sepUntilB, if_neg ht, Bool.and_eq_true] at hcheck
+            refine ⟨?_, ih (k + 1) hrest hcheck.2⟩
+            intro _ _ q hq hmem
+            have hall := (List.all_eq_true.mp hcheck.1) q hq
+            simp only [Bool.not_eq_true'] at hall
+            rw [List.contains_eq_mem, decide_eq_false_iff_not] at hall
+            exact hall hmem
+
+/-- Count-bounded separation checker.  `members` is the batched claim lookup used by vetting,
+so each first claim can stop checking at its last claim instead of traversing the circuit. -/
+def sepBoundedB (supp : Nat → List Qubit) (members : Nat → List Gate) :
+    List Nat → List Tagged → Bool
+  | _, [] => true
+  | started, (_, none) :: rest => sepBoundedB supp members started rest
+  | started, (_, some w) :: rest =>
+      (started.contains w || sepUntilB (supp w) w ((members w).length - 1) rest) &&
+        sepBoundedB supp members (w :: started) rest
+
+theorem sepBoundedB_sound (supp : Nat → List Qubit) (members : Nat → List Gate) :
+    ∀ started xs,
+      (∀ w ∈ started, SepOne (supp w) w xs) →
+      (∀ w, w ∉ started → members w = claimedBy w xs) →
+      sepBoundedB supp members started xs = true → Sep supp xs := by
+  intro started xs
+  induction xs generalizing started with
+  | nil => intro _ _ _; trivial
+  | cons p rest ih =>
+      obtain ⟨g, t⟩ := p
+      cases t with
+      | none =>
+          intro hst hmem h
+          refine ⟨fun w hw => ?_, ih started (fun w hw => (hst w hw).2) ?_
+            (by simpa [sepBoundedB] using h)⟩
+          · simp at hw
+          · intro w hwn
+            simpa [claimedBy] using hmem w hwn
+      | some v =>
+          intro hst hmem h
+          simp only [sepBoundedB, Bool.and_eq_true, Bool.or_eq_true] at h
+          have hvsep : SepOne (supp v) v rest := by
+            by_cases hvstarted : started.contains v
+            · exact (hst v (by simpa using hvstarted)).2
+            · have hvnot : v ∉ started := by simpa using hvstarted
+              have hvcheck : sepUntilB (supp v) v ((members v).length - 1) rest = true := by
+                rcases h.1 with hv | hvcheck
+                · exact absurd (by simpa using hv) hvnot
+                · exact hvcheck
+              have hm := hmem v hvnot
+              have hl : (members v).length = (claimedBy v rest).length + 1 := by
+                simpa [claimedBy] using congrArg List.length hm
+              have hlen : (claimedBy v rest).length = (members v).length - 1 := by
+                omega
+              exact sepUntilB_sound _ _ _ _ hlen hvcheck
+          refine ⟨?_, ih (v :: started) ?_ ?_ h.2⟩
+          · intro w hw
+            have hwv : w = v := (Option.some.inj hw).symm
+            subst w
+            exact hvsep
+          · intro w hw
+            simp only [List.mem_cons] at hw
+            rcases hw with rfl | hw
+            · exact hvsep
+            · exact (hst w hw).2
+          · intro w hw
+            have hwv : w ≠ v := by
+              intro heq; subst w; exact hw (by simp)
+            have hwn : w ∉ started := fun hws => hw (by simp [hws])
+            have hx := hmem w hwn
+            rwa [claimedBy_cons_other (w := w) g rest (by simpa using Ne.symm hwv)] at hx
+
+/-- Batched executable separation check for a complete tagging. -/
+def sepAllB (supp : Nat → List Qubit) (xs : List Tagged) : Bool :=
+  let groups := groupClaimsAux (claimBound xs) xs
+  let members : Nat → List Gate := fun w => groups[w]?.getD []
+  sepBoundedB supp members [] xs
+
+theorem sepAllB_sound (supp : Nat → List Qubit) (xs : List Tagged)
+    (h : sepAllB supp xs = true) : Sep supp xs := by
+  let groups := groupClaimsAux (claimBound xs) xs
+  let members : Nat → List Gate := fun w => groups[w]?.getD []
+  apply sepBoundedB_sound supp members [] xs (by simp) ?_ ?_
+  · intro w _
+    simpa [members, groups, groupedClaim] using groupedClaim_eq_claimedBy xs w
+  · simpa [sepAllB, members, groups] using h
 
 /-- `Sep`, decided — `started` records the rewrites already checked. -/
 def sepB (supp : Nat → List Qubit) : List Nat → List Tagged → Bool

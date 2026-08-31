@@ -34,9 +34,12 @@ and a bug in the synthesis heuristic could only cost optimization, never soundne
 check is linear in the block size and, on every test ported from Rust, always passes — so
 the pass's output matches the Rust pass gate for gate.
 
-The Rust `Budget` early-exit is not ported: it is a performance device that Rust's own
-`budget_is_a_pure_early_exit` test pins to produce byte-identical output to the unbounded
-synthesis implemented here.
+The proof-facing analysis and synthesis below keep the readable `Nat` parity specification.
+Production chunking uses a certifying fast path: two `UInt64`s represent the same 128-bit
+parity, phase terms live in a hash map, Gray-code worklists are arrays, and a Rust-style
+`SynthBudget` abandons a candidate as soon as its gate or two-qubit count cannot win.  None of
+those representations enter the correctness theorem: `Chunk.flush` re-analyses both the
+original and the candidate with the proved `BlockState` analysis before accepting it.
 -/
 
 namespace TzapLean
@@ -91,6 +94,64 @@ def normalize (st : BlockState) : BlockState where
 
 end BlockState
 
+/-! ## Fast, untrusted construction state
+
+`BlockState` is deliberately list-backed because its small recursive definitions make the
+semantic proof direct.  It is also the state used by `analyzeGates`, the certificate checker
+at the boundary of this pass.
+
+The live chunk does not need to carry that proof representation: `Chunk.flush` re-analyzes
+both the original and proposed gate lists with `analyzeGates` before accepting a rewrite.
+Keep its phase polynomial in a hash map instead, matching Rust's `FxHashMap` organization.
+A bug here can only propose a bad synthesis, which the proved checker rejects. -/
+
+/-- A native 128-bit parity for the untrusted search path.  Lean's proof-facing `Parity` is
+an unbounded `Nat`; using it in synthesis routes every bit test through GMP. -/
+structure FastParity where
+  lo : UInt64 := 0
+  hi : UInt64 := 0
+deriving BEq, Hashable, Inhabited
+
+namespace FastParity
+
+def basis (i : Nat) : FastParity :=
+  if i < 64 then ⟨1 <<< i.toUInt64, 0⟩ else ⟨0, 1 <<< (i - 64).toUInt64⟩
+
+def xor (a b : FastParity) : FastParity := ⟨a.lo ^^^ b.lo, a.hi ^^^ b.hi⟩
+
+def testBit (p : FastParity) (i : Nat) : Bool :=
+  if i < 64 then ((p.lo >>> i.toUInt64) &&& 1) == 1
+  else ((p.hi >>> (i - 64).toUInt64) &&& 1) == 1
+
+/-- Numeric order, matching the `Nat` parity order used by the reference synthesis. -/
+def le (a b : FastParity) : Bool :=
+  a.hi < b.hi || (a.hi == b.hi && a.lo ≤ b.lo)
+
+end FastParity
+
+/-- Search state for a live chunk.  This is converted only through synthesized gates; it is
+never consumed by a correctness theorem. -/
+structure FastBlockState where
+  parity : Array FastParity
+  consts : Array Bool
+  terms : Std.HashMap FastParity ℚ
+deriving Inhabited
+
+namespace FastBlockState
+
+def initial (n : Nat) : FastBlockState where
+  parity := (Array.range n).map FastParity.basis
+  consts := Array.replicate n false
+  terms := ∅
+
+/-- Add one rotation in expected constant time. -/
+def addTerm (st : FastBlockState) (p : FastParity) (k : Bool) (angle : ℚ) : FastBlockState :=
+  let delta := if k then -angle else angle
+  let total := (st.terms.get? p).getD 0 + delta
+  { st with terms := st.terms.insert p total }
+
+end FastBlockState
+
 /-- The rotation a diagonal single-qubit gate applies, in units of `π`. -/
 def rotAngle : Gate → Option (ℚ × Qubit)
   | .t q => some (1/4, q)
@@ -138,6 +199,43 @@ def feedGate (qs : List Qubit) (st : BlockState) (g : Gate) : Option BlockState 
               let kc := st.consts[ci]!; let kt := st.consts[ti]!
               some (((st.addTerm pc kc (1/2)).addTerm pt kt (1/2)).addTerm
                 (pc ^^^ pt) (kc != kt) (-1/2))
+          | _, _ => none
+      | _ => none
+
+/-- Untrusted, hash-backed counterpart of `feedGate` used while constructing a chunk.
+`Chunk.flush` validates its resulting synthesis with the proved `analyzeGates`. -/
+def feedGateFast (qs : List Qubit) (st : FastBlockState) (g : Gate) : Option FastBlockState :=
+  let idx : Qubit → Option Nat := localIdx qs
+  match rotAngle g with
+  | some (θ, q) =>
+      match idx q with
+      | some i =>
+          match st.parity[i]?, st.consts[i]? with
+          | some p, some k => some (st.addTerm p k θ)
+          | _, _ => none
+      | none => none
+  | none =>
+      match g with
+      | .x q =>
+          match idx q with
+          | some i => some { st with consts := st.consts.set! i (!st.consts[i]!) }
+          | none => none
+      | .cnot c t =>
+          if c == t then none else
+          match idx c, idx t with
+          | some ci, some ti =>
+              some { st with
+                parity := st.parity.set! ti (st.parity[ti]!.xor st.parity[ci]!)
+                consts := st.consts.set! ti (st.consts[ti]! != st.consts[ci]!) }
+          | _, _ => none
+      | .cz c t =>
+          if c == t then none else
+          match idx c, idx t with
+          | some ci, some ti =>
+              let pc := st.parity[ci]!; let pt := st.parity[ti]!
+              let kc := st.consts[ci]!; let kt := st.consts[ti]!
+              some (((st.addTerm pc kc (1/2)).addTerm pt kt (1/2)).addTerm
+                (pc.xor pt) (kc != kt) (-1/2))
           | _, _ => none
       | _ => none
 
@@ -247,6 +345,114 @@ def graySynth (n : Nat) (phases : List (Parity × ℚ)) (state : Array Parity) (
         state []
     (acc.reverse, state')
 
+/-! ## Bounded synthesis
+
+The unbounded functions above are useful executable specifications and direct test targets.
+Production chunking uses the budget below.  Gate count and two-qubit count only increase as
+synthesis proceeds, so exceeding either count of the original block proves that no
+continuation can pass `Chunk.accepts`.  Returning `none` at that point is therefore exactly
+the same optimizer decision as completing and rejecting the larger circuit. -/
+
+structure SynthBudget where
+  rev : List Gate := []
+  count : Nat := 0
+  twoQ : Nat := 0
+  maxCount : Nat
+  maxTwoQ : Nat
+
+namespace SynthBudget
+
+def push (b : SynthBudget) (g : Gate) : Option SynthBudget :=
+  let count := b.count + 1
+  let twoQ := b.twoQ + match g with | .cnot .. | .cz .. => 1 | _ => 0
+  if count > b.maxCount || twoQ > b.maxTwoQ then none
+  else some { b with rev := g :: b.rev, count, twoQ }
+
+def pushAll (b : SynthBudget) (gs : List Gate) : Option SynthBudget :=
+  gs.foldl (fun acc g => acc.bind (·.push g)) (some b)
+
+def admitsTwoQ (b : SynthBudget) (extra : Nat) : Bool :=
+  b.twoQ + extra ≤ b.maxTwoQ && b.count + extra ≤ b.maxCount
+
+end SynthBudget
+
+/-- Gray-code node for the native parity representation. -/
+structure FastPt where
+  candidates : Array Nat
+  target : Option Nat
+  pending : Option Nat
+  vectors : Array (FastParity × ℚ)
+
+def bestSplitFast (candidates : Array Nat) (vectors : Array (FastParity × ℚ))
+    (fallback : Nat) : Array (FastParity × ℚ) × Nat × Array Nat × Array (FastParity × ℚ) :=
+  Id.run do
+    let mut best := fallback
+    let mut bestScore := 0
+    for c in candidates do
+      let mut ones := 0
+      for v in vectors do
+        if v.1.testBit c then ones := ones + 1
+      let score := max ones (vectors.size - ones)
+      if score ≥ bestScore then
+        best := c
+        bestScore := score
+    let mut zeros := #[]
+    let mut ones := #[]
+    for v in vectors do
+      if v.1.testBit best then ones := ones.push v else zeros := zeros.push v
+    let rest := candidates.filter (· != best)
+    return (zeros, best, rest, ones)
+
+/-- Budgeted native-parity Gray synthesis; `none` means the candidate has already lost. -/
+def graySynthLoopBudget : Nat → Array Qubit → List FastPt → Array FastParity → SynthBudget →
+    Option (SynthBudget × Array FastParity)
+  | 0, _, _, state, budget => some (budget, state)
+  | _ + 1, _, [], state, budget => some (budget, state)
+  | fuel + 1, qs, node :: stack, state, budget =>
+      if node.vectors.isEmpty then graySynthLoopBudget fuel qs stack state budget
+      else
+        match node.target, node.pending with
+        | some t, some p =>
+            match budget.push (Gate.cnot qs[p]! qs[t]!) with
+            | none => none
+            | some budget' =>
+                let state' := state.set! t (state[t]!.xor state[p]!)
+                let stack' := stack.map fun other =>
+                  { other with vectors := other.vectors.map fun v =>
+                      if v.1.testBit t then (v.1.xor (FastParity.basis p), v.2) else v }
+                graySynthLoopBudget fuel qs ({ node with pending := none } :: stack') state' budget'
+        | _, _ =>
+            if node.candidates.isEmpty then
+                match node.target with
+                | some t =>
+                    if node.vectors.size == 1 then
+                      let a := node.vectors[0]!.2
+                    match budget.pushAll (emitRotation qs[t]! a) with
+                    | none => none
+                    | some budget' => graySynthLoopBudget fuel qs stack state budget'
+                    else graySynthLoopBudget fuel qs stack state budget
+                | none => graySynthLoopBudget fuel qs stack state budget
+            else
+                let first := node.candidates[0]!
+                let (zeros, col, rest, ones) := bestSplitFast node.candidates node.vectors first
+                let zeroNode : FastPt :=
+                  { candidates := rest, target := node.target, pending := none, vectors := zeros }
+                let oneNode : FastPt :=
+                  match node.target with
+                  | some t => { candidates := rest, target := some t, pending := some col,
+                                vectors := ones }
+                  | none => { candidates := rest, target := some col, pending := none,
+                              vectors := ones }
+                graySynthLoopBudget fuel qs (zeroNode :: oneNode :: stack) state budget
+
+def graySynthBudget (n : Nat) (phases : List (FastParity × ℚ)) (state : Array FastParity)
+    (qs : Array Qubit) (budget : SynthBudget) : Option (SynthBudget × Array FastParity) :=
+  if phases.isEmpty then some (budget, state)
+  else
+    graySynthLoopBudget (4 * (phases.length + 1) * (n + 1) + 8) qs
+      [{ candidates := Array.range n, target := none, pending := none, vectors := phases.toArray }]
+      state budget
+
 /-- XOR together the rows of `m` selected by the set bits of `row`. -/
 def rowTimesMatrix (row : Parity) (m : Array Parity) : Parity := Id.run do
   let mut acc : Parity := 0
@@ -306,6 +512,61 @@ def linearSynth (frm tgt : Array Parity) (qs : Array Qubit) : Option (List Gate)
             ops := (col, r) :: ops
       return some (ops.map fun (c, t) => Gate.cnot qs[c]! qs[t]!)
 
+def rowTimesMatrixFast (row : FastParity) (m : Array FastParity) : FastParity := Id.run do
+  let mut acc : FastParity := {}
+  let mut i := 0
+  for r in m do
+    if row.testBit i then acc := acc.xor r
+    i := i + 1
+  return acc
+
+def invertFast (rows : Array FastParity) (n : Nat) : Option (Array FastParity) := Id.run do
+  let mut a := rows
+  let mut inv : Array FastParity := (Array.range n).map FastParity.basis
+  for col in List.range n do
+    match (List.range n).find? (fun r => r ≥ col && a[r]!.testBit col) with
+    | none => return none
+    | some pivot =>
+        let ac := a[col]!; let ap := a[pivot]!
+        a := (a.set! col ap).set! pivot ac
+        let ic := inv[col]!; let ip := inv[pivot]!
+        inv := (inv.set! col ip).set! pivot ic
+        for r in List.range n do
+          if r != col && a[r]!.testBit col then
+            a := a.set! r (a[r]!.xor a[col]!)
+            inv := inv.set! r (inv[r]!.xor inv[col]!)
+  return some inv
+
+/-- Budgeted linear fix-up.  Each pending row operation becomes exactly one CNOT, so the
+budget can reject a losing block before elimination finishes. -/
+def linearSynthBudget (frm tgt : Array FastParity) (qs : Array Qubit)
+    (budget : SynthBudget) : Option SynthBudget := Id.run do
+  let n := frm.size
+  if frm == tgt then return some budget
+  match invertFast frm n with
+  | none => return none
+  | some inverse =>
+      let mut m : Array FastParity := tgt.map (fun row => rowTimesMatrixFast row inverse)
+      let mut ops : List (Nat × Nat) := []
+      let mut count := 0
+      for col in List.range n do
+        if !(m[col]!.testBit col) then
+          match (List.range n).find? (fun r => r > col && m[r]!.testBit col) with
+          | none => return none
+          | some r =>
+              m := m.set! col (m[col]!.xor m[r]!)
+              ops := (r, col) :: ops
+              count := count + 1
+              if !budget.admitsTwoQ count then return none
+        for r in List.range n do
+          if r != col && m[r]!.testBit col then
+            m := m.set! r (m[r]!.xor m[col]!)
+            ops := (col, r) :: ops
+            count := count + 1
+            if !budget.admitsTwoQ count then return none
+      return ops.foldl (fun acc (c, t) => acc.bind (·.push (Gate.cnot qs[c]! qs[t]!)))
+        (some budget)
+
 /-- Synthesize a block: Gray-code phase synthesis, the linear fix-up, then the `x` gates the
 affine part calls for. The block's wire list and linear map cross into array form here, once,
 and stay there for the rest of the synthesis. -/
@@ -323,6 +584,29 @@ def synthesize (qs : List Qubit) (st : BlockState) : Option (List Gate) :=
       let xs := (st.consts.zipIdx).filterMap fun (k, i) => if k = true then some (Gate.x qa[i]!) else none
       some (gs₁ ++ gs₂ ++ xs)
 
+/-- Synthesize from the live hash-backed state.  Sorting by parity makes the result identical
+to the list-backed route regardless of hash-table iteration order. -/
+def synthesizeFast (qs : List Qubit) (st : FastBlockState) (maxTwoQ maxCount : Nat) :
+    Option (List Gate) :=
+  let n := qs.length
+  let qa := qs.toArray
+  let phases :=
+    ((st.terms.toList.filter fun t => !BlockState.angleIsZero t.2).map fun t =>
+      (t.1, BlockState.angleMod t.2)).mergeSort fun a b => FastParity.le a.1 b.1
+  let state : Array FastParity := (Array.range n).map FastParity.basis
+  let budget : SynthBudget := { maxCount, maxTwoQ }
+  match graySynthBudget n phases state qa budget with
+  | none => none
+  | some (budget, state') =>
+      match linearSynthBudget state' st.parity qa budget with
+      | none => none
+      | some budget =>
+          let xs := (st.consts.toList.zipIdx).filterMap fun (k, i) =>
+            if k = true then some (Gate.x qa[i]!) else none
+          match budget.pushAll xs with
+          | none => none
+          | some budget => some budget.rev.reverse
+
 
 /-! ## Chunking -/
 
@@ -334,7 +618,7 @@ structure Chunk where
   maxQubits : Nat
   maxTerms : Nat
   qubits : List Qubit := []
-  state : BlockState := BlockState.initial 0
+  state : FastBlockState := FastBlockState.initial 0
   original : List Gate := []
 
 namespace Chunk
@@ -351,8 +635,8 @@ def extend (ch : Chunk) (q : Qubit) : Chunk :=
       qubits := ch.qubits ++ [q]
       state :=
         { ch.state with
-          parity := ch.state.parity ++ [2 ^ ch.qubits.length]
-          consts := ch.state.consts ++ [false] } }
+          parity := ch.state.parity.push (FastParity.basis ch.qubits.length)
+          consts := ch.state.consts.push false } }
 
 /-- The operands a gate would bring into the block, or `none` when it leaves the fragment. -/
 def interpretable : Gate → Option (List Qubit)
@@ -386,7 +670,7 @@ the chunk was built. -/
 def flush (ch : Chunk) : List Gate :=
   if ch.original.isEmpty then []
   else
-    match synthesize ch.qubits ch.state with
+    match synthesizeFast ch.qubits ch.state (count2q ch.original) ch.original.length with
     | none => ch.original
     | some synth =>
         match analyzeGates ch.qubits ch.original, analyzeGates ch.qubits synth with
@@ -403,7 +687,7 @@ def capOk (ch : Chunk) (g : Gate) : Bool :=
       match localIdx ch.qubits q with
       | some i =>
           match ch.state.parity[i]? with
-          | some p => ch.state.terms.any (fun t => t.1 == p) || ch.state.terms.length < ch.maxTerms
+          | some p => (ch.state.terms.get? p).isSome || ch.state.terms.size < ch.maxTerms
           | none => false
       | none => false
   | none => true
@@ -412,7 +696,7 @@ def capOk (ch : Chunk) (g : Gate) : Bool :=
 def feedInto (ch : Chunk) (g : Gate) : Option (List Gate × Chunk) :=
   if !ch.capOk g then none
   else
-    match feedGate ch.qubits ch.state g with
+    match feedGateFast ch.qubits ch.state g with
     | some st => some ([], { ch with state := st, original := ch.original ++ [g] })
     | none => none
 

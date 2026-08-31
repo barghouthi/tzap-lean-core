@@ -425,13 +425,16 @@ def Scan.supp (st : Scan) (w : Nat) : List Qubit := st.supports[w]?.getD []
 def Scan.tagged (st : Scan) (gs : List Gate) : List Tagged :=
   gs.zipIdx.map fun (g, i) => (g, st.tags[i]?.getD none)
 
-/-- Whether a rewrite's replacement checks out against the gates it claims. -/
-def Scan.keep (st : Scan) (n : Nat) (xs : List Tagged) (w : Nat) : Bool :=
-  checkRewrite n (st.supp w) (claimedBy w xs) (st.cands[w]?.getD [])
+/-- Whether a rewrite's replacement checks out against the gates it claims.  `members` is a
+batched `groupedClaim` lookup, so all rewrites share one traversal of the tagging. -/
+def Scan.keep (st : Scan) (n : Nat) (members : Nat → List Gate) (w : Nat) : Bool :=
+  checkRewrite n (st.supp w) (members w) (st.cands[w]?.getD [])
 
 /-- Untag every rewrite whose replacement does not check out. -/
 def Scan.vetted (st : Scan) (n : Nat) (xs : List Tagged) : List Tagged :=
-  vettedBy (st.keep n xs) xs
+  let groups := groupClaimsAux (claimBound xs) xs
+  let members := fun w => groups[w]?.getD []
+  vettedBy (st.keep n members) xs
 
 /-- Peephole superoptimization of a gate list over `n` wires: propose, check, splice.
 
@@ -441,7 +444,7 @@ def superOptGates (cfg : SuperOptConfig) (tbl : SynthTable) (n : Nat) (gs : List
   let arr := gs.toArray
   let st := proposeRewrites cfg tbl n arr
   let xs := st.vetted n (st.tagged gs)
-  if onSuppB st.supp xs && sepB st.supp [] xs then applyAll st.repl xs else gs
+  if onSuppB st.supp xs && sepAllB st.supp xs then applyAllLinear st.repl [] xs else gs
 
 /-- Peephole superoptimization of a circuit. -/
 def superOpt (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) : Circuit :=

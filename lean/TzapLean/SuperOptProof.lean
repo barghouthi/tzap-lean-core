@@ -197,10 +197,15 @@ theorem vetted_repl {n m : Nat} (st : Scan) (xs : List Tagged) (w : Nat)
     Equivalent n m (st.repl w) (claimedBy w (st.vetted n xs)) ∧
       (∀ g ∈ st.repl w, g.Wf) ∧ (∀ g ∈ st.repl w, ∀ q ∈ g.qubitsOf, q ∈ st.supp w) ∧
       (∀ g ∈ st.repl w, g.isUnitary = true) ∧ (∀ q ∈ st.supp w, q < n) := by
-  have hkeep : st.keep n xs w = true := keep_of_mem_vettedBy hw
+  let groups := groupClaimsAux (claimBound xs) xs
+  let members : Nat → List Gate := fun w => groups[w]?.getD []
+  have hkeep : st.keep n members w = true := keep_of_mem_vettedBy hw
   have hcl : claimedBy w (st.vetted n xs) = claimedBy w xs := by
     rw [Scan.vetted, claimedBy_vettedBy, if_pos hkeep]
   rw [hcl]
+  have hm : members w = claimedBy w xs := by
+    simpa [members, groups, groupedClaim] using groupedClaim_eq_claimedBy xs w
+  rw [← hm]
   exact checkRewrite_correct (m := m) hkeep
 
 /-- **Superoptimization preserves meaning.** -/
@@ -214,8 +219,9 @@ theorem superOptGates_correct {n m : Nat} (cfg : SuperOptConfig) (tbl : SynthTab
     set xs := st.vetted n (st.tagged gs) with hxs
     have hgates : untag xs = gs := by rw [hxs, Scan.vetted, untag_vettedBy, untag_tagged]
     have hmain := applyAll_correct (n := n) (m := m) st.supp st.repl xs
-      (sepB_sound st.supp xs [] (fun w hw => absurd hw (by simp)) hchecks.2)
+      (sepAllB_sound st.supp xs hchecks.2)
       (onSuppB_sound hchecks.1) (fun w hw => (vetted_repl st (st.tagged gs) w hw).1)
+    rw [applyAllLinear_initial]
     rwa [hgates] at hmain
   · exact Equivalent.refl n m gs
 
@@ -231,6 +237,7 @@ theorem superOptGates_pred {n m : Nat} {P : Gate → Prop} (cfg : SuperOptConfig
   · set st := proposeRewrites cfg tbl n gs.toArray with hst
     set xs := st.vetted n (st.tagged gs) with hxs
     have hgates : untag xs = gs := by rw [hxs, Scan.vetted, untag_vettedBy, untag_tagged]
+    rw [applyAllLinear_initial]
     refine applyAll_pred st.repl xs (hgates ▸ hin) (fun w hw => ?_)
     obtain ⟨-, hwf, hsub, hu, hrange⟩ := vetted_repl (m := m) st (st.tagged gs) w hw
     exact hrepl (st.supp w) (st.repl w) hwf hsub hu hrange

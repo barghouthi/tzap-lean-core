@@ -964,7 +964,7 @@ theorem Chunk.feedInto_spec {ch ch' : Chunk} {g : Gate} {out : List Gate}
   unfold Chunk.feedInto at h
   by_cases hcap : ch.capOk g = true
   · rw [if_neg (by simp [hcap])] at h
-    rcases hfeed : feedGate ch.qubits ch.state g with _ | st
+    rcases hfeed : feedGateFast ch.qubits ch.state g with _ | st
     · rw [hfeed] at h; simp at h
     · rw [hfeed] at h
       simp only [Option.some.injEq, Prod.mk.injEq] at h
