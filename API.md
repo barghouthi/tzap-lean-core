@@ -35,6 +35,10 @@ To use `measure` gates, allocate classical bits with
 | Measure | `Gate::measure { qubit, cbit }` |
 | Reset | `Gate::reset(qubit)` |
 
+Operands are `Qubit` and `CBit`, both aliases for `u32` — a `Gate` is 16
+bytes, which matters on circuits of tens of millions of gates. Integer
+literals still work unannotated; a `usize` index needs `as u32`.
+
 ### QASM I/O
 
 Parse from and convert to OpenQASM 2.0. `from_qasm` returns

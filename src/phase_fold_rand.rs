@@ -4,7 +4,7 @@ use std::hash::{BuildHasher, Hasher};
 
 use rustc_hash::FxHashMap;
 
-use crate::circuit::{Circuit, Gate};
+use crate::circuit::{Circuit, Gate, Qubit};
 use crate::pass::Pass;
 
 /// Random tag representing a qubit's parity (XOR of variable set).
@@ -32,7 +32,7 @@ fn canonical_parity(parity: ParityHash) -> (ParityHash, bool) {
 /// Pure Clifford+T circuits only ever touch `int_part`.
 struct LivePhase {
     int_part: u8,
-    qubit: usize,
+    qubit: Qubit,
     current_idx: usize,
     float_part: f64,
     /// True when `current_idx` sits on the complement of the group's canonical parity.
@@ -63,7 +63,7 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
     let mut live: Vec<LivePhase> = Vec::new();
     let mut parity_to_group: FxHashMap<ParityHash, usize> = FxHashMap::default();
     let mut skip = vec![false; circuit.gates.len()];
-    let mut emit_at: Vec<Option<(usize, u8, f64)>> = vec![None; circuit.gates.len()];
+    let mut emit_at: Vec<Option<(Qubit, u8, f64)>> = vec![None; circuit.gates.len()];
 
     for (idx, gate) in circuit.gates.iter().enumerate() {
         match gate {
@@ -133,13 +133,13 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
                 ),
             },
             Gate::h(q) => {
-                qubits[*q] = fresh();
+                qubits[*q as usize] = fresh();
             }
             Gate::x(q) => {
-                qubits[*q] = !qubits[*q];
+                qubits[*q as usize] = !qubits[*q as usize];
             }
             Gate::cnot { control, target } => {
-                qubits[*target] ^= qubits[*control];
+                qubits[*target as usize] ^= qubits[*control as usize];
             }
             Gate::cz { .. } | Gate::ccz { .. } => {
                 // CZ and CCZ are diagonal: they change phase but leave the tracked
@@ -152,7 +152,7 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
                 target,
             } => {
                 // AND-based parity — opaque, just refresh the target.
-                qubits[*target] = fresh();
+                qubits[*target as usize] = fresh();
             }
             Gate::measure { .. } => {
                 // Computational-basis measurement preserves the measured basis
@@ -162,7 +162,7 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
             }
             Gate::reset(qubit) => {
                 // Reset overwrites the computational-basis value with |0⟩.
-                qubits[*qubit] = 0;
+                qubits[*qubit as usize] = 0;
             }
         }
     }
@@ -211,14 +211,14 @@ pub fn phase_fold_rand(circuit: &Circuit) -> Circuit {
 
 fn record_int(
     qubits: &[ParityHash],
-    q: usize,
+    q: Qubit,
     k: u8,
     idx: usize,
     live: &mut Vec<LivePhase>,
     parity_to_group: &mut FxHashMap<ParityHash, usize>,
     skip: &mut [bool],
 ) {
-    let parity = qubits[q];
+    let parity = qubits[q as usize];
     if parity == 0 || parity == ParityHash::MAX {
         // A rotation conditioned on a known |0⟩ is the identity; on a known
         // |1⟩ it contributes only a global phase. Neither needs to be emitted.
@@ -259,14 +259,14 @@ fn record_int(
 
 fn record_float(
     qubits: &[ParityHash],
-    q: usize,
+    q: Qubit,
     theta: f64,
     idx: usize,
     live: &mut Vec<LivePhase>,
     parity_to_group: &mut FxHashMap<ParityHash, usize>,
     skip: &mut [bool],
 ) {
-    let parity = qubits[q];
+    let parity = qubits[q as usize];
     if parity == 0 || parity == ParityHash::MAX {
         // See record_int: rotations on known computational-basis constants are
         // observationally irrelevant.
@@ -317,7 +317,7 @@ fn angle_is_zero(angle: f64) -> bool {
     n < 1e-6 || (2.0 * PI - n) < 1e-6
 }
 
-fn emit_rotation(output: &mut Circuit, q: usize, int_part: u8, float_part: f64) {
+fn emit_rotation(output: &mut Circuit, q: Qubit, int_part: u8, float_part: f64) {
     if float_part == 0.0 {
         emit_int(output, q, int_part);
     } else {
@@ -326,7 +326,7 @@ fn emit_rotation(output: &mut Circuit, q: usize, int_part: u8, float_part: f64) 
     }
 }
 
-fn emit_int(output: &mut Circuit, q: usize, k: u8) {
+fn emit_int(output: &mut Circuit, q: Qubit, k: u8) {
     match k & 7 {
         0 => {}
         1 => output.apply(Gate::t(q)),
@@ -346,7 +346,7 @@ fn emit_int(output: &mut Circuit, q: usize, k: u8) {
     }
 }
 
-fn emit_float(output: &mut Circuit, q: usize, angle: f64) {
+fn emit_float(output: &mut Circuit, q: Qubit, angle: f64) {
     let n = angle.rem_euclid(2.0 * PI);
     if angle_is_zero(n) {
         return;

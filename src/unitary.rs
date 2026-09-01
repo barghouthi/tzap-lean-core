@@ -1,6 +1,6 @@
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
-use crate::circuit::{Circuit, Gate};
+use crate::circuit::{Circuit, Gate, Qubit};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct C {
@@ -230,26 +230,28 @@ pub(crate) fn circuit_unitary(circuit: &Circuit) -> Vec<Vec<C>> {
     let mut mat = Mat::identity(n);
     for gate in &circuit.gates {
         match gate {
-            Gate::x(q) => mat.apply_single(gate_matrix_x(), *q, n),
-            Gate::h(q) => mat.apply_single(gate_matrix_h(), *q, n),
-            Gate::s(q) => mat.apply_single(gate_matrix_s(), *q, n),
-            Gate::sdg(q) => mat.apply_single(gate_matrix_sdg(), *q, n),
-            Gate::z(q) => mat.apply_single(gate_matrix_z(), *q, n),
-            Gate::t(q) => mat.apply_single(gate_matrix_t(), *q, n),
-            Gate::tdg(q) => mat.apply_single(gate_matrix_tdg(), *q, n),
-            Gate::rz(theta, q) => mat.apply_single(gate_matrix_rz(*theta), *q, n),
-            Gate::cnot { control, target } => mat.apply_cnot(*control, *target, n),
-            Gate::cz { control, target } => mat.apply_cz(*control, *target, n),
+            Gate::x(q) => mat.apply_single(gate_matrix_x(), *q as usize, n),
+            Gate::h(q) => mat.apply_single(gate_matrix_h(), *q as usize, n),
+            Gate::s(q) => mat.apply_single(gate_matrix_s(), *q as usize, n),
+            Gate::sdg(q) => mat.apply_single(gate_matrix_sdg(), *q as usize, n),
+            Gate::z(q) => mat.apply_single(gate_matrix_z(), *q as usize, n),
+            Gate::t(q) => mat.apply_single(gate_matrix_t(), *q as usize, n),
+            Gate::tdg(q) => mat.apply_single(gate_matrix_tdg(), *q as usize, n),
+            Gate::rz(theta, q) => mat.apply_single(gate_matrix_rz(*theta), *q as usize, n),
+            Gate::cnot { control, target } => {
+                mat.apply_cnot(*control as usize, *target as usize, n)
+            }
+            Gate::cz { control, target } => mat.apply_cz(*control as usize, *target as usize, n),
             Gate::ccx {
                 control1,
                 control2,
                 target,
-            } => mat.apply_ccx(*control1, *control2, *target, n),
+            } => mat.apply_ccx(*control1 as usize, *control2 as usize, *target as usize, n),
             Gate::ccz {
                 control1,
                 control2,
                 target,
-            } => mat.apply_ccz(*control1, *control2, *target, n),
+            } => mat.apply_ccz(*control1 as usize, *control2 as usize, *target as usize, n),
             Gate::measure { .. } | Gate::reset(_) => {
                 panic!("circuit_unitary: measurement/reset is not a unitary operation")
             }
@@ -562,7 +564,7 @@ mod tests {
     fn swap_3qubit_cycle() {
         // SWAP(0,1) then SWAP(1,2) = cyclic permutation 0→1→2→0
         // vs SWAP(1,2) then SWAP(0,1) = cyclic permutation 0→2→1→0
-        fn swap(c: &mut Circuit, a: usize, b: usize) {
+        fn swap(c: &mut Circuit, a: Qubit, b: Qubit) {
             c.apply(Gate::cnot {
                 control: a,
                 target: b,

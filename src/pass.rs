@@ -66,9 +66,14 @@ pub fn depth(c: &Circuit) -> usize {
     let mut next_layer = vec![0; c.num_qubits];
     for gate in &c.gates {
         let (n, qs) = qubit_operands(gate);
-        let layer = qs[..n].iter().map(|&q| next_layer[q]).max().unwrap_or(0) + 1;
+        let layer = qs[..n]
+            .iter()
+            .map(|&q| next_layer[q as usize])
+            .max()
+            .unwrap_or(0)
+            + 1;
         for &q in &qs[..n] {
-            next_layer[q] = layer;
+            next_layer[q as usize] = layer;
         }
     }
     next_layer.into_iter().max().unwrap_or(0)

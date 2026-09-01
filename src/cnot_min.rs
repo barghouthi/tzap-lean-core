@@ -51,7 +51,7 @@ use std::f64::consts::PI;
 
 use rustc_hash::FxHashMap;
 
-use crate::circuit::{Circuit, Gate};
+use crate::circuit::{Circuit, Gate, Qubit};
 use crate::pass::Pass;
 
 /// A parity: bit `i` is set when local qubit `i`'s starting value is XOR-ed
@@ -181,7 +181,7 @@ struct Chunk {
     max_qubits: usize,
     max_terms: usize,
     /// Local index -> circuit qubit.
-    qubits: Vec<usize>,
+    qubits: Vec<Qubit>,
     /// Circuit qubit -> local index, or `usize::MAX` when untouched.
     local: Vec<usize>,
     parity: Vec<Parity>,
@@ -245,14 +245,14 @@ impl Chunk {
 
     /// The local index for `q`, which [`Chunk::admits`] must already have
     /// confirmed there is room for.
-    fn index_of(&mut self, q: usize) -> usize {
-        let existing = self.local[q];
+    fn index_of(&mut self, q: Qubit) -> usize {
+        let existing = self.local[q as usize];
         if existing != usize::MAX {
             return existing;
         }
         let i = self.qubits.len();
         self.qubits.push(q);
-        self.local[q] = i;
+        self.local[q as usize] = i;
         // A qubit joins holding its own starting value, by definition of the
         // basis this block is expressed in.
         self.parity.push(1u128 << i);
@@ -263,10 +263,10 @@ impl Chunk {
     /// Whether `operands` fit under the qubit cap without evicting anything.
     /// Checked before any mutation, so a gate whose second operand does not
     /// fit cannot leave the first half-admitted.
-    fn admits(&self, operands: &[usize]) -> bool {
+    fn admits(&self, operands: &[Qubit]) -> bool {
         let mut fresh = 0;
         for (i, &q) in operands.iter().enumerate() {
-            if self.local[q] == usize::MAX && !operands[..i].contains(&q) {
+            if self.local[q as usize] == usize::MAX && !operands[..i].contains(&q) {
                 fresh += 1;
             }
         }
@@ -278,7 +278,7 @@ impl Chunk {
     /// block having been flushed first), or it is wider than the qubit cap
     /// allows any block to be.
     fn feed<'g>(&mut self, gate: &'g Gate, output: &mut Circuit) -> Option<&'g Gate> {
-        let (rotation, operands): (Option<f64>, &[usize]) = match gate {
+        let (rotation, operands): (Option<f64>, &[Qubit]) = match gate {
             Gate::t(q) => (Some(PI / 4.0), std::slice::from_ref(q)),
             Gate::tdg(q) => (Some(-PI / 4.0), std::slice::from_ref(q)),
             Gate::s(q) => (Some(PI / 2.0), std::slice::from_ref(q)),
@@ -439,7 +439,7 @@ impl Chunk {
     /// a parity never needs more bits than the circuit has qubits.
     fn reset(&mut self) {
         for &q in &self.qubits {
-            self.local[q] = usize::MAX;
+            self.local[q as usize] = usize::MAX;
         }
         self.qubits.clear();
         self.parity.clear();
@@ -534,7 +534,7 @@ fn synthesize(
     parity: &[Parity],
     consts: &[bool],
     terms: &FxHashMap<Parity, f64>,
-    qubits: &[usize],
+    qubits: &[Qubit],
     budget: &mut Budget,
     scratch: &mut Scratch,
 ) -> bool {
@@ -621,7 +621,7 @@ fn gray_synth(
     phases: ParitySet,
     state: &mut [Parity],
     budget: &mut Budget,
-    qubits: &[usize],
+    qubits: &[Qubit],
     scratch: &mut Scratch,
 ) -> bool {
     let Scratch { pool, stack, .. } = scratch;
@@ -767,7 +767,7 @@ fn split_on(pool: &mut Pool, vectors: &[(Parity, f64)], col: usize) -> (ParitySe
 fn linear_synth(
     from: &[Parity],
     to: &[Parity],
-    qubits: &[usize],
+    qubits: &[Qubit],
     budget: &mut Budget,
     scratch: &mut Scratch,
 ) -> bool {
@@ -881,7 +881,7 @@ fn angle_is_zero(angle: f64) -> bool {
 /// Returns `false` when `budget` ran out, on the same terms as
 /// [`gray_synth`].
 #[must_use]
-fn emit_rotation(budget: &mut Budget, qubit: usize, angle: f64) -> bool {
+fn emit_rotation(budget: &mut Budget, qubit: Qubit, angle: f64) -> bool {
     let n = angle.rem_euclid(2.0 * PI);
     if angle_is_zero(n) {
         return true;
@@ -920,6 +920,11 @@ mod tests {
             self.0 ^= self.0 << 17;
             self.0 as usize % upper
         }
+
+        /// [`TestRng::next`] as a qubit index.
+        pub(super) fn qubit(&mut self, upper: usize) -> Qubit {
+            self.next(upper) as Qubit
+        }
     }
 
     fn two_qubit(c: &Circuit) -> usize {
@@ -949,7 +954,7 @@ mod tests {
         let n = 1 + rng.next(max_qubits);
         let mut c = Circuit::new(n);
         for _ in 0..rng.next(max_len) {
-            let q = rng.next(n);
+            let q = rng.qubit(n);
             match rng.next(9) {
                 0 => c.apply(Gate::t(q)),
                 1 => c.apply(Gate::tdg(q)),
@@ -959,14 +964,14 @@ mod tests {
                 5 => c.apply(Gate::x(q)),
                 6 => c.apply(Gate::h(q)),
                 7 if n > 1 => {
-                    let t = (q + 1 + rng.next(n - 1)) % n;
+                    let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                     c.apply(Gate::cz {
                         control: q,
                         target: t,
                     });
                 }
                 _ if n > 1 => {
-                    let t = (q + 1 + rng.next(n - 1)) % n;
+                    let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                     c.apply(Gate::cnot {
                         control: q,
                         target: t,
@@ -979,7 +984,7 @@ mod tests {
     }
 
     /// Apply a CNOT list to a parity state, the way the hardware would.
-    fn replay(gates: &[Gate], qubits: &[usize], n: usize) -> Vec<Parity> {
+    fn replay(gates: &[Gate], qubits: &[Qubit], n: usize) -> Vec<Parity> {
         let mut state: Vec<Parity> = (0..n).map(|i| 1u128 << i).collect();
         for gate in gates {
             if let Gate::cnot { control, target } = gate {
@@ -1035,7 +1040,7 @@ mod tests {
         let mut rng = TestRng(0x243f_6a88_85a3_08d3);
         for _ in 0..300 {
             let n = 1 + rng.next(8);
-            let qubits: Vec<usize> = (0..n).collect();
+            let qubits: Vec<Qubit> = (0..n as Qubit).collect();
             let from: Vec<Parity> = (0..n).map(|i| 1u128 << i).collect();
             let mut to = from.clone();
             for _ in 0..(3 * n) {
@@ -1076,7 +1081,7 @@ mod tests {
         let mut rng = TestRng(0xb7e1_5162_8aed_2a6b);
         for _ in 0..200 {
             let n = 2 + rng.next(6);
-            let qubits: Vec<usize> = (0..n).collect();
+            let qubits: Vec<Qubit> = (0..n as Qubit).collect();
             let mut from: Vec<Parity> = (0..n).map(|i| 1u128 << i).collect();
             for _ in 0..(2 * n) {
                 let (a, b) = (rng.next(n), rng.next(n));
@@ -1130,7 +1135,7 @@ mod tests {
                 continue;
             }
             let phases: Vec<(Parity, f64)> = wanted.iter().map(|&p| (p, PI / 4.0)).collect();
-            let qubits: Vec<usize> = (0..n).collect();
+            let qubits: Vec<Qubit> = (0..n as Qubit).collect();
             let mut state: Vec<Parity> = (0..n).map(|i| 1u128 << i).collect();
             let mut b = unbounded();
             assert!(gray_synth(
@@ -1148,8 +1153,10 @@ mod tests {
             let mut seen = Vec::new();
             for gate in &gates {
                 match gate {
-                    Gate::cnot { control, target } => live[*target] ^= live[*control],
-                    Gate::t(q) => seen.push(live[*q]),
+                    Gate::cnot { control, target } => {
+                        live[*target as usize] ^= live[*control as usize]
+                    }
+                    Gate::t(q) => seen.push(live[*q as usize]),
                     other => panic!("unexpected gate {other:?}"),
                 }
             }
@@ -1381,7 +1388,7 @@ mod tests {
             let len = rng.next(24);
             let mut c = Circuit::new(n);
             for _ in 0..len {
-                let q = rng.next(n);
+                let q = rng.qubit(n);
                 match rng.next(8) {
                     0 => c.apply(Gate::t(q)),
                     1 => c.apply(Gate::tdg(q)),
@@ -1389,14 +1396,14 @@ mod tests {
                     3 => c.apply(Gate::z(q)),
                     4 => c.apply(Gate::x(q)),
                     5 if n > 1 => {
-                        let t = (q + 1 + rng.next(n - 1)) % n;
+                        let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cz {
                             control: q,
                             target: t,
                         });
                     }
                     _ if n > 1 => {
-                        let t = (q + 1 + rng.next(n - 1)) % n;
+                        let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cnot {
                             control: q,
                             target: t,
@@ -1419,7 +1426,7 @@ mod tests {
             let len = rng.next(24);
             let mut c = Circuit::new(n);
             for _ in 0..len {
-                let q = rng.next(n);
+                let q = rng.qubit(n);
                 match rng.next(10) {
                     0 => c.apply(Gate::t(q)),
                     1 => c.apply(Gate::tdg(q)),
@@ -1434,7 +1441,7 @@ mod tests {
                         target: 2,
                     }),
                     _ if n > 1 => {
-                        let t = (q + 1 + rng.next(n - 1)) % n;
+                        let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cnot {
                             control: q,
                             target: t,
@@ -1458,13 +1465,13 @@ mod tests {
                 let n = 4;
                 let mut c = Circuit::new(n);
                 for _ in 0..rng.next(20) {
-                    let q = rng.next(n);
+                    let q = rng.qubit(n);
                     match rng.next(5) {
                         0 => c.apply(Gate::t(q)),
                         1 => c.apply(Gate::x(q)),
                         2 => c.apply(Gate::h(q)),
                         _ => {
-                            let t = (q + 1 + rng.next(n - 1)) % n;
+                            let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                             c.apply(Gate::cnot {
                                 control: q,
                                 target: t,
@@ -1487,13 +1494,13 @@ mod tests {
                 let n = 3;
                 let mut c = Circuit::new(n);
                 for _ in 0..rng.next(20) {
-                    let q = rng.next(n);
+                    let q = rng.qubit(n);
                     match rng.next(4) {
                         0 => c.apply(Gate::t(q)),
                         1 => c.apply(Gate::tdg(q)),
                         2 => c.apply(Gate::s(q)),
                         _ => {
-                            let t = (q + 1 + rng.next(n - 1)) % n;
+                            let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                             c.apply(Gate::cnot {
                                 control: q,
                                 target: t,
@@ -1516,14 +1523,14 @@ mod tests {
             let n = 1 + rng.next(5);
             let mut c = Circuit::new(n);
             for _ in 0..rng.next(30) {
-                let q = rng.next(n);
+                let q = rng.qubit(n);
                 match rng.next(7) {
                     0 => c.apply(Gate::t(q)),
                     1 => c.apply(Gate::h(q)),
                     2 => c.apply(Gate::x(q)),
                     3 => c.apply(Gate::s(q)),
                     _ if n > 1 => {
-                        let t = (q + 1 + rng.next(n - 1)) % n;
+                        let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cnot {
                             control: q,
                             target: t,
@@ -1638,7 +1645,7 @@ mod tests {
             let n = 1 + rng.next(6);
             let mut c = Circuit::new(n);
             for _ in 0..rng.next(40) {
-                let q = rng.next(n);
+                let q = rng.qubit(n);
                 match rng.next(9) {
                     0 => c.apply(Gate::t(q)),
                     1 => c.apply(Gate::tdg(q)),
@@ -1647,14 +1654,14 @@ mod tests {
                     4 => c.apply(Gate::x(q)),
                     5 => c.apply(Gate::rz(0.1 + 0.3 * (rng.next(7) as f64), q)),
                     6 if n > 1 => {
-                        let t = (q + 1 + rng.next(n - 1)) % n;
+                        let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cz {
                             control: q,
                             target: t,
                         });
                     }
                     _ if n > 1 => {
-                        let t = (q + 1 + rng.next(n - 1)) % n;
+                        let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cnot {
                             control: q,
                             target: t,
@@ -1680,13 +1687,13 @@ mod tests {
         let mut rng = TestRng(0xabcd_0987_6543_210f);
         let mut c = Circuit::new(n);
         for _ in 0..(2 * n) {
-            let a = rng.next(n);
-            let b = (a + 1 + rng.next(n - 1)) % n;
+            let a = rng.qubit(n);
+            let b = (a + 1 + rng.qubit(n - 1)) % n as Qubit;
             c.apply(Gate::cnot {
                 control: a,
                 target: b,
             });
-            c.apply(Gate::t(rng.next(n)));
+            c.apply(Gate::t(rng.qubit(n)));
         }
         let out = cnot_min(&c);
         assert_eq!(out.gates, cnot_min_unbounded(&c).gates);
@@ -1764,13 +1771,13 @@ mod tests {
         for case in 0..20 {
             let mut c = Circuit::new(n);
             for _ in 0..4000 {
-                let a = rng.next(n);
+                let a = rng.qubit(n);
                 match rng.next(6) {
                     0 => c.apply(Gate::t(a)),
                     1 => c.apply(Gate::h(a)),
                     2 => c.apply(Gate::x(a)),
                     _ => {
-                        let b = (a + 1 + rng.next(n - 1)) % n;
+                        let b = (a + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cnot {
                             control: a,
                             target: b,
@@ -1792,12 +1799,12 @@ mod tests {
             let n = 1 + rng.next(4);
             let mut c = Circuit::new(n);
             for _ in 0..rng.next(20) {
-                let q = rng.next(n);
+                let q = rng.qubit(n);
                 match rng.next(4) {
                     0 => c.apply(Gate::t(q)),
                     1 => c.apply(Gate::h(q)),
                     _ if n > 1 => {
-                        let t = (q + 1 + rng.next(n - 1)) % n;
+                        let t = (q + 1 + rng.qubit(n - 1)) % n as Qubit;
                         c.apply(Gate::cnot {
                             control: q,
                             target: t,
@@ -2012,10 +2019,10 @@ mod cap_bench {
         let mut c = Circuit::new(n);
         for i in 0..200_000 {
             if i % 3 == 0 {
-                c.apply(Gate::t(rng() % n));
+                c.apply(Gate::t((rng() % n) as Qubit));
             } else {
-                let a = rng() % n;
-                let b = (a + 1 + rng() % (n - 1)) % n;
+                let a = (rng() % n) as Qubit;
+                let b = (a + 1 + (rng() % (n - 1)) as Qubit) % n as Qubit;
                 c.apply(Gate::cnot {
                     control: a,
                     target: b,

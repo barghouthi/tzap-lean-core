@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 
-use crate::circuit::Gate;
+use crate::circuit::{Gate, Qubit};
 
 use super::matrix::{UnitaryFingerprint, UnitaryMatrix, unitary_fingerprint};
 use super::synthesis_arena::WidthTable;
@@ -221,7 +221,7 @@ impl UnitaryCircuitTable {
             let identity = UnitaryMatrix::identity(num_qubits)?;
             entries[num_qubits] = WidthTable::with_identity(unitary_fingerprint(&identity));
             let gates = library_gates(num_qubits);
-            let support: Vec<_> = (0..num_qubits).collect();
+            let support: Vec<Qubit> = (0..num_qubits as Qubit).collect();
             let mut frontier = vec![(0, identity)];
 
             // Parents per parallel batch: enough candidates to spread across
@@ -557,7 +557,7 @@ pub(super) fn library_circuit_matrix(
     num_qubits: usize,
     circuit: &[LibraryGate],
 ) -> Result<Option<UnitaryMatrix>, SuperOptError> {
-    let support: Vec<_> = (0..num_qubits).collect();
+    let support: Vec<Qubit> = (0..num_qubits as Qubit).collect();
     let mut matrix = UnitaryMatrix::identity(num_qubits)?;
     for &gate in circuit {
         if matrix.apply_gate_left(&gate.to_gate(), &support).is_err() {

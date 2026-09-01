@@ -248,12 +248,12 @@ impl Metrics {
             let (arity, operands) = qubit_operands(gate);
             let layer = operands[..arity]
                 .iter()
-                .map(|&qubit| next_layer[qubit])
+                .map(|&qubit| next_layer[qubit as usize])
                 .max()
                 .unwrap_or(0)
                 + 1;
             for &qubit in &operands[..arity] {
-                next_layer[qubit] = layer;
+                next_layer[qubit as usize] = layer;
             }
             depth = depth.max(layer);
         }

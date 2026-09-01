@@ -15,6 +15,11 @@ impl TestRng {
         self.0 ^= self.0 << 17;
         self.0 as usize % upper
     }
+
+    /// [`TestRng::next`] as a qubit index.
+    fn qubit(&mut self, upper: usize) -> Qubit {
+        self.next(upper) as Qubit
+    }
 }
 
 fn removed_indices(result: &SuperOptResult) -> Vec<Vec<usize>> {
@@ -100,10 +105,10 @@ fn reference_channel(
         for branch in branches {
             match gate {
                 Gate::measure { qubit, cbit } => {
-                    let bit = 1 << (circuit.num_qubits - 1 - qubit);
+                    let bit = 1 << (circuit.num_qubits - 1 - *qubit as usize);
                     for outcome in [false, true] {
                         let mut measured = branch.clone();
-                        measured.cbits[*cbit] = outcome;
+                        measured.cbits[*cbit as usize] = outcome;
                         for (basis, amplitude) in measured.amplitudes.iter_mut().enumerate() {
                             if (basis & bit != 0) != outcome {
                                 *amplitude = OracleScalar::ZERO;
@@ -119,7 +124,7 @@ fn reference_channel(
                     }
                 }
                 Gate::reset(qubit) => {
-                    let bit = 1 << (circuit.num_qubits - 1 - qubit);
+                    let bit = 1 << (circuit.num_qubits - 1 - *qubit as usize);
                     for outcome in [false, true] {
                         let mut reset = vec![OracleScalar::ZERO; dim];
                         for (basis, &amplitude) in branch.amplitudes.iter().enumerate() {
@@ -1291,8 +1296,8 @@ fn cache_stats_count_every_emission() {
     let mut rng = TestRng(0xc047_7000_0000_0001);
     let mut circuit = Circuit::new(4);
     for _ in 0..40 {
-        let q = rng.next(4);
-        let q2 = (q + 1 + rng.next(3)) % 4;
+        let q = rng.qubit(4);
+        let q2 = (q + 1 + rng.qubit(3)) % 4;
         circuit.apply(match rng.next(3) {
             0 => Gate::h(q),
             1 => Gate::t(q),
@@ -1561,7 +1566,7 @@ fn disk_round_trip_reproduces_the_built_table() {
     // synthesizes identically (same replacement circuit, not just "a" match).
     let mut checked = 0;
     for num_qubits in 1..=3 {
-        let support: Vec<_> = (0..num_qubits).collect();
+        let support: Vec<Qubit> = (0..num_qubits as Qubit).collect();
         for gate in library_gates(num_qubits) {
             let mut matrix = UnitaryMatrix::identity(num_qubits).unwrap();
             matrix.apply_gate_left(&gate.to_gate(), &support).unwrap();
@@ -1689,8 +1694,8 @@ fn randomized_synthesized_rewrites_preserve_unitary() {
     for _ in 0..25 {
         let mut circuit = Circuit::new(3);
         for _ in 0..30 {
-            let q = rng.next(3);
-            let other = (q + 1 + rng.next(2)) % 3;
+            let q = rng.qubit(3);
+            let other = (q + 1 + rng.qubit(2)) % 3;
             let gate = match rng.next(8) {
                 0 => Gate::h(q),
                 1 => Gate::x(q),
@@ -1790,11 +1795,11 @@ fn randomized_production_config_rewrites_are_sound() {
     for _ in 0..10 {
         let mut circuit = Circuit::new(5);
         for gate_index in 0..60 {
-            let q = rng.next(5);
-            let q2 = (q + 1 + rng.next(4)) % 5;
-            let mut q3 = rng.next(5);
+            let q = rng.qubit(5);
+            let q2 = (q + 1 + rng.qubit(4)) % 5;
+            let mut q3 = rng.qubit(5);
             while q3 == q || q3 == q2 {
-                q3 = rng.next(5);
+                q3 = rng.qubit(5);
             }
             let gate = match rng.next(12) {
                 0 => Gate::x(q),
@@ -1983,11 +1988,11 @@ fn randomized_results_match_naive_anchored_scan() {
     for _ in 0..30 {
         let mut circuit = Circuit::new(4);
         for _ in 0..30 {
-            let q = rng.next(4);
-            let q2 = (q + 1 + rng.next(3)) % 4;
-            let mut q3 = rng.next(4);
+            let q = rng.qubit(4);
+            let q2 = (q + 1 + rng.qubit(3)) % 4;
+            let mut q3 = rng.qubit(4);
             while q3 == q || q3 == q2 {
-                q3 = rng.next(4);
+                q3 = rng.qubit(4);
             }
             let gate = match rng.next(11) {
                 0 => Gate::x(q),
@@ -2110,27 +2115,27 @@ fn fuzz_subcircuit_rewrites_change_circuit_and_preserve_unitary() {
         // gadget varies across single-, two-, and three-qubit gates.
         match rng.next(8) {
             0 => {
-                let q = rng.next(6);
+                let q = rng.qubit(6);
                 circuit.apply(Gate::h(q));
                 circuit.apply(Gate::h(q));
             }
             1 => {
-                let q = rng.next(6);
+                let q = rng.qubit(6);
                 circuit.apply(Gate::x(q));
                 circuit.apply(Gate::x(q));
             }
             2 => {
-                let q = rng.next(6);
+                let q = rng.qubit(6);
                 circuit.apply(Gate::z(q));
                 circuit.apply(Gate::z(q));
             }
             3 => {
-                let q = rng.next(6);
+                let q = rng.qubit(6);
                 circuit.apply(Gate::s(q));
                 circuit.apply(Gate::sdg(q));
             }
             4 => {
-                let q = rng.next(6);
+                let q = rng.qubit(6);
                 circuit.apply(Gate::t(q));
                 circuit.apply(Gate::tdg(q));
             }
@@ -2169,11 +2174,11 @@ fn fuzz_subcircuit_rewrites_change_circuit_and_preserve_unitary() {
         }
 
         for gate_index in 0..100 {
-            let q = rng.next(6);
-            let q2 = (q + 1 + rng.next(5)) % 6;
-            let mut q3 = rng.next(6);
+            let q = rng.qubit(6);
+            let q2 = (q + 1 + rng.qubit(5)) % 6;
+            let mut q3 = rng.qubit(6);
             while q3 == q || q3 == q2 {
-                q3 = rng.next(6);
+                q3 = rng.qubit(6);
             }
             let gate = match rng.next(12) {
                 0 => Gate::x(q),
@@ -2350,8 +2355,8 @@ fn incremental_matches_full_sweeps_on_random_circuits() {
     for _ in 0..20 {
         let mut circuit = Circuit::new(4);
         for _ in 0..50 {
-            let q = rng.next(4);
-            let q2 = (q + 1 + rng.next(3)) % 4;
+            let q = rng.qubit(4);
+            let q2 = (q + 1 + rng.qubit(3)) % 4;
             let gate = match rng.next(10) {
                 0 => Gate::x(q),
                 1 => Gate::h(q),

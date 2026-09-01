@@ -422,7 +422,7 @@ impl SuperOpt {
                 // not unregistered when it dies, only marked dead, so the
                 // registrations to drop are exactly the ones whose recorded
                 // anchor order no longer matches their slot's tenant.
-                let live = &mut windows_by_qubit[qubit];
+                let live = &mut windows_by_qubit[qubit as usize];
                 let mut kept = 0;
                 for index in 0..live.len() {
                     let entry = live[index];
@@ -440,7 +440,7 @@ impl SuperOpt {
                     }
                 }
                 live.truncate(kept);
-                gates_by_qubit[qubit].push(gate_index);
+                gates_by_qubit[qubit as usize].push(gate_index);
             }
             // Registrations carry anchor order in their high bits, so this
             // sorts into the order greedy rewrite selection consumes without a
@@ -507,7 +507,7 @@ impl SuperOpt {
                     arena.retire(window_id);
                 } else {
                     for &qubit in &added_qubits {
-                        windows_by_qubit[qubit].push(entry);
+                        windows_by_qubit[qubit as usize].push(entry);
                     }
                 }
             }
@@ -540,7 +540,7 @@ impl SuperOpt {
                 if self.window_gates > 1 && !rewrites.is_claimed(gate_index) {
                     let entry = register(arena.slots[window_id as usize].seq, window_id);
                     for &qubit in &gate_qubits {
-                        windows_by_qubit[qubit].push(entry);
+                        windows_by_qubit[qubit as usize].push(entry);
                     }
                 } else {
                     arena.retire(window_id as usize);
@@ -658,14 +658,14 @@ fn validate_circuit(circuit: &Circuit) -> Result<Vec<usize>, SuperOptError> {
     let mut gates_per_qubit = vec![0usize; circuit.num_qubits];
     for (gate_index, gate) in circuit.gates.iter().enumerate() {
         for qubit in unique_qubits(gate) {
-            if qubit >= circuit.num_qubits {
+            if qubit as usize >= circuit.num_qubits {
                 return Err(SuperOptError::InvalidQubit {
                     gate_index,
                     qubit,
                     num_qubits: circuit.num_qubits,
                 });
             }
-            gates_per_qubit[qubit] += 1;
+            gates_per_qubit[qubit as usize] += 1;
         }
     }
     Ok(gates_per_qubit)
@@ -727,7 +727,7 @@ fn expand_component_closure(
     }
 
     while let Some(qubit) = pending.pop() {
-        let history = &gates_by_qubit[qubit];
+        let history = &gates_by_qubit[qubit as usize];
         let start = history.partition_point(|&gate_index| gate_index < anchor);
         for &gate_index in &history[start..] {
             if gate_index > current_gate {
@@ -854,7 +854,7 @@ impl RewriteSet {
 
         let replacement: Vec<_> = local
             .iter()
-            .map(|gate| gate.map_qubits(|q| qubits[q]))
+            .map(|gate| gate.map_qubits(|q| qubits[q as usize]))
             .collect();
         for &index in gate_indices {
             self.claimed[index] = true;
