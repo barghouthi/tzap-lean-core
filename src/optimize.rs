@@ -8,7 +8,6 @@
 //! [`Observer`].
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -17,7 +16,7 @@ use crate::cancel::CancelGates;
 use crate::circuit::{Circuit, Gate, qubit_operands};
 use crate::cnot_min::CnotMin;
 use crate::decompose::{DecomposeCz, DecomposeRz, DecomposeToffoli};
-use crate::pass::{Pass, count_2q, count_rz, count_t, depth};
+use crate::pass::Pass;
 use crate::phase_fold_rand::PhaseFoldRand;
 use crate::super_opt::{SuperOpt, SuperOptError, SuperOptTableConfig, table_is_cached};
 
@@ -265,6 +264,60 @@ impl Metrics {
             rz,
         }
     }
+
+    /// These metrics with `before`'s contribution swapped out for `after`'s —
+    /// how a parallel run reports partial progress: the whole circuit's
+    /// baseline, adjusted by the chunks finished so far (see
+    /// [`run_map_reduce`]).
+    ///
+    /// Exact for the counting metrics, which are plain sums over the gate
+    /// list. Depth is carried through untouched, because it is *not* a sum:
+    /// concatenated chunks share layers, so a chunk halving its own depth may
+    /// barely move the circuit's. Adjusting it the same way came out 32% low
+    /// on `qft_q010_d14171` — a bar that would overstate the reduction all
+    /// run and then snap back once the real number arrived. Getting it right
+    /// means measuring the whole partially optimized circuit, which is
+    /// exactly the O(chunks x circuit) work this exists to avoid.
+    ///
+    /// Saturating, so a progress bar can never panic a real run.
+    fn adjusted(self, before: Metrics, after: Metrics) -> Metrics {
+        let adjust =
+            |base: usize, before: usize, after: usize| (base + after).saturating_sub(before);
+        Metrics {
+            gates: adjust(self.gates, before.gates, after.gates),
+            two_qubit: adjust(self.two_qubit, before.two_qubit, after.two_qubit),
+            depth: self.depth,
+            t: adjust(self.t, before.t, after.t),
+            rz: adjust(self.rz, before.rz, after.rz),
+        }
+    }
+}
+
+/// Running totals of the per-chunk metrics a parallel run reports, each chunk
+/// adding its own as it finishes.
+#[derive(Default)]
+struct MetricSums {
+    gates: AtomicUsize,
+    two_qubit: AtomicUsize,
+    t: AtomicUsize,
+    rz: AtomicUsize,
+}
+
+impl MetricSums {
+    /// Add `m` to the totals and return them, this addition included. Fields
+    /// are summed independently, so a concurrent add can land between two of
+    /// them: the result is a live reading, not a consistent snapshot. Depth
+    /// is not summed (see [`Metrics::adjusted`]) and reads back as 0.
+    fn add(&self, m: Metrics) -> Metrics {
+        let add = |total: &AtomicUsize, n: usize| total.fetch_add(n, Ordering::Relaxed) + n;
+        Metrics {
+            gates: add(&self.gates, m.gates),
+            two_qubit: add(&self.two_qubit, m.two_qubit),
+            depth: 0,
+            t: add(&self.t, m.t),
+            rz: add(&self.rz, m.rz),
+        }
+    }
 }
 
 /// What [`optimize`] achieved.
@@ -317,8 +370,8 @@ impl From<SuperOptError> for Error {
 pub trait Observer: Sync {
     /// Whether this observer consumes the per-chunk events. When false (the
     /// default), a parallel run skips `chunks_start`/`chunk_done`/`chunks_end`
-    /// *and* the whole-circuit stitch needed to compute their metrics — pure
-    /// overhead for a run nobody is watching.
+    /// *and* the per-chunk metric walks that feed them — pure overhead for a
+    /// run nobody is watching.
     fn tracks_chunks(&self) -> bool {
         false
     }
@@ -358,7 +411,12 @@ pub trait Observer: Sync {
 
     /// `done` of `total` chunks have been optimized; `current` is the whole
     /// circuit's metrics counting finished chunks as optimized and pending
-    /// ones as-is. Only called when [`Observer::tracks_chunks`] is true.
+    /// ones as-is.
+    ///
+    /// The counts are exact. `current.depth` is *not* tracked — it stays at
+    /// `baseline.depth` for the whole run, because depth can only be measured
+    /// on the assembled circuit (see [`Metrics::adjusted`]). Only called when
+    /// [`Observer::tracks_chunks`] is true.
     fn chunk_done(&self, _done: usize, _total: usize, _current: Metrics, _baseline: Metrics) {}
 
     /// Every chunk is done. Only called when [`Observer::tracks_chunks`] is
@@ -629,71 +687,35 @@ fn run_map_reduce(
     let total = chunks.len();
     let tracking = observer.tracks_chunks();
 
-    // Whole-circuit baselines: pending chunks (not yet optimized) contribute
-    // their original metrics, while completed chunks contribute their current
-    // metrics.
+    // Whole-circuit baseline, which each finished chunk then adjusts by its
+    // own before/after difference: pending chunks (not yet optimized)
+    // contribute their original metrics, completed ones their current metrics.
+    //
+    // Measuring the partially optimized circuit directly instead — stitching
+    // every chunk back together under a lock on each completion — cost
+    // O(chunks x circuit) and serialized the workers behind it: ~20% of a
+    // parallel run on a 4M-gate circuit, all of it to move a progress bar.
     let baseline = Metrics::of(circuit);
-    let progress_chunks = tracking.then(|| Arc::new(Mutex::new(chunks.clone())));
     let done = AtomicUsize::new(0);
-    let sum_before_gates = AtomicUsize::new(0);
-    let sum_after_gates = AtomicUsize::new(0);
-    let sum_before_t = AtomicUsize::new(0);
-    let sum_after_t = AtomicUsize::new(0);
-    let sum_before_rz = AtomicUsize::new(0);
-    let sum_after_rz = AtomicUsize::new(0);
+    let sum_before = MetricSums::default();
+    let sum_after = MetricSums::default();
 
     if tracking {
         observer.chunks_start(total, baseline);
     }
     let optimized: Vec<Result<Circuit, Error>> = chunks
         .par_iter()
-        .enumerate()
-        .map(|(chunk_index, chunk)| {
-            let before_gates = chunk.gates.len();
-            let before_t = count_t(chunk);
-            let before_rz = count_rz(chunk);
+        .map(|chunk| {
+            // Walked only when someone is watching: two passes over the chunk
+            // that a `Silent` run has no use for.
+            let before = tracking.then(|| Metrics::of(chunk));
             let result = optimize(chunk, &Silent)?;
-            if !tracking {
-                return Ok(result);
+            if let Some(before) = before {
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                let current =
+                    baseline.adjusted(sum_before.add(before), sum_after.add(Metrics::of(&result)));
+                observer.chunk_done(n, total, current, baseline);
             }
-            let after_gates = result.gates.len();
-            let after_t = count_t(&result);
-            let after_rz = count_rz(&result);
-
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            let sum_before_gates =
-                sum_before_gates.fetch_add(before_gates, Ordering::Relaxed) + before_gates;
-            let sum_after_gates =
-                sum_after_gates.fetch_add(after_gates, Ordering::Relaxed) + after_gates;
-            let sum_before_t = sum_before_t.fetch_add(before_t, Ordering::Relaxed) + before_t;
-            let sum_after_t = sum_after_t.fetch_add(after_t, Ordering::Relaxed) + after_t;
-            let sum_before_rz = sum_before_rz.fetch_add(before_rz, Ordering::Relaxed) + before_rz;
-            let sum_after_rz = sum_after_rz.fetch_add(after_rz, Ordering::Relaxed) + after_rz;
-
-            let current_gates = baseline.gates - sum_before_gates + sum_after_gates;
-            let current_t = baseline.t - sum_before_t + sum_after_t;
-            let current_rz = baseline.rz - sum_before_rz + sum_after_rz;
-            let (current_2q, current_depth) = {
-                let progress_chunks = progress_chunks
-                    .as_ref()
-                    .expect("allocated whenever `tracking`");
-                let mut progress_chunks = progress_chunks.lock().unwrap();
-                progress_chunks[chunk_index] = result.clone();
-                let current = stitch(circuit.num_qubits, circuit.num_cbits, &progress_chunks);
-                (count_2q(&current), depth(&current))
-            };
-            observer.chunk_done(
-                n,
-                total,
-                Metrics {
-                    gates: current_gates,
-                    two_qubit: current_2q,
-                    depth: current_depth,
-                    t: current_t,
-                    rz: current_rz,
-                },
-                baseline,
-            );
             Ok(result)
         })
         .collect();
@@ -967,6 +989,65 @@ mod tests {
         })
         .expect("no SuperOpt pass, so nothing can fail");
         assert!(out.gates.is_empty());
+    }
+
+    /// The parallel progress numbers are derived from per-chunk deltas rather
+    /// than measured off the partially stitched circuit, so the counting
+    /// metrics must still land exactly on the real output's once every chunk
+    /// has reported.
+    #[test]
+    fn chunk_progress_counts_match_the_finished_circuit() {
+        #[derive(Default)]
+        struct LastChunk(std::sync::Mutex<Option<Metrics>>);
+        impl Observer for LastChunk {
+            fn tracks_chunks(&self) -> bool {
+                true
+            }
+            fn chunk_done(&self, _done: usize, _total: usize, current: Metrics, _: Metrics) {
+                *self.0.lock().unwrap() = Some(current);
+            }
+        }
+
+        let qasm = "OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[3];\n".to_string()
+            + &"h q[0];\ncx q[0],q[1];\nt q[1];\ncx q[1],q[2];\ntdg q[2];\nrz(0.3) q[0];\n"
+                .repeat(20);
+        let c = Circuit::from_qasm(&qasm).unwrap();
+        let cancel = CancelGates;
+        let observer = LastChunk::default();
+        let out = run_map_reduce(&c, true, 4, &observer, |chunk, obs| {
+            Ok(run_pipeline(chunk, &[&cancel], obs))
+        })
+        .unwrap();
+
+        let reported = observer.0.lock().unwrap().expect("every chunk reports");
+        let actual = Metrics::of(&out);
+        assert_eq!(reported.gates, actual.gates);
+        assert_eq!(reported.two_qubit, actual.two_qubit);
+        assert_eq!(reported.t, actual.t);
+        assert_eq!(reported.rz, actual.rz);
+    }
+
+    /// Depth is not a sum over chunks, so a chunk reporting its own depth
+    /// collapsing must leave the circuit's reported depth alone rather than
+    /// subtracting from it.
+    #[test]
+    fn adjusted_leaves_depth_at_the_baseline() {
+        let baseline = Metrics {
+            gates: 10,
+            two_qubit: 4,
+            depth: 6,
+            t: 2,
+            rz: 0,
+        };
+        // A chunk that locally held more depth than the whole circuit did,
+        // and optimized all of it away.
+        let before = Metrics {
+            depth: 9,
+            ..baseline
+        };
+        let adjusted = baseline.adjusted(before, Metrics::default());
+        assert_eq!(adjusted.depth, baseline.depth);
+        assert_eq!(adjusted.gates, 0, "the counts still adjust exactly");
     }
 
     /// Each map-reduce chunk must get its own independent `SuperOpt`

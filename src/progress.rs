@@ -401,8 +401,13 @@ pub(crate) fn update_fixpoint_progress(
 /// Redraw the live parallel map-reduce progress box: how many chunks have
 /// finished, and the whole circuit's gate/T reduction achieved so far.
 /// Finished chunks contribute their optimized metrics while chunks still
-/// pending contribute their original metrics. Must be bracketed by
-/// `start_progress_block(box_lines(5))` / `end_progress_block(box_lines(5))`.
+/// pending contribute their original metrics.
+///
+/// No depth row, unlike the sequential box: a parallel run only ever measures
+/// chunks on their own, and chunk depths don't add up to the circuit's (see
+/// `Metrics::adjusted`) — the final result banner still reports it. Must be
+/// bracketed by `start_progress_block(box_lines(4))` /
+/// `end_progress_block(box_lines(4))`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_chunk_progress(
     done: usize,
@@ -411,8 +416,6 @@ pub(crate) fn update_chunk_progress(
     current_gates: usize,
     baseline_2q: usize,
     current_2q: usize,
-    baseline_depth: usize,
-    current_depth: usize,
     baseline_t: usize,
     current_t: usize,
     baseline_rz: usize,
@@ -426,7 +429,6 @@ pub(crate) fn update_chunk_progress(
     let chunk_pct = chunk_fraction * 100.0;
     let gates_pct = pct(baseline_gates, current_gates);
     let two_qubit_pct = pct(baseline_2q, current_2q);
-    let depth_pct = pct(baseline_depth, current_depth);
     let t_pct = pct(baseline_t, current_t);
     let done_str = fmt_num(done);
     let done_width = fmt_num(total).chars().count();
@@ -435,8 +437,6 @@ pub(crate) fn update_chunk_progress(
     let gates_width = fmt_num(baseline_gates).chars().count();
     let two_qubit_str = fmt_num(current_2q);
     let two_qubit_width = fmt_num(baseline_2q).chars().count();
-    let depth_str = fmt_num(current_depth);
-    let depth_width = fmt_num(baseline_depth).chars().count();
     let t_str = fmt_num(current_t);
     let t_width = fmt_num(baseline_t).chars().count();
     let mut rows = vec![
@@ -460,24 +460,16 @@ pub(crate) fn update_chunk_progress(
             render_bar(t_pct / 100.0, BAR_WIDTH, T_BAR_COLOR),
             format!("{t_pct:>5.1}% · {t_str:<t_width$}"),
         ),
-        (
-            "Depth",
-            render_bar(depth_pct / 100.0, BAR_WIDTH, DEPTH_BAR_COLOR),
-            format!("{depth_pct:>5.1}% · {depth_str:<depth_width$}"),
-        ),
     ];
     if baseline_rz > 0 {
         let rz_pct = pct(baseline_rz, current_rz);
         let rz_str = fmt_num(current_rz);
         let rz_width = fmt_num(baseline_rz).chars().count();
-        rows.insert(
-            4,
-            (
-                "Rz",
-                render_bar(rz_pct / 100.0, BAR_WIDTH, RZ_BAR_COLOR),
-                format!("{rz_pct:>5.1}% · {rz_str:<rz_width$}"),
-            ),
-        );
+        rows.push((
+            "Rz",
+            render_bar(rz_pct / 100.0, BAR_WIDTH, RZ_BAR_COLOR),
+            format!("{rz_pct:>5.1}% · {rz_str:<rz_width$}"),
+        ));
     }
     redraw_progress_block(&progress_box(
         "Parallel optimization — % reduction so far",

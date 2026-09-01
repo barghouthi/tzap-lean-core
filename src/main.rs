@@ -28,10 +28,12 @@ fn reduction_rows(baseline: Metrics) -> usize {
     if baseline.rz > 0 { 5 } else { 4 }
 }
 
-/// Number of bar rows in the parallel chunk progress box (a Chunks row on top
-/// of [`reduction_rows`]).
+/// Number of bar rows in the parallel chunk progress box: [`reduction_rows`]
+/// with a Chunks row added on top and the Depth row dropped (a parallel run
+/// can't track depth cheaply — see `Metrics::adjusted`), which happens to
+/// leave the two boxes the same height.
 fn chunk_rows(baseline: Metrics) -> usize {
-    reduction_rows(baseline) + 1
+    reduction_rows(baseline)
 }
 
 impl Observer for Terminal {
@@ -154,8 +156,6 @@ impl Observer for Terminal {
             current.gates,
             baseline.two_qubit,
             current.two_qubit,
-            baseline.depth,
-            current.depth,
             baseline.t,
             current.t,
             baseline.rz,
@@ -261,8 +261,8 @@ mod tests {
         };
         assert_eq!(reduction_rows(Metrics::default()), 4);
         assert_eq!(reduction_rows(with_rz), 5);
-        assert_eq!(chunk_rows(Metrics::default()), 5);
-        assert_eq!(chunk_rows(with_rz), 6);
+        assert_eq!(chunk_rows(Metrics::default()), 4);
+        assert_eq!(chunk_rows(with_rz), 5);
     }
 
     /// An absent `-O` flag must behave exactly like `-O3`, and the hidden
