@@ -1,6 +1,11 @@
 use std::fs;
 use std::process::Command;
 
+#[path = "support/mod.rs"]
+mod support;
+
+use support::Json;
+
 const TEST_QASM: &str = "tests/fixtures/test.qasm";
 const TWO_CCX_QASM: &str = "tests/fixtures/two_ccx.qasm";
 const MOD5_4_QASM: &str = "benchmarks/feynman/mod5_4.qasm";
@@ -11,6 +16,22 @@ fn tzap() -> Command {
 
 fn tzap_run(args: &[&str]) -> std::process::Output {
     tzap().args(args).output().expect("failed to run tzap")
+}
+
+/// The `--json` report for a run. How these tests check what a run *did*
+/// internally — how many rounds it took, whether it converged — now that the
+/// progress box those facts used to be read out of is drawn only on a live
+/// terminal. See `tests/cli_json.rs` for the report's own tests.
+fn tzap_report(args: &[&str]) -> Json {
+    let mut full = vec!["--json", "-q"];
+    full.extend_from_slice(args);
+    let out = tzap_run(&full);
+    assert!(
+        out.status.success(),
+        "tzap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Json::parse(&String::from_utf8_lossy(&out.stdout))
 }
 
 #[test]
@@ -40,7 +61,16 @@ fn optimizes_test_qasm_to_file() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    let out = tzap_run(&[TEST_QASM, "-o", out_path.to_str().unwrap()]);
+    // `--color always`: a test harness captures stderr through a pipe, where
+    // tzap correctly emits no escapes at all — see `cli_output.rs`. This test
+    // is about the banner's content, so it asks for the styled form.
+    let out = tzap_run(&[
+        TEST_QASM,
+        "-o",
+        out_path.to_str().unwrap(),
+        "--color",
+        "always",
+    ]);
     assert!(
         out.status.success(),
         "tzap failed: {}",
@@ -780,10 +810,9 @@ fn o3_is_the_default_pipeline() {
     );
 
     let stderr = String::from_utf8_lossy(&o3.stderr);
-    assert!(stderr.contains("% reduction so far"), "got: {stderr}");
     assert!(
         stderr.contains("Gates") && stderr.contains("T/Tdg"),
-        "expected a live reduction progress box:\n{stderr}"
+        "expected the result box's metric rows:\n{stderr}"
     );
     assert!(
         stderr.contains("Loaded superoptimizer table"),
@@ -792,6 +821,12 @@ fn o3_is_the_default_pipeline() {
     assert!(
         stderr.contains("Converged after"),
         "O3 runs to a true fixpoint:\n{stderr}"
+    );
+    assert!(
+        tzap_report(&[TEST_QASM, "-O3"])
+            .at("fixpoint/converged")
+            .as_bool(),
+        "and reports that it did"
     );
 }
 
@@ -809,19 +844,24 @@ fn o2_uses_superopt_pass_capped_at_two_rounds() {
         stderr.contains("Loaded superoptimizer table"),
         "got: {stderr}"
     );
-    assert!(stderr.contains("% reduction so far"), "got: {stderr}");
-    assert!(
-        stderr.contains("Iteration"),
-        "O2 should still show an iteration number:\n{stderr}"
-    );
 
     // mod5_4 needs 3 rounds to reach a true fixpoint under -O3; -O2 should
     // stop at its 2-round cap instead, short of that fixpoint.
     let capped = tzap_run(&[MOD5_4_QASM, "-O2"]);
     let capped_stderr = String::from_utf8_lossy(&capped.stderr);
+    let report = tzap_report(&[MOD5_4_QASM, "-O2"]);
+    assert_eq!(
+        report.at("fixpoint/rounds").as_usize(),
+        2,
+        "O2 should stop after 2 rounds, not reach a third"
+    );
+    assert!(!report.at("fixpoint/converged").as_bool());
     assert!(
-        !capped_stderr.contains("Iteration 3"),
-        "O2 should stop after 2 rounds, not reach iteration 3:\n{capped_stderr}"
+        tzap_report(&[MOD5_4_QASM, "-O3"])
+            .at("fixpoint/rounds")
+            .as_usize()
+            > 2,
+        "the cap is what stopped it — O3 keeps going"
     );
     assert!(
         !capped_stderr.contains("Converged after"),
@@ -837,7 +877,7 @@ fn o2_uses_superopt_pass_capped_at_two_rounds() {
 }
 
 #[test]
-fn o3_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
+fn o3_decomposes_rz_after_the_first_iteration() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("rz.qasm");
     let output = dir.path().join("out.qasm");
@@ -860,12 +900,8 @@ fn o3_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Iteration 1") && stderr.contains("Iteration 2"),
-        "expected compact progress for at least two iterations:\n{stderr}"
-    );
-    assert!(
         stderr.contains("Gates") && stderr.contains("T/Tdg") && stderr.contains('%'),
-        "progress should contain the latest gate/T reduction bars:\n{stderr}"
+        "the result box should carry the gate/T reduction rows:\n{stderr}"
     );
     assert!(
         !stderr.contains("Gate cancellation")
@@ -874,6 +910,19 @@ fn o3_uses_compact_progress_and_decomposes_rz_after_first_iteration() {
         "fixpoint progress should not print per-pass logs:\n{stderr}"
     );
     assert!(stderr.contains("Converged after"), "got: {stderr}");
+
+    let report = tzap_report(&[
+        input.to_str().unwrap(),
+        "-O3",
+        "--decompose-rz",
+        "--epsilon",
+        "1e-3",
+    ]);
+    assert!(
+        report.at("fixpoint/rounds").as_usize() >= 2,
+        "the Rz decomposition lands after the first round, so there must be \
+         a second one to optimize its output"
+    );
 
     let gates = gate_lines_from(&fs::read_to_string(output).unwrap());
     assert!(
@@ -1068,10 +1117,17 @@ fn passes_with_parallel_produces_valid_output() {
         "--parallel",
     ]);
     assert_success(&out, "--passes with --parallel");
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
     assert!(!read_valid_qasm(&output).is_empty());
+    assert!(
+        tzap_report(&[
+            MOD5_4_QASM,
+            "--passes",
+            "CancelGates,PhaseFoldRand",
+            "--parallel",
+        ])
+        .at("options/parallel")
+        .as_bool()
+    );
 }
 
 #[test]
@@ -1089,9 +1145,6 @@ fn passes_with_parallel_and_fixpoint() {
         "--parallel",
     ]);
     assert_success(&out, "--passes with --fixpoint --parallel");
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
     assert!(!read_valid_qasm(&output).is_empty());
 }
 
@@ -1110,7 +1163,6 @@ fn optimization_levels_run_with_parallel() {
         assert_success(&out, &format!("{level} --parallel"));
 
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
         if level != "-O1" {
             assert!(
                 stderr.contains("Loaded superoptimizer table"),
@@ -1128,9 +1180,6 @@ fn default_pipeline_with_parallel() {
 
     let out = tzap_run(&[TEST_QASM, "-o", output.to_str().unwrap(), "--parallel"]);
     assert_success(&out, "default --parallel");
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Parallel optimization"), "got: {stderr}");
     read_valid_qasm(&output);
 }
 

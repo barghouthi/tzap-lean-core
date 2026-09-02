@@ -119,6 +119,39 @@ tzap input.qasm -o output.qasm --passes CancelGates,PhaseFoldRand
 tzap input.qasm -o output.qasm --passes DecomposeCz,CancelGates,PhaseFoldRand
 ```
 
+**Pipes and scripting**
+
+tzap keeps its streams separate: progress and messages go to stderr, the
+circuit and `--json` go to stdout. `-` names a standard stream on either side,
+so tzap composes in a pipeline.
+
+```bash
+cat input.qasm | tzap - -o - | other-tool          # read stdin, write stdout
+tzap input.qasm -o - > optimized.qasm              # circuit to stdout
+tzap input.qasm --json -q | jq .reduction_percent  # machine-readable report
+```
+
+`--json` writes one object describing the run — the effective options, the
+input/baseline/output metrics, per-pass timings, rounds to fixpoint, and the
+cache location — leaving stderr free for the human report. `-q`/`--quiet`
+prints nothing but errors, while still writing whatever output was asked for.
+
+Color and the live progress bars are used only when stderr is a terminal, so
+piped or redirected output is plain text. `--color auto|always|never` (or
+`--no-color`) overrides that, and `NO_COLOR`/`CLICOLOR_FORCE`/`TERM=dumb` are
+honored.
+
+**Table cache**
+
+`-O2` and above build a synthesis table on first use and cache it on disk.
+It lives under `$XDG_CACHE_HOME/tzap` (falling back to `$HOME/.cache/tzap`),
+overridable with `$TZAP_CACHE_DIR` or `--cache-dir`.
+
+```bash
+tzap --cache-info      # where the cache is and what's in it
+tzap --clear-cache     # delete every cached table
+```
+
 ## Circuit support
 
 tzap supports a subset of OpenQASM 2.0:

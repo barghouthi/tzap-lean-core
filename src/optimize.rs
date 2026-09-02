@@ -169,6 +169,34 @@ pub struct SuperOptBounds {
     pub table_entries: Option<usize>,
 }
 
+impl SuperOptBounds {
+    /// These bounds with every unset field filled in from `level`'s preset —
+    /// the exact `(qubits, window_gates, table_entries)` a run at `level`
+    /// will use. Shared by [`initialize_superopt`] and by callers that want
+    /// to *report* the effective configuration (the CLI's `--json` and
+    /// `--cache-info`) without duplicating the fallback rules.
+    pub fn resolved(self, level: Level) -> (usize, usize, usize) {
+        let (qubits, window_gates, table_entries) = if level == Level::Osuper {
+            (
+                SUPER_SUPEROPT_QUBITS,
+                SUPER_SUPEROPT_WINDOW_GATES,
+                SUPER_SUPEROPT_TABLE_ENTRIES,
+            )
+        } else {
+            (
+                DEFAULT_SUPEROPT_QUBITS,
+                DEFAULT_SUPEROPT_WINDOW_GATES,
+                DEFAULT_SUPEROPT_TABLE_ENTRIES,
+            )
+        };
+        (
+            self.qubits.unwrap_or(qubits),
+            self.window_gates.unwrap_or(window_gates),
+            self.table_entries.unwrap_or(table_entries),
+        )
+    }
+}
+
 /// Everything [`optimize`] needs to know about how to optimize a circuit.
 ///
 /// `Default` is the CLI's default: `-O3`, sequential, no Rz/CZ decomposition.
@@ -626,28 +654,7 @@ fn initialize_superopt(
     level: Level,
     observer: &dyn Observer,
 ) -> Result<SuperOpt, Error> {
-    let (default_qubits, default_window_gates, default_table_entries) = if level == Level::Osuper {
-        (
-            SUPER_SUPEROPT_QUBITS,
-            SUPER_SUPEROPT_WINDOW_GATES,
-            SUPER_SUPEROPT_TABLE_ENTRIES,
-        )
-    } else {
-        (
-            DEFAULT_SUPEROPT_QUBITS,
-            DEFAULT_SUPEROPT_WINDOW_GATES,
-            DEFAULT_SUPEROPT_TABLE_ENTRIES,
-        )
-    };
-    let qubits = options.superopt.qubits.unwrap_or(default_qubits);
-    let window_gates = options
-        .superopt
-        .window_gates
-        .unwrap_or(default_window_gates);
-    let table_entries = options
-        .superopt
-        .table_entries
-        .unwrap_or(default_table_entries);
+    let (qubits, window_gates, table_entries) = options.superopt.resolved(level);
 
     // A table entry needs strictly fewer gates than the window it replaces
     // (see `ActiveWindow::consider`'s `local.len() >= gate_indices.len()`

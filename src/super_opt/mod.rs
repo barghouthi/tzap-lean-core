@@ -107,6 +107,70 @@ pub fn table_cache_size_bytes(config: SuperOptTableConfig) -> Option<u64> {
     table::disk_cache_size_bytes(config)
 }
 
+/// One synthesis table cached on disk: where it lives and how big it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheEntry {
+    pub path: std::path::PathBuf,
+    pub bytes: u64,
+}
+
+/// Point tzap's on-disk caches at `dir` for the rest of the process,
+/// overriding `$TZAP_CACHE_DIR` and the XDG lookup. Returns `Err` with the
+/// root already in force if one was installed earlier: this must be called
+/// once, before any table is built or loaded, or a single run could read
+/// half its tables from one directory and half from another.
+pub fn set_cache_dir(dir: std::path::PathBuf) -> Result<(), std::path::PathBuf> {
+    table::set_cache_root(dir)
+}
+
+/// The cache root currently in force — `--cache-dir`, `$TZAP_CACHE_DIR`,
+/// `$XDG_CACHE_HOME/tzap`, or `$HOME/.cache/tzap`. `None` when none of them
+/// resolve, in which case tzap simply doesn't cache to disk.
+pub fn cache_dir() -> Option<std::path::PathBuf> {
+    table::cache_root()
+}
+
+/// The synthesis tables currently cached on disk, oldest name first. An
+/// unreadable or absent cache directory reads as empty rather than as an
+/// error: a cache nobody can list is, for every purpose tzap has, a cache
+/// with nothing in it.
+pub fn cache_entries() -> Vec<CacheEntry> {
+    let Some(dir) = table::cache_dir() else {
+        return Vec::new();
+    };
+    let Ok(read_dir) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<CacheEntry> = read_dir
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "bin"))
+        .filter_map(|entry| {
+            let bytes = entry.metadata().ok().filter(|m| m.is_file())?.len();
+            Some(CacheEntry {
+                path: entry.path(),
+                bytes,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    entries
+}
+
+/// Delete every cached synthesis table, returning the entries removed.
+/// Only the table files themselves are touched — never the directory, and
+/// never anything else inside it — so a cache root shared with other tools
+/// (`$XDG_CACHE_HOME/tzap`, say) can't lose data that isn't tzap's to
+/// delete. The first failure stops the walk and is returned, with the
+/// entries removed up to that point discarded from the error path.
+pub fn clear_cache() -> std::io::Result<Vec<CacheEntry>> {
+    let mut removed = Vec::new();
+    for entry in cache_entries() {
+        std::fs::remove_file(&entry.path)?;
+        removed.push(entry);
+    }
+    Ok(removed)
+}
+
 /// Matrix and location information for one completed anchored window.
 #[derive(Clone, Debug)]
 pub struct SuperOptWindow {

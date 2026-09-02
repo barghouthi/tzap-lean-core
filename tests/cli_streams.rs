@@ -1,0 +1,765 @@
+//! Terminal etiquette and stream discipline: what tzap is allowed to put on
+//! stderr when nobody is watching it through a terminal, what belongs on
+//! stdout, and what `--quiet` silences.
+//!
+//! Every test here runs tzap as a child process, so *both* its streams are
+//! pipes rather than terminals — which is precisely the case these tests
+//! exist to pin down. A test that wants color or a live redraw has to ask for
+//! it.
+
+#[path = "support/mod.rs"]
+mod support;
+
+use std::fs;
+
+use support::{
+    Json, Tzap, assert_colored, assert_no_cursor_motion, assert_plain, assert_valid_qasm,
+    gate_lines, read, tzap,
+};
+
+const TEST_QASM: &str = "tests/fixtures/test.qasm";
+const TWO_CCX_QASM: &str = "tests/fixtures/two_ccx.qasm";
+const MOD5_4_QASM: &str = "benchmarks/feynman/mod5_4.qasm";
+
+/// A circuit with an Rz gate, so the Rz progress row and `--decompose-rz`
+/// have something to act on.
+const RZ_QASM: &str = "\
+OPENQASM 2.0;
+include \"qelib1.inc\";
+qreg q[2];
+h q[0];
+rz(pi/5) q[0];
+cx q[0],q[1];
+t q[1];
+";
+
+/// Every optimization level, including the one whose bounds are only
+/// affordable in a test with the hidden overrides applied.
+const LEVELS: [&[&str]; 5] = [
+    &[],
+    &["-O1"],
+    &["-O2"],
+    &["-O3"],
+    &[
+        "-Osuper",
+        "--superopt-qubits",
+        "2",
+        "--superopt-window-gates",
+        "4",
+        "--superopt-table-entries",
+        "500",
+    ],
+];
+
+fn level_name(level: &[&str]) -> String {
+    if level.is_empty() {
+        "default".to_string()
+    } else {
+        level[0].to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Color and cursor motion (clig.dev: "disable color if not in a terminal")
+// ---------------------------------------------------------------------------
+
+/// The headline rule: with stderr piped, nothing tzap prints may contain an
+/// escape sequence or a carriage return — across every level, sequential and
+/// parallel, with and without a decomposition.
+#[test]
+fn a_piped_run_emits_no_escapes_at_any_level() {
+    for level in LEVELS {
+        for parallel in [&[][..], &["--parallel"][..]] {
+            for input in [TEST_QASM, TWO_CCX_QASM, MOD5_4_QASM] {
+                let mut args = vec![input];
+                args.extend_from_slice(level);
+                args.extend_from_slice(parallel);
+                let context = format!("{input} {} {parallel:?}", level_name(level));
+                let run = tzap(&args).ok(&context);
+                assert_plain(&run.stderr, &format!("{context} stderr"));
+                assert_plain(&run.stdout, &format!("{context} stdout"));
+            }
+        }
+    }
+}
+
+/// The same rule for the flags that change what gets printed rather than
+/// what gets optimized.
+#[test]
+fn a_piped_run_emits_no_escapes_under_any_verbosity() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("rz.qasm");
+    fs::write(&input, RZ_QASM).unwrap();
+    let input = input.to_str().unwrap();
+
+    let variants: [&[&str]; 7] = [
+        &[],
+        &["--quiet"],
+        &["-q"],
+        &["--json"],
+        &["--json", "-q"],
+        &["--decompose-rz", "--epsilon", "1e-2"],
+        &["--parallel", "--passes", "CancelGates"],
+    ];
+    for variant in variants {
+        let mut args = vec![input];
+        args.extend_from_slice(variant);
+        let run = tzap(&args).ok(&format!("{variant:?}"));
+        assert_plain(&run.stderr, &format!("{variant:?} stderr"));
+        assert_plain(&run.stdout, &format!("{variant:?} stdout"));
+    }
+}
+
+/// `--color always` restores the color — and *only* the color. A pipeline
+/// that renders tzap's escapes elsewhere can ask for them; the in-place
+/// redraws stay off, because no consumer of a pipe can act on a cursor
+/// movement.
+#[test]
+fn color_always_colors_without_reenabling_redraws() {
+    let run = tzap(&[MOD5_4_QASM, "-O3", "--color", "always"]).ok("--color always");
+    assert_colored(&run.stderr, "--color always");
+    assert_no_cursor_motion(&run.stderr, "--color always");
+}
+
+#[test]
+fn color_never_and_no_color_suppress_color() {
+    for args in [
+        vec![TEST_QASM, "--color", "never"],
+        vec![TEST_QASM, "--no-color"],
+        vec![TEST_QASM, "--color", "auto"],
+        vec![TEST_QASM, "--color=never"],
+    ] {
+        let run = tzap(&args).ok(&format!("{args:?}"));
+        assert_plain(&run.stderr, &format!("{args:?}"));
+    }
+}
+
+/// The `=` spelling reaches the same code as the space-separated one.
+#[test]
+fn color_accepts_the_equals_spelling() {
+    let run = tzap(&[TEST_QASM, "--color=always"]).ok("--color=always");
+    assert_colored(&run.stderr, "--color=always");
+}
+
+/// `NO_COLOR` (any non-empty value, per no-color.org) vetoes automatic color;
+/// an explicit `--color always` still wins, since the user asked for it on
+/// this invocation.
+#[test]
+fn no_color_env_is_honored_but_loses_to_an_explicit_request() {
+    let run = Tzap::new(&[TEST_QASM])
+        .env("NO_COLOR", "1")
+        .run()
+        .ok("NO_COLOR=1");
+    assert_plain(&run.stderr, "NO_COLOR=1");
+
+    let run = Tzap::new(&[TEST_QASM, "--color", "always"])
+        .env("NO_COLOR", "1")
+        .run()
+        .ok("NO_COLOR=1 --color always");
+    assert_colored(&run.stderr, "NO_COLOR=1 --color always");
+}
+
+/// An empty `NO_COLOR` is not a veto — but stderr is still a pipe here, so
+/// auto stays colorless either way.
+#[test]
+fn an_empty_no_color_is_treated_as_unset() {
+    let run = Tzap::new(&[TEST_QASM])
+        .env("NO_COLOR", "")
+        .run()
+        .ok("NO_COLOR=");
+    assert_plain(&run.stderr, "NO_COLOR=");
+}
+
+/// `CLICOLOR_FORCE` is the conventional escape hatch for "color this even
+/// though it isn't a terminal", and `0` means don't.
+#[test]
+fn clicolor_force_colors_a_pipe() {
+    let run = Tzap::new(&[TEST_QASM])
+        .env("CLICOLOR_FORCE", "1")
+        .run()
+        .ok("CLICOLOR_FORCE=1");
+    assert_colored(&run.stderr, "CLICOLOR_FORCE=1");
+    // Still a pipe: forcing color must not start moving the cursor around.
+    assert_no_cursor_motion(&run.stderr, "CLICOLOR_FORCE=1");
+
+    let run = Tzap::new(&[TEST_QASM])
+        .env("CLICOLOR_FORCE", "0")
+        .run()
+        .ok("CLICOLOR_FORCE=0");
+    assert_plain(&run.stderr, "CLICOLOR_FORCE=0");
+
+    // An explicit --color never outranks the environment's force.
+    let run = Tzap::new(&[TEST_QASM, "--color", "never"])
+        .env("CLICOLOR_FORCE", "1")
+        .run()
+        .ok("CLICOLOR_FORCE=1 --color never");
+    assert_plain(&run.stderr, "CLICOLOR_FORCE=1 --color never");
+}
+
+/// `TERM=dumb` describes a terminal that can't render escapes; it vetoes
+/// automatic color, and `CLICOLOR_FORCE` still overrides it.
+#[test]
+fn term_dumb_vetoes_color() {
+    let run = Tzap::new(&[TEST_QASM])
+        .env("TERM", "dumb")
+        .env("CLICOLOR_FORCE", "1")
+        .run()
+        .ok("TERM=dumb CLICOLOR_FORCE=1");
+    assert_colored(&run.stderr, "TERM=dumb CLICOLOR_FORCE=1");
+
+    let run = Tzap::new(&[TEST_QASM])
+        .env("TERM", "dumb")
+        .run()
+        .ok("TERM=dumb");
+    assert_plain(&run.stderr, "TERM=dumb");
+}
+
+#[test]
+fn a_bad_color_value_is_rejected_with_the_valid_ones_named() {
+    let run = tzap(&[TEST_QASM, "--color", "sometimes"]).failed("--color sometimes");
+    assert!(
+        run.stderr.contains("auto")
+            && run.stderr.contains("always")
+            && run.stderr.contains("never"),
+        "expected the valid values to be named:\n{}",
+        run.stderr
+    );
+
+    tzap(&[TEST_QASM, "--color"]).failed("--color with no value");
+    tzap(&[TEST_QASM, "--color="]).failed("--color= with an empty value");
+    tzap(&[TEST_QASM, "--color", "ALWAYS"]).failed("--color ALWAYS");
+}
+
+/// Help is requested output: it goes to stdout, and takes its color from
+/// stdout — which is a pipe here, so it arrives plain.
+#[test]
+fn help_goes_to_stdout_and_is_plain_when_piped() {
+    for flag in ["--help", "-h"] {
+        let run = tzap(&[flag]).ok(flag);
+        assert_plain(&run.stdout, flag);
+        assert!(
+            run.stderr.is_empty(),
+            "{flag} wrote to stderr: {}",
+            run.stderr
+        );
+        for expected in [
+            "USAGE",
+            "OPTIONS",
+            "PASSES",
+            "OUTPUT",
+            "ENVIRONMENT",
+            "--json",
+            "--quiet",
+            "--color",
+            "--cache-dir",
+            "--cache-info",
+            "--clear-cache",
+            "TZAP_CACHE_DIR",
+            "XDG_CACHE_HOME",
+            "NO_COLOR",
+        ] {
+            assert!(
+                run.stdout.contains(expected),
+                "{flag} should document {expected}:\n{}",
+                run.stdout
+            );
+        }
+    }
+}
+
+/// `--color` is honored wherever it appears on the line, including after the
+/// `--help` that consumes it.
+#[test]
+fn help_honors_a_color_flag_on_either_side_of_it() {
+    for args in [
+        vec!["--help", "--color", "always"],
+        vec!["--color", "always", "--help"],
+    ] {
+        let run = tzap(&args).ok(&format!("{args:?}"));
+        assert_colored(&run.stdout, &format!("{args:?}"));
+    }
+}
+
+#[test]
+fn version_goes_to_stdout_under_every_spelling() {
+    for flag in ["--version", "-v", "-V"] {
+        let run = tzap(&[flag]).ok(flag);
+        assert_eq!(
+            run.stdout.trim(),
+            format!("tzap {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(run.stderr.is_empty(), "{flag} wrote to stderr");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// stdout as the circuit's destination (clig.dev: primary output to stdout)
+// ---------------------------------------------------------------------------
+
+/// `-o -` sends the circuit to stdout, byte for byte what the same run would
+/// have written to a file — with the commentary still on stderr, which is
+/// what makes the stream pipeable.
+#[test]
+fn dash_writes_the_circuit_to_stdout() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("out.qasm");
+
+    let to_file = tzap(&[MOD5_4_QASM, "-o", file.to_str().unwrap(), "-O1"]).ok("-o file");
+    let to_stdout = tzap(&[MOD5_4_QASM, "-o", "-", "-O1"]).ok("-o -");
+
+    assert_eq!(to_stdout.stdout, read(&file));
+    assert_valid_qasm(&to_stdout.stdout, "-o -");
+    assert!(
+        to_file.stdout.is_empty(),
+        "writing to a file must leave stdout empty, got:\n{}",
+        to_file.stdout
+    );
+    // The commentary is unchanged; only the destination moved.
+    assert!(to_stdout.stderr.contains("Final result"));
+    assert!(
+        !to_stdout.stderr.contains("OPENQASM"),
+        "the circuit must not be duplicated onto stderr:\n{}",
+        to_stdout.stderr
+    );
+    // No "wrote <path>" line for a stream that has no path.
+    assert!(
+        !to_stdout.stderr.contains("wrote"),
+        "got: {}",
+        to_stdout.stderr
+    );
+    assert!(to_file.stderr.contains("wrote"));
+}
+
+/// The second positional argument takes `-` too, not just `-o`.
+#[test]
+fn a_positional_dash_writes_to_stdout() {
+    let run = tzap(&[MOD5_4_QASM, "-", "-O1"]).ok("positional -");
+    assert_valid_qasm(&run.stdout, "positional -");
+}
+
+/// `-` as the input reads the circuit from stdin, and says so rather than
+/// naming a file that doesn't exist.
+#[test]
+fn dash_reads_the_circuit_from_stdin() {
+    let run = Tzap::new(&["-", "-O1", "-o", "-"])
+        .stdin(&fs::read_to_string(MOD5_4_QASM).unwrap())
+        .run()
+        .ok("stdin to stdout");
+
+    let piped = assert_valid_qasm(&run.stdout, "stdin to stdout");
+    let from_file = tzap(&[MOD5_4_QASM, "-o", "-", "-O1"]).ok("file to stdout");
+    assert_eq!(run.stdout, from_file.stdout);
+    assert!(!piped.is_empty());
+    assert!(
+        run.stderr.contains("<stdin>"),
+        "a stdin run should name its input <stdin>:\n{}",
+        run.stderr
+    );
+    // Size is reported from what actually arrived, not from a stat that
+    // couldn't have happened.
+    assert!(run.stderr.contains(" KB) in ") || run.stderr.contains(" B) in "));
+}
+
+/// Reading and writing streams works at every level and in parallel mode —
+/// the full pipeline shape, `cat x.qasm | tzap - -o - | ...`.
+#[test]
+fn streaming_works_at_every_level() {
+    let qasm = fs::read_to_string(TWO_CCX_QASM).unwrap();
+    for level in LEVELS {
+        for parallel in [&[][..], &["--parallel"][..]] {
+            let mut args = vec!["-", "-o", "-"];
+            args.extend_from_slice(level);
+            args.extend_from_slice(parallel);
+            let context = format!("{} {parallel:?} streamed", level_name(level));
+            let run = Tzap::new(&args).stdin(&qasm).run().ok(&context);
+            let gates = assert_valid_qasm(&run.stdout, &context);
+            assert!(!gates.is_empty(), "{context}: no gates in the output");
+            assert!(
+                !gates.iter().any(|gate| gate.starts_with("ccx ")),
+                "{context}: Toffolis should have been decomposed"
+            );
+        }
+    }
+}
+
+/// Malformed input on stdin fails the way a malformed file does: a clear
+/// error, nothing on stdout, non-zero exit.
+#[test]
+fn malformed_stdin_fails_cleanly() {
+    let run = Tzap::new(&["-", "-o", "-"])
+        .stdin("this is not qasm at all\n")
+        .run()
+        .failed("malformed stdin");
+    assert!(
+        run.stderr.contains("<stdin>"),
+        "the error should name the input as <stdin>:\n{}",
+        run.stderr
+    );
+    // The message must not begin with a stray blank line left over from an
+    // in-progress "Parsing..." line that was never printed.
+    assert!(
+        !run.stderr.starts_with('\n'),
+        "leading blank line in:\n{:?}",
+        run.stderr
+    );
+}
+
+/// Empty input is an empty circuit, not an error — and stdin agrees with a
+/// file, which is the property that matters: `-` must be the same code path,
+/// not a second one with its own behavior.
+#[test]
+fn empty_stdin_matches_an_empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("empty.qasm");
+    fs::write(&empty, "").unwrap();
+
+    let from_file = tzap(&[empty.to_str().unwrap(), "-o", "-", "-O1"]).ok("empty file");
+    let from_stdin = Tzap::new(&["-", "-o", "-", "-O1"])
+        .stdin("")
+        .run()
+        .ok("empty stdin");
+    assert_eq!(from_stdin.stdout, from_file.stdout);
+    assert!(from_stdin.stdout.starts_with("OPENQASM 2.0;"));
+    assert!(from_stdin.stderr.contains("0 qubits · 0 gates"));
+}
+
+/// With no output argument at all, stdout stays completely empty — the run is
+/// a measurement, and its numbers are commentary on stderr.
+#[test]
+fn no_output_argument_leaves_stdout_empty() {
+    for level in LEVELS {
+        let mut args = vec![TEST_QASM];
+        args.extend_from_slice(level);
+        let run = tzap(&args).ok(&level_name(level));
+        assert!(
+            run.stdout.is_empty(),
+            "{}: expected empty stdout, got:\n{}",
+            level_name(level),
+            run.stdout
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// --quiet
+// ---------------------------------------------------------------------------
+
+/// `--quiet` silences the commentary entirely — and only the commentary. The
+/// circuit is still written, wherever it was asked to go.
+#[test]
+fn quiet_silences_stderr_but_not_the_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("out.qasm");
+
+    for flag in ["-q", "--quiet"] {
+        let run = tzap(&[MOD5_4_QASM, "-o", file.to_str().unwrap(), "-O1", flag]).ok(flag);
+        assert_eq!(run.stderr, "", "{flag} should print nothing to stderr");
+        assert!(run.stdout.is_empty());
+        assert_valid_qasm(&read(&file), flag);
+
+        let run = tzap(&[MOD5_4_QASM, "-o", "-", "-O1", flag]).ok(flag);
+        assert_eq!(run.stderr, "", "{flag} should print nothing to stderr");
+        assert_valid_qasm(&run.stdout, flag);
+    }
+}
+
+/// Quiet at every level and in parallel mode, including the ones that load a
+/// synthesis table and converge over several rounds — each of which has its
+/// own message to suppress.
+#[test]
+fn quiet_is_silent_at_every_level() {
+    for level in LEVELS {
+        for parallel in [&[][..], &["--parallel"][..]] {
+            let mut args = vec![TEST_QASM, "-q"];
+            args.extend_from_slice(level);
+            args.extend_from_slice(parallel);
+            let context = format!("{} {parallel:?} -q", level_name(level));
+            let run = tzap(&args).ok(&context);
+            assert_eq!(run.stderr, "", "{context} should be silent");
+        }
+    }
+}
+
+/// Quiet is not a way to lose an error: a failing run still explains itself
+/// and still exits non-zero.
+#[test]
+fn quiet_still_reports_errors() {
+    let run = tzap(&["definitely-missing.qasm", "-q"]).failed("-q on a missing file");
+    assert!(run.stderr.contains("Error reading"), "got: {}", run.stderr);
+
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.qasm");
+    fs::write(&bad, "not qasm").unwrap();
+    tzap(&[bad.to_str().unwrap(), "--quiet"]).failed("-q on a bad circuit");
+
+    tzap(&["--quiet", "--passes", "NoSuchPass"]).failed("-q with a bad pass name");
+}
+
+/// A piped run stays quiet *during* optimization and still reports its
+/// result: the progress boxes are for a terminal, and nothing replaces them
+/// elsewhere.
+#[test]
+fn a_piped_run_reports_its_result_without_per_round_noise() {
+    let run = tzap(&[MOD5_4_QASM, "-O3"]).ok("-O3");
+    assert!(run.stderr.contains("Final result"), "got:\n{}", run.stderr);
+    assert!(
+        run.stderr.contains("Converged after"),
+        "got:\n{}",
+        run.stderr
+    );
+    for absent in ["Iteration 1", "% reduction so far", "Parallel optimization"] {
+        assert!(
+            !run.stderr.contains(absent),
+            "{absent:?} is a live-terminal frame and must not be appended to a pipe:\n{}",
+            run.stderr
+        );
+    }
+
+    let parallel = tzap(&[MOD5_4_QASM, "-O1", "--parallel"]).ok("-O1 --parallel");
+    assert!(
+        !parallel.stderr.contains("Parallel optimization"),
+        "got:\n{}",
+        parallel.stderr
+    );
+    assert!(parallel.stderr.contains("Final result"));
+}
+
+/// There is no verbosity above the default, so `--verbose` is an unknown flag
+/// rather than a silently accepted no-op.
+#[test]
+fn there_is_no_verbose_flag() {
+    for flag in ["--verbose", "--verbosity", "-vv"] {
+        let run = tzap(&[TEST_QASM, flag]).failed(flag);
+        assert!(
+            run.stderr.contains("unknown flag"),
+            "{flag}: got {}",
+            run.stderr
+        );
+    }
+}
+
+/// The parse line collapses to a single completed line when there's nothing
+/// to overwrite, rather than printing both halves.
+#[test]
+fn the_parse_line_is_printed_once_when_piped() {
+    let run = tzap(&[TEST_QASM, "-O1"]).ok("parse line");
+    assert_eq!(
+        run.stderr.matches("test.qasm").count(),
+        1,
+        "expected exactly one line naming the input:\n{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("Parsed "), "got:\n{}", run.stderr);
+    assert!(
+        !run.stderr.contains("Parsing "),
+        "the in-progress half has nothing to overwrite and must be skipped:\n{}",
+        run.stderr
+    );
+}
+
+/// The same for the table-load line, which uses the same overwrite-in-place
+/// mechanism.
+#[test]
+fn the_table_line_is_printed_once_when_piped() {
+    let run = tzap(&[TEST_QASM, "-O2"]).ok("table line");
+    assert_eq!(
+        run.stderr.matches("superoptimizer table").count(),
+        1,
+        "expected exactly one table-load line:\n{}",
+        run.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Interactions between the two new destinations
+// ---------------------------------------------------------------------------
+
+/// `--json` and `-o -` both want stdout; tzap says so instead of interleaving
+/// a JSON object through a QASM file.
+#[test]
+fn json_and_stdout_output_cannot_be_combined() {
+    for args in [
+        vec![TEST_QASM, "--json", "-o", "-"],
+        vec![TEST_QASM, "-o", "-", "--json"],
+        vec![TEST_QASM, "-", "--json"],
+    ] {
+        let run = tzap(&args).failed(&format!("{args:?}"));
+        assert!(
+            run.stderr.contains("--json") && run.stderr.contains("stdout"),
+            "the error should explain the conflict:\n{}",
+            run.stderr
+        );
+    }
+}
+
+/// `--json` alongside a file destination is the useful combination, and both
+/// arrive intact.
+#[test]
+fn json_and_a_file_destination_coexist() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("out.qasm");
+    let run = tzap(&[MOD5_4_QASM, "-o", file.to_str().unwrap(), "-O1", "--json"]).ok("--json -o");
+
+    let report = Json::parse(&run.stdout);
+    let written = assert_valid_qasm(&read(&file), "--json -o");
+    assert_eq!(
+        report.at("metrics/output/gates").as_usize(),
+        written.len(),
+        "the report's gate count must match the circuit it wrote"
+    );
+    assert!(run.stderr.contains("Final result"));
+}
+
+/// A quiet JSON run is the scriptable one: stdout is exactly the report,
+/// stderr exactly nothing.
+#[test]
+fn quiet_json_puts_the_report_alone_on_stdout() {
+    let run = tzap(&[MOD5_4_QASM, "-O1", "--json", "-q"]).ok("--json -q");
+    assert_eq!(run.stderr, "");
+    let report = Json::parse(&run.stdout);
+    assert_eq!(report.get("tzap").as_str(), env!("CARGO_PKG_VERSION"));
+}
+
+/// Output is written before the report, and neither corrupts the other when
+/// both streams are captured together.
+#[test]
+fn the_two_streams_stay_separable() {
+    let run = tzap(&[MOD5_4_QASM, "-o", "-", "-O1"]).ok("-o -");
+    let combined = run.both();
+    assert!(combined.contains("OPENQASM 2.0;"));
+    // stdout on its own is parseable QASM with no commentary spliced in.
+    for line in gate_lines(&run.stdout) {
+        assert!(
+            !line.contains("Final result") && !line.contains("tzap"),
+            "commentary leaked into the circuit: {line}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline manners
+// ---------------------------------------------------------------------------
+
+/// A reader that closes early (`tzap in.qasm -o - | head -1`) ends the
+/// pipeline the way every Unix tool does: quietly, with a zero exit — not
+/// with a broken-pipe error, and above all not with a Rust panic out of a
+/// failed `println!`.
+///
+/// Needs an output larger than a pipe buffer for the write to fail at all,
+/// hence the largest benchmark rather than a fixture.
+#[test]
+fn a_closed_reader_ends_the_pipeline_quietly() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    const BIG_QASM: &str = "benchmarks/qft/qft_q020_d32421.qasm";
+    if !std::path::Path::new(BIG_QASM).exists() {
+        return;
+    }
+
+    for args in [
+        vec![BIG_QASM, "-o", "-", "--passes", "CancelGates", "-q"],
+        vec![BIG_QASM, "--json", "-q", "--passes", "CancelGates"],
+        vec!["--help"],
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_tzap"))
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn tzap");
+
+        // Read one small chunk, then drop the pipe while tzap is still
+        // writing.
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let mut first = [0u8; 16];
+        let _ = stdout.read(&mut first);
+        drop(stdout);
+
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("piped stderr")
+            .read_to_string(&mut stderr)
+            .expect("failed to read stderr");
+        let status = child.wait().expect("failed to wait for tzap");
+
+        assert!(
+            !stderr.to_lowercase().contains("panic"),
+            "{args:?}: panicked on a closed reader:\n{stderr}"
+        );
+        assert!(
+            !stderr.to_lowercase().contains("broken pipe"),
+            "{args:?}: a closed reader is not an error to report:\n{stderr}"
+        );
+        assert!(
+            status.success(),
+            "{args:?}: expected a clean exit, got {:?}\n{stderr}",
+            status.code()
+        );
+    }
+}
+
+/// Every value-taking long flag accepts the `--flag=value` spelling, which is
+/// what most people reach for first.
+#[test]
+fn value_flags_accept_the_equals_spelling() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("rz.qasm");
+    fs::write(&input, RZ_QASM).unwrap();
+    let input = input.to_str().unwrap();
+    let out = dir.path().join("out.qasm");
+    let out_flag = format!("-o={}", out.to_str().unwrap());
+
+    // The long flags, in both spellings, must agree.
+    let pairs: [(Vec<&str>, Vec<&str>); 5] = [
+        (
+            vec!["--epsilon=1e-2", "--decompose-rz"],
+            vec!["--epsilon", "1e-2", "--decompose-rz"],
+        ),
+        (
+            vec!["--passes=CancelGates,PhaseFoldRand"],
+            vec!["--passes", "CancelGates,PhaseFoldRand"],
+        ),
+        (vec!["--color=never"], vec!["--color", "never"]),
+        (
+            vec!["--superopt-qubits=2", "--passes=SuperOpt"],
+            vec!["--superopt-qubits", "2", "--passes", "SuperOpt"],
+        ),
+        (
+            vec!["--superopt-table-entries=400", "--passes=SuperOpt"],
+            vec!["--superopt-table-entries", "400", "--passes", "SuperOpt"],
+        ),
+    ];
+    for (equals, spaced) in pairs {
+        let mut with_equals = vec![input, "-o", "-", "-q"];
+        with_equals.extend_from_slice(&equals);
+        let mut with_space = vec![input, "-o", "-", "-q"];
+        with_space.extend_from_slice(&spaced);
+
+        let a = tzap(&with_equals).ok(&format!("{equals:?}"));
+        let b = tzap(&with_space).ok(&format!("{spaced:?}"));
+        assert_eq!(a.stdout, b.stdout, "{equals:?} differs from {spaced:?}");
+        assert!(!a.stdout.is_empty());
+    }
+
+    // The splitting is deliberately limited to the known long flags, so the
+    // short `-o=file` is rejected as the unknown flag it is rather than
+    // silently writing to a file named "=file".
+    let run = tzap(&[input, &out_flag, "-q"]).failed("-o=file");
+    assert!(run.stderr.contains("unknown flag"), "got: {}", run.stderr);
+    assert!(!out.exists(), "nothing should have been written");
+}
+
+/// A file name containing an `=` is a positional argument, not a flag with a
+/// value, and survives untouched.
+#[test]
+fn a_filename_containing_an_equals_sign_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("a=b.qasm");
+    fs::write(&input, RZ_QASM).unwrap();
+
+    let run = tzap(&[input.to_str().unwrap(), "-o", "-", "-q"]).ok("a=b.qasm");
+    assert_valid_qasm(&run.stdout, "a=b.qasm");
+}
