@@ -332,7 +332,8 @@ fn print_cache_info(ui: &Ui, json: bool) {
     let Some(dir) = tzap::super_opt::cache_dir() else {
         ui.write_stdout(
             "No cache directory: none of --cache-dir, $TZAP_CACHE_DIR, \
-             $XDG_CACHE_HOME, or $HOME is set, so tables are rebuilt every run.\n",
+             $XDG_CACHE_HOME, $HOME, %LOCALAPPDATA%, or %USERPROFILE% is set, \
+             so tables are rebuilt every run.\n",
         );
         return;
     };

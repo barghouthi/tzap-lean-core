@@ -124,7 +124,8 @@ pub fn set_cache_dir(dir: std::path::PathBuf) -> Result<(), std::path::PathBuf> 
 }
 
 /// The cache root currently in force — `--cache-dir`, `$TZAP_CACHE_DIR`,
-/// `$XDG_CACHE_HOME/tzap`, or `$HOME/.cache/tzap`. `None` when none of them
+/// `$XDG_CACHE_HOME/tzap`, `$HOME/.cache/tzap`, `%LOCALAPPDATA%\tzap`, or
+/// `%USERPROFILE%\.cache\tzap`, in that order. `None` when none of them
 /// resolve, in which case tzap simply doesn't cache to disk.
 pub fn cache_dir() -> Option<std::path::PathBuf> {
     table::cache_root()

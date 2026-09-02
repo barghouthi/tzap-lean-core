@@ -135,6 +135,47 @@ fn the_cache_root_follows_the_documented_precedence() {
     );
 }
 
+/// The Windows locations come after the XDG ones: a native Windows process
+/// has no `$HOME` at all, and used to end up with no cache — rebuilding its
+/// synthesis table on every single run — while being told it was cached for
+/// future use.
+#[test]
+fn the_windows_locations_are_the_last_resort() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("from-home");
+    let local = dir.path().join("from-localappdata");
+    let profile = dir.path().join("from-userprofile");
+    let s = |p: &PathBuf| p.to_str().unwrap().to_string();
+
+    // USERPROFILE alone: the same `.cache` layout as $HOME.
+    assert_eq!(
+        reported_dir(&[("USERPROFILE", &s(&profile))], &[]),
+        Some(profile.join(".cache").join("tzap"))
+    );
+    // LOCALAPPDATA beats it, and is joined directly — it already names a
+    // per-application directory.
+    assert_eq!(
+        reported_dir(
+            &[("USERPROFILE", &s(&profile)), ("LOCALAPPDATA", &s(&local)),],
+            &[]
+        ),
+        Some(local.join("tzap"))
+    );
+    // ...and $HOME beats both, so a Unix shell on Windows (MSYS, Git Bash)
+    // keeps reading the tables it has already cached.
+    assert_eq!(
+        reported_dir(
+            &[
+                ("USERPROFILE", &s(&profile)),
+                ("LOCALAPPDATA", &s(&local)),
+                ("HOME", &s(&home)),
+            ],
+            &[]
+        ),
+        Some(home.join(".cache").join("tzap"))
+    );
+}
+
 /// Per the XDG spec, `$XDG_CACHE_HOME` must be absolute; a relative one is
 /// ignored rather than resolved against the working directory, which would
 /// scatter caches wherever tzap happened to be run from.

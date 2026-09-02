@@ -521,7 +521,8 @@ fn print_help(ui: &Ui) {
     out.push_str(&format!(
         "    {bold}XDG_CACHE_HOME{reset}   Cache root falls back to $XDG_CACHE_HOME/tzap,\n"
     ));
-    out.push_str("                     then $HOME/.cache/tzap\n");
+    out.push_str("                     then $HOME/.cache/tzap, then the Windows\n");
+    out.push_str("                     %LOCALAPPDATA% and %USERPROFILE% locations\n");
     out.push('\n');
     ui.write_stdout(&out);
 }

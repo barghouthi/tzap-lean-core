@@ -13,7 +13,9 @@ mod support;
 
 use std::fs;
 
-use support::{Json, Tzap, assert_plain, assert_valid_qasm, gate_lines, read, tzap};
+use support::{
+    Json, Tzap, assert_plain, assert_valid_qasm, gate_lines, read, tzap, without_timings,
+};
 
 const TEST_QASM: &str = "tests/fixtures/test.qasm";
 const TWO_CCX_QASM: &str = "tests/fixtures/two_ccx.qasm";
@@ -47,6 +49,18 @@ const LEVELS: [&[&str]; 5] = [
         "--superopt-table-entries",
         "500",
     ],
+];
+
+/// SuperOpt bounds small enough to build and cache a real table in
+/// milliseconds, for the test that needs to do it twice (see `LEVELS` above,
+/// which spells out the same thing for `-Osuper`).
+const TINY_SUPEROPT: [&str; 6] = [
+    "--superopt-qubits",
+    "2",
+    "--superopt-window-gates",
+    "4",
+    "--superopt-table-entries",
+    "500",
 ];
 
 fn level_name(level: &[&str]) -> String {
@@ -145,11 +159,24 @@ fn the_environment_does_not_change_what_is_printed() {
             .run()
             .ok(&format!("{name}={value}"));
         assert_plain(&run.stderr, &format!("{name}={value}"));
+        // Timings are the one thing two identical runs may legitimately
+        // disagree on, and they are printed to the millisecond.
         assert_eq!(
-            run.stderr, plain.stderr,
+            without_timings(&run.stderr),
+            without_timings(&plain.stderr),
             "{name}={value} changed what was printed"
         );
     }
+}
+
+/// The normalization the test above leans on, pinned so a comparison can't
+/// pass by erasing everything: timings go, and nothing else does.
+#[test]
+fn only_timings_are_normalized_away() {
+    assert_eq!(
+        without_timings("Parsed a.qasm (871 B) in 0.000s\n↓27.8% · 79 → 57 · 12.345s\n"),
+        "Parsed a.qasm (871 B) in N.NNNs\n↓27.8% · 79 → 57 · N.NNNs\n"
+    );
 }
 
 /// Help is requested output: it goes to stdout, and takes its color from
@@ -479,16 +506,54 @@ fn the_parse_line_is_printed_once_when_piped() {
 }
 
 /// The same for the table-load line, which uses the same overwrite-in-place
-/// mechanism.
+/// mechanism — on both of its paths: a cold run announces the build it is
+/// about to do, a warm one reports the load, and neither leaves the
+/// in-progress half on screen.
+///
+/// The cache is pinned to a directory this test owns, with bounds small
+/// enough to build in milliseconds. Reading the default location instead made
+/// the result depend on whether this machine happened to have that table
+/// cached already: warm elsewhere, and always cold on Windows, where none of
+/// the cache locations resolved at all.
 #[test]
 fn the_table_line_is_printed_once_when_piped() {
-    let run = tzap(&[TEST_QASM, "-O2"]).ok("table line");
+    let cache = tempfile::tempdir().unwrap();
+    let mut args = vec![
+        TEST_QASM,
+        "-O2",
+        "--cache-dir",
+        cache.path().to_str().unwrap(),
+    ];
+    args.extend_from_slice(&TINY_SUPEROPT);
+
+    let cold = tzap(&args).ok("cold table line");
+    assert!(
+        cold.stderr.contains("Building superoptimizer table"),
+        "a cold run must say the table is being built:\n{}",
+        cold.stderr
+    );
+
+    let warm = tzap(&args).ok("warm table line");
     assert_eq!(
-        run.stderr.matches("superoptimizer table").count(),
+        warm.stderr.matches("superoptimizer table").count(),
         1,
         "expected exactly one table-load line:\n{}",
-        run.stderr
+        warm.stderr
     );
+    assert!(
+        warm.stderr.contains("Loaded superoptimizer table"),
+        "got:\n{}",
+        warm.stderr
+    );
+
+    for (path, run) in [("cold", &cold), ("warm", &warm)] {
+        assert!(
+            !run.stderr.contains("Loading superoptimizer table"),
+            "{path}: the in-progress half has nothing to overwrite and must \
+             be skipped:\n{}",
+            run.stderr
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

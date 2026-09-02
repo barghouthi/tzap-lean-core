@@ -262,7 +262,9 @@ expensive part — breadth-first enumeration over the gate library, bounded by
 
    The cache root follows the XDG Base Directory Specification:
    `$XDG_CACHE_HOME/tzap`, falling back to `$HOME/.cache/tzap`, with
-   `$TZAP_CACHE_DIR` overriding both. `tzap::super_opt::set_cache_dir(dir)`
+   `$TZAP_CACHE_DIR` overriding both. A native Windows process has none of
+   those, so `%LOCALAPPDATA%\tzap` and then `%USERPROFILE%\.cache\tzap` are
+   tried after them. `tzap::super_opt::set_cache_dir(dir)`
    overrides it for the process (call it once, before any table is built);
    `cache_dir()` reports the location in force, `cache_entries()` lists what
    is cached, and `clear_cache()` deletes it. Tables written by tzap ≤0.6 to

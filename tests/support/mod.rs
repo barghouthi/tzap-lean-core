@@ -16,11 +16,21 @@ use std::process::{Command, Output, Stdio};
 /// pointing somewhere unexpected — can't change what these tests observe.
 /// Tests that are *about* one of these set it back explicitly.
 ///
+/// `LOCALAPPDATA` and `USERPROFILE` are on the list because they are the
+/// tail of the same resolution order, and unlike the others they are set by
+/// default on a Windows machine: without clearing them, the tests that pin
+/// down what happens with *no* cache location would find one.
+///
 /// Nothing about tzap's *output* is environment-driven: styling follows from
 /// whether the stream is a terminal and nothing else, which
 /// `cli_streams::the_environment_does_not_change_what_is_printed` pins down
 /// by setting the usual color conventions and checking they do nothing.
-const PINNED_ENV: [&str; 2] = ["TZAP_CACHE_DIR", "XDG_CACHE_HOME"];
+const PINNED_ENV: [&str; 4] = [
+    "TZAP_CACHE_DIR",
+    "XDG_CACHE_HOME",
+    "LOCALAPPDATA",
+    "USERPROFILE",
+];
 
 /// A tzap invocation under construction.
 pub struct Tzap {
@@ -166,6 +176,50 @@ pub fn assert_plain(text: &str, context: &str) {
 }
 
 /// A QASM circuit's gate lines, header and blank lines dropped.
+/// `text` with every timing figure (`0.123s`) replaced by a placeholder, so
+/// two runs of the same command can be compared on everything *except* how
+/// long they took. Timings are the only part of tzap's output that
+/// legitimately differs between identical runs, and a millisecond of
+/// scheduling noise is enough to make one print `0.000s` and the next
+/// `0.001s`.
+pub fn without_timings(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let digits_at = |from: usize, count: usize| {
+        bytes
+            .get(from..from + count)
+            .is_some_and(|run| run.iter().all(|byte| byte.is_ascii_digit()))
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let whole = bytes[i..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        // `<digits>.<3 digits>s` — the shape every timing tzap prints has,
+        // and one nothing else in its output shares.
+        let point = i + whole;
+        if whole > 0
+            && bytes.get(point) == Some(&b'.')
+            && digits_at(point + 1, 3)
+            && bytes.get(point + 4) == Some(&b's')
+        {
+            out.push_str("N.NNNs");
+            i = point + 5;
+            continue;
+        }
+        if whole > 0 {
+            out.push_str(&text[i..point]);
+            i = point;
+            continue;
+        }
+        let character = text[i..].chars().next().expect("i is a char boundary");
+        out.push(character);
+        i += character.len_utf8();
+    }
+    out
+}
+
 pub fn gate_lines(qasm: &str) -> Vec<String> {
     qasm.lines()
         .map(str::trim)

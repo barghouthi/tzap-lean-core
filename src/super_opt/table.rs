@@ -496,12 +496,21 @@ pub(super) fn set_cache_root(dir: std::path::PathBuf) -> Result<(), std::path::P
     })
 }
 
-/// tzap's cache root, following the XDG Base Directory Specification:
-/// `--cache-dir`, then `$TZAP_CACHE_DIR`, then `$XDG_CACHE_HOME/tzap`, then
-/// the spec's default of `$HOME/.cache/tzap`. `None` when none of them
-/// resolve (no `$HOME` in the environment), in which case callers just skip
-/// disk caching entirely — it is always a pure speed optimization, never
-/// required for correctness.
+/// tzap's cache root: `--cache-dir`, then `$TZAP_CACHE_DIR`, then the XDG
+/// Base Directory locations (`$XDG_CACHE_HOME/tzap`, then the spec's default
+/// of `$HOME/.cache/tzap`), then the Windows ones (`%LOCALAPPDATA%\tzap`,
+/// then `%USERPROFILE%\.cache\tzap`). `None` when none of them resolve, in
+/// which case callers just skip disk caching entirely — it is always a pure
+/// speed optimization, never required for correctness.
+///
+/// The Windows names are read on every platform rather than behind
+/// `cfg(windows)`, so the resolution order is one list that any platform's
+/// tests can exercise; nothing sets them on a Unix machine. They come last
+/// because `$HOME` is what a Unix-shell environment on Windows (MSYS,
+/// Git Bash) provides, and a user who has been caching there should keep
+/// reading the same tables from either shell. Without them a native Windows
+/// process — which gets no `$HOME` — cached nothing at all and rebuilt its
+/// synthesis table on every run.
 ///
 /// An empty `$XDG_CACHE_HOME` counts as unset, per the spec, and a relative
 /// one is ignored the same way: the spec requires absolute paths, and
@@ -520,10 +529,14 @@ pub(super) fn cache_root() -> Option<std::path::PathBuf> {
             return Some(dir.join("tzap"));
         }
     }
-    let mut dir = std::path::PathBuf::from(non_empty_env("HOME")?);
-    dir.push(".cache");
-    dir.push("tzap");
-    Some(dir)
+    if let Some(home) = non_empty_env("HOME") {
+        return Some(std::path::Path::new(&home).join(".cache").join("tzap"));
+    }
+    if let Some(local) = non_empty_env("LOCALAPPDATA") {
+        return Some(std::path::Path::new(&local).join("tzap"));
+    }
+    let profile = non_empty_env("USERPROFILE")?;
+    Some(std::path::Path::new(&profile).join(".cache").join("tzap"))
 }
 
 fn non_empty_env(name: &str) -> Option<std::ffi::OsString> {
