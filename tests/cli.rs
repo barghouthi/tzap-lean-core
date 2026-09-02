@@ -56,6 +56,81 @@ fn missing_file_errors() {
     );
 }
 
+/// A circuit big enough to trip the automatic parallel threshold, written to
+/// `path`. One qubit and one gate per line keeps it cheap to generate and to
+/// parse; what matters here is the gate count.
+fn write_big_circuit(path: &std::path::Path, gates: usize) {
+    let mut qasm = String::with_capacity(gates * 8 + 64);
+    qasm.push_str("OPENQASM 2.0;\ninclude \"qelib1.inc\";\nqreg q[1];\n");
+    for _ in 0..gates {
+        qasm.push_str("h q[0];\n");
+    }
+    fs::write(path, qasm).unwrap();
+}
+
+/// A big circuit goes parallel without being asked: the size alone decides,
+/// the run says so, and the report agrees.
+#[test]
+fn a_large_circuit_is_optimized_in_parallel_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("big.qasm");
+    write_big_circuit(&input, 1_000_000);
+    let input = input.to_str().unwrap();
+
+    let out = tzap_run(&[input, "--passes", "CancelGates"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Optimizing chunks in parallel"),
+        "expected the automatic-parallel note:\n{stderr}"
+    );
+    assert!(
+        tzap_report(&[input, "--passes", "CancelGates"])
+            .at("options/parallel")
+            .as_bool()
+    );
+}
+
+/// `--no-parallel` overrides that, and stays quiet about it.
+#[test]
+fn no_parallel_keeps_a_large_circuit_sequential() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("big.qasm");
+    write_big_circuit(&input, 1_000_000);
+    let input = input.to_str().unwrap();
+
+    let out = tzap_run(&[input, "--no-parallel", "--passes", "CancelGates"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("parallel"),
+        "--no-parallel must not announce a parallel run:\n{stderr}"
+    );
+    assert!(
+        !tzap_report(&[input, "--no-parallel", "--passes", "CancelGates"])
+            .at("options/parallel")
+            .as_bool()
+    );
+}
+
+/// A circuit below the threshold is sequential, and nothing is said about it.
+#[test]
+fn a_small_circuit_stays_sequential_and_silent() {
+    let out = tzap_run(&[MOD5_4_QASM]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("parallel"), "got:\n{stderr}");
+    assert!(!tzap_report(&[MOD5_4_QASM]).at("options/parallel").as_bool());
+}
+
 #[test]
 fn optimizes_test_qasm_to_file() {
     let dir = tempfile::tempdir().unwrap();

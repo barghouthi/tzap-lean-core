@@ -58,6 +58,19 @@ pub(crate) enum Action {
     ClearCache,
 }
 
+/// Gate count at and above which a run goes parallel on its own. Map-reduce
+/// chunking costs a little quality — chunk boundaries are walls no pass can
+/// optimize across, worth a few hundredths of a percent of the gate count —
+/// and buys several-fold wall-clock. That trade is the wrong way round for
+/// the circuits people iterate on and clearly right for the ones where a
+/// serial run takes tens of seconds, so the default follows the size.
+///
+/// Measured against the circuit *as parsed*, which is the number tzap has
+/// just printed and the one a user would predict from the file. An eager
+/// ccx/ccz decomposition can push a smaller circuit past this on its way
+/// into the pipeline; that doesn't retroactively make the run parallel.
+pub(crate) const AUTO_PARALLEL_GATES: usize = 1_000_000;
+
 /// One optimization run: the file paths the CLI itself owns, plus the
 /// optimizer configuration to hand to `tzap::optimize`.
 pub(crate) struct Run {
@@ -66,6 +79,10 @@ pub(crate) struct Run {
     /// Where to write the optimized circuit: a path, [`STREAM_PATH`] for
     /// stdout, or `None` to discard it.
     pub(crate) output_path: Option<String>,
+    /// `--parallel`/`--no-parallel` as asked for, or `None` to decide from
+    /// the circuit's size (see [`Run::resolve_parallel`]). Distinct from
+    /// `options.parallel`, which is the answer rather than the request.
+    parallel: Option<bool>,
     pub(crate) options: Options,
 }
 
@@ -76,6 +93,18 @@ impl Run {
 
     pub(crate) fn writes_stdout(&self) -> bool {
         self.output_path.as_deref() == Some(STREAM_PATH)
+    }
+
+    /// Settle whether this run is parallel, now that the circuit has been
+    /// read and `gates` is known, and record it in `options` so the
+    /// optimizer, the progress box, and the `--json` report all describe the
+    /// same run. Returns whether the size alone decided it, which is the one
+    /// case worth mentioning on the way past: nobody asked for parallel, so
+    /// nobody expects the chunked progress box.
+    pub(crate) fn resolve_parallel(&mut self, gates: usize) -> bool {
+        let by_size = self.parallel.is_none() && gates >= AUTO_PARALLEL_GATES;
+        self.options.parallel = self.parallel.unwrap_or(by_size);
+        by_size
     }
 }
 
@@ -166,7 +195,7 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
     let mut decompose_rz = false;
     let mut decompose_cz = false;
     let mut rz_epsilon: f64 = DEFAULT_RZ_EPSILON;
-    let mut parallel = false;
+    let mut parallel: Option<bool> = None;
     let mut passes: Option<Vec<PassName>> = None;
     let mut fixpoint = false;
     let mut optimization_level = None;
@@ -223,7 +252,10 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
                 }
                 passes = Some(parse_pass_list(&list));
             }
-            "--parallel" => parallel = true,
+            // Last spelling on the line wins, as for any --x/--no-x pair, so
+            // a wrapper script's default can be overridden by appending to it.
+            "--parallel" => parallel = Some(true),
+            "--no-parallel" => parallel = Some(false),
             "--fixpoint" => fixpoint = true,
             "-q" | "--quiet" => quiet = true,
             "--json" => json = true,
@@ -357,7 +389,8 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
         arg_error(
             "missing required <input.qasm> argument\n\n  \
              Usage: tzap <input.qasm> [-o output.qasm] [-O1|-O2|-O3|-Osuper] \
-             [--decompose-cz] [--decompose-rz] [--passes <list>] [--parallel] [--fixpoint]\n  \
+             [--decompose-cz] [--decompose-rz] [--passes <list>] \
+             [--parallel|--no-parallel] [--fixpoint]\n  \
              Pass - to read the circuit from stdin.\n  \
              Run `tzap --help` for the full option list.",
         );
@@ -386,6 +419,7 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
         action: Action::Optimize(Run {
             input_path,
             output_path,
+            parallel,
             // An absent `-O` flag means O3 too; the distinction only ever
             // mattered for the validation above, which has already run.
             options: Options {
@@ -395,7 +429,9 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
                 decompose_rz,
                 decompose_cz,
                 rz_epsilon,
-                parallel,
+                // Only what was asked for outright; [`Run::resolve_parallel`]
+                // settles the rest once the circuit's size is known.
+                parallel: parallel == Some(true),
                 // Hidden (undocumented in `--help`) bounds overrides; `None`
                 // means "use whichever preset the optimization level implies".
                 superopt: SuperOptBounds {
@@ -456,7 +492,14 @@ fn print_help(ui: &Ui) {
     ));
     out.push_str(&format!("    {bold}--epsilon{reset} <eps>  Approximation epsilon for --decompose-rz (default: 1e-10)\n"));
     out.push_str(&format!(
-        "    {bold}--parallel{reset}       Enable parallel mode (off by default)\n"
+        "    {bold}--parallel{reset}       Optimize chunks of the circuit concurrently. On by\n"
+    ));
+    out.push_str(&format!(
+        "                     default from {} gates up\n",
+        crate::progress::fmt_num(AUTO_PARALLEL_GATES)
+    ));
+    out.push_str(&format!(
+        "    {bold}--no-parallel{reset}    Keep the run sequential at any size\n"
     ));
     out.push_str(&format!("    {bold}--passes{reset} <list>  Run these passes in order, overriding the default pipeline\n"));
     out.push_str("                     (see PASSES). Excludes --decompose-rz and\n");

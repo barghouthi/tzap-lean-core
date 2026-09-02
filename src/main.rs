@@ -12,7 +12,7 @@ mod json;
 mod progress;
 mod ui;
 
-use cli::{Action, Opts, Run, STREAM_PATH, arg_error, parse_args};
+use cli::{AUTO_PARALLEL_GATES, Action, Opts, Run, STREAM_PATH, arg_error, parse_args};
 use json::{FixpointRecord, PassRecord, Recording, RunInfo, TableRecord};
 use progress::{box_lines, fmt_num, fmt_size};
 use ui::Ui;
@@ -411,7 +411,7 @@ fn main() {
     let opts = parse_args(&args);
     let Opts { action, ui, json } = opts;
 
-    let run = match action {
+    let mut run = match action {
         Action::CacheInfo => return print_cache_info(&ui, json),
         Action::ClearCache => return clear_cache(&ui, json),
         Action::Optimize(run) => run,
@@ -426,6 +426,15 @@ fn main() {
         ui.reset()
     ));
     let parsed = read_circuit(&ui, &run.input_path);
+    // Said out loud only when the size decided it: a run nobody asked to
+    // parallelize otherwise reaches the chunked progress box with no
+    // explanation, and a slightly different gate count at the end.
+    if run.resolve_parallel(parsed.circuit.gates.len()) {
+        ui.info(&format!(
+            "  Optimizing chunks in parallel ({}+ gates) · --no-parallel to disable",
+            fmt_num(AUTO_PARALLEL_GATES)
+        ));
+    }
     let observer = Terminal::new(ui, json);
     let (result, report) =
         optimize_with(&parsed.circuit, &run.options, &observer).unwrap_or_else(|e| arg_error(e));
@@ -492,6 +501,46 @@ mod tests {
         let run = parse_run(&["in.qasm", "--superopt-qubits", "4"]);
         let SuperOptBounds { qubits, .. } = run.options.superopt;
         assert_eq!(qubits, Some(4));
+    }
+
+    /// Parallelism follows the circuit's size unless it was asked for
+    /// outright: the flags win at any size, and with neither of them the
+    /// threshold decides.
+    #[test]
+    fn parallelism_follows_the_circuit_size_by_default() {
+        let mut run = parse_run(&["in.qasm"]);
+        assert!(!run.resolve_parallel(AUTO_PARALLEL_GATES - 1));
+        assert!(!run.options.parallel, "below the threshold: sequential");
+
+        let mut run = parse_run(&["in.qasm"]);
+        assert!(
+            run.resolve_parallel(AUTO_PARALLEL_GATES),
+            "the threshold is inclusive, and the caller is told why"
+        );
+        assert!(run.options.parallel);
+
+        // Asked for outright: honored at any size, and never announced as a
+        // decision the size made.
+        let mut run = parse_run(&["in.qasm", "--parallel"]);
+        assert!(!run.resolve_parallel(1));
+        assert!(run.options.parallel);
+
+        let mut run = parse_run(&["in.qasm", "--no-parallel"]);
+        assert!(!run.resolve_parallel(AUTO_PARALLEL_GATES * 10));
+        assert!(!run.options.parallel);
+    }
+
+    /// `--parallel` and `--no-parallel` are a pair, so the last one on the
+    /// line wins rather than one of them being privileged.
+    #[test]
+    fn the_last_parallel_flag_wins() {
+        let mut run = parse_run(&["in.qasm", "--parallel", "--no-parallel"]);
+        run.resolve_parallel(AUTO_PARALLEL_GATES);
+        assert!(!run.options.parallel);
+
+        let mut run = parse_run(&["in.qasm", "--no-parallel", "--parallel"]);
+        run.resolve_parallel(1);
+        assert!(run.options.parallel);
     }
 
     /// `-` names the standard streams on either side, and is never mistaken
