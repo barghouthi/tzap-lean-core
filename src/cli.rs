@@ -7,7 +7,7 @@ use std::process;
 
 use tzap::optimize::{DEFAULT_RZ_EPSILON, Level, Options, PassName, SuperOptBounds};
 
-use crate::ui::{ColorChoice, Ui, Verbosity};
+use crate::ui::{Ui, Verbosity};
 
 /// The path spelling that means "the standard stream" rather than a file, for
 /// both the input and the output — the usual Unix convention, so tzap can sit
@@ -83,7 +83,7 @@ impl Run {
 pub(crate) struct Opts {
     pub(crate) action: Action,
     /// Terminal capabilities and verbosity for this run, decided once from
-    /// `--color`/`--quiet` and the streams themselves.
+    /// `--quiet` and the streams themselves.
     pub(crate) ui: Ui,
     /// `--json`: write a machine-readable report of the run to stdout.
     pub(crate) json: bool,
@@ -125,10 +125,9 @@ fn parse_string_arg(args: &[String], i: usize, flag_name: &str, what: &str) -> S
 
 /// Every long flag that takes a separate value, and so may also be written
 /// `--flag=value` (see [`split_flag_values`]).
-const VALUE_FLAGS: [&str; 7] = [
+const VALUE_FLAGS: [&str; 6] = [
     "--epsilon",
     "--passes",
-    "--color",
     "--cache-dir",
     "--superopt-qubits",
     "--superopt-window-gates",
@@ -136,9 +135,9 @@ const VALUE_FLAGS: [&str; 7] = [
 ];
 
 /// Rewrite `--flag=value` into two arguments, so every value-taking long
-/// flag accepts both spellings — `--color=never` is by far the more common
-/// way to write it, and a parser that took only one of the two forms would
-/// reject what most people type first.
+/// flag accepts both spellings — `--epsilon=1e-6` is as natural to type as
+/// `--epsilon 1e-6`, and a parser that took only one of the two forms would
+/// reject what someone reaches for first.
 ///
 /// Only the known [`VALUE_FLAGS`] are split, so nothing else containing an
 /// `=` is disturbed: a pass list, or a file whose name happens to contain
@@ -174,15 +173,14 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
     let mut superopt_qubits: Option<usize> = None;
     let mut superopt_window_gates: Option<usize> = None;
     let mut superopt_table_entries: Option<usize> = None;
-    let mut color = ColorChoice::default();
     let mut quiet = false;
     let mut json = false;
     let mut cache_dir: Option<String> = None;
     let mut cache_info = false;
     let mut clear_cache = false;
     // Help and version are honored after the whole line is parsed rather than
-    // on the spot, so `tzap --help --color=never` and `tzap --color=never
-    // --help` agree with each other.
+    // on the spot, so a flag that changes how they print — `--quiet`, today —
+    // works on either side of them.
     let mut help = false;
     let mut version = false;
     let mut i = 1;
@@ -227,16 +225,6 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
             }
             "--parallel" => parallel = true,
             "--fixpoint" => fixpoint = true,
-            "--color" => {
-                i += 1;
-                let value = parse_string_arg(&args, i, "--color", "auto, always, or never");
-                color = ColorChoice::parse(&value).unwrap_or_else(|| {
-                    arg_error(format!(
-                        "--color must be auto, always, or never, got '{value}'"
-                    ))
-                });
-            }
-            "--no-color" => color = ColorChoice::Never,
             "-q" | "--quiet" => quiet = true,
             "--json" => json = true,
             "--cache-dir" => {
@@ -316,7 +304,7 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
     } else {
         Verbosity::Normal
     };
-    let ui = Ui::new(color, verbosity);
+    let ui = Ui::new(verbosity);
 
     if help {
         print_help(&ui);
@@ -424,7 +412,7 @@ pub(crate) fn parse_args(args: &[String]) -> Opts {
 
 /// Print the help text.
 ///
-/// Help is requested output, so it goes to stdout and takes its color from
+/// Help is requested output, so it goes to stdout and takes its styling from
 /// stdout — `tzap --help | less` must not paint escapes into the pager.
 /// Built as one string and written once through [`Ui::write_stdout`], so a
 /// reader that closes early (`tzap --help | head`) ends the pipeline rather
@@ -495,12 +483,6 @@ fn print_help(ui: &Ui) {
         "    {bold}-q, --quiet{reset}      Print nothing but errors (output is still written)\n"
     ));
     out.push_str(&format!(
-        "    {bold}--color{reset} <when>   auto (default), always, or never\n"
-    ));
-    out.push_str(&format!(
-        "    {bold}--no-color{reset}       Same as --color never\n"
-    ));
-    out.push_str(&format!(
         "    {bold}--cache-dir{reset} <d>  Keep the SuperOpt table cache under <d>\n"
     ));
     out.push_str(&format!(
@@ -540,12 +522,6 @@ fn print_help(ui: &Ui) {
         "    {bold}XDG_CACHE_HOME{reset}   Cache root falls back to $XDG_CACHE_HOME/tzap,\n"
     ));
     out.push_str("                     then $HOME/.cache/tzap\n");
-    out.push_str(&format!(
-        "    {bold}NO_COLOR{reset}         Any non-empty value disables color\n"
-    ));
-    out.push_str(&format!(
-        "    {bold}CLICOLOR_FORCE{reset}   Any value but 0 forces color on\n"
-    ));
     out.push('\n');
     ui.write_stdout(&out);
 }
@@ -556,13 +532,20 @@ mod tests {
 
     #[test]
     fn long_flag_values_may_be_written_with_an_equals_sign() {
-        let args: Vec<String> = ["tzap", "--color=never", "in.qasm", "--epsilon=1e-8"]
+        let args: Vec<String> = ["tzap", "--passes=CancelGates", "in.qasm", "--epsilon=1e-8"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         assert_eq!(
             split_flag_values(&args),
-            vec!["tzap", "--color", "never", "in.qasm", "--epsilon", "1e-8"]
+            vec![
+                "tzap",
+                "--passes",
+                "CancelGates",
+                "in.qasm",
+                "--epsilon",
+                "1e-8"
+            ]
         );
     }
 

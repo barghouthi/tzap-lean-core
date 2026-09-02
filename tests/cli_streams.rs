@@ -4,18 +4,16 @@
 //!
 //! Every test here runs tzap as a child process, so *both* its streams are
 //! pipes rather than terminals — which is precisely the case these tests
-//! exist to pin down. A test that wants color or a live redraw has to ask for
-//! it.
+//! exist to pin down. There is no way to ask for styling anyway: a terminal
+//! gets it and nothing else does. (The live rendering path is covered by unit
+//! tests in `src/main.rs`, which can hand it a `Ui` that claims a terminal.)
 
 #[path = "support/mod.rs"]
 mod support;
 
 use std::fs;
 
-use support::{
-    Json, Tzap, assert_colored, assert_no_cursor_motion, assert_plain, assert_valid_qasm,
-    gate_lines, read, tzap,
-};
+use support::{Json, Tzap, assert_plain, assert_valid_qasm, gate_lines, read, tzap};
 
 const TEST_QASM: &str = "tests/fixtures/test.qasm";
 const TWO_CCX_QASM: &str = "tests/fixtures/two_ccx.qasm";
@@ -110,124 +108,48 @@ fn a_piped_run_emits_no_escapes_under_any_verbosity() {
     }
 }
 
-/// `--color always` restores the color — and *only* the color. A pipeline
-/// that renders tzap's escapes elsewhere can ask for them; the in-place
-/// redraws stay off, because no consumer of a pipe can act on a cursor
-/// movement.
+/// Styling has no override: the flags that used to force or suppress it are
+/// gone, and are rejected as the unknown flags they now are.
 #[test]
-fn color_always_colors_without_reenabling_redraws() {
-    let run = tzap(&[MOD5_4_QASM, "-O3", "--color", "always"]).ok("--color always");
-    assert_colored(&run.stderr, "--color always");
-    assert_no_cursor_motion(&run.stderr, "--color always");
-}
-
-#[test]
-fn color_never_and_no_color_suppress_color() {
+fn there_is_no_way_to_ask_for_color() {
     for args in [
-        vec![TEST_QASM, "--color", "never"],
-        vec![TEST_QASM, "--no-color"],
-        vec![TEST_QASM, "--color", "auto"],
+        vec![TEST_QASM, "--color", "always"],
         vec![TEST_QASM, "--color=never"],
+        vec![TEST_QASM, "--color"],
+        vec![TEST_QASM, "--no-color"],
     ] {
-        let run = tzap(&args).ok(&format!("{args:?}"));
-        assert_plain(&run.stderr, &format!("{args:?}"));
+        let run = tzap(&args).failed(&format!("{args:?}"));
+        assert!(
+            run.stderr.contains("unknown flag"),
+            "{args:?}: got {}",
+            run.stderr
+        );
     }
 }
 
-/// The `=` spelling reaches the same code as the space-separated one.
+/// ...and no environment variable changes it either. A run with each of the
+/// usual color conventions set is byte-for-byte the run without them: whether
+/// the stream is a terminal is the whole of the decision.
 #[test]
-fn color_accepts_the_equals_spelling() {
-    let run = tzap(&[TEST_QASM, "--color=always"]).ok("--color=always");
-    assert_colored(&run.stderr, "--color=always");
-}
-
-/// `NO_COLOR` (any non-empty value, per no-color.org) vetoes automatic color;
-/// an explicit `--color always` still wins, since the user asked for it on
-/// this invocation.
-#[test]
-fn no_color_env_is_honored_but_loses_to_an_explicit_request() {
-    let run = Tzap::new(&[TEST_QASM])
-        .env("NO_COLOR", "1")
-        .run()
-        .ok("NO_COLOR=1");
-    assert_plain(&run.stderr, "NO_COLOR=1");
-
-    let run = Tzap::new(&[TEST_QASM, "--color", "always"])
-        .env("NO_COLOR", "1")
-        .run()
-        .ok("NO_COLOR=1 --color always");
-    assert_colored(&run.stderr, "NO_COLOR=1 --color always");
-}
-
-/// An empty `NO_COLOR` is not a veto — but stderr is still a pipe here, so
-/// auto stays colorless either way.
-#[test]
-fn an_empty_no_color_is_treated_as_unset() {
-    let run = Tzap::new(&[TEST_QASM])
-        .env("NO_COLOR", "")
-        .run()
-        .ok("NO_COLOR=");
-    assert_plain(&run.stderr, "NO_COLOR=");
-}
-
-/// `CLICOLOR_FORCE` is the conventional escape hatch for "color this even
-/// though it isn't a terminal", and `0` means don't.
-#[test]
-fn clicolor_force_colors_a_pipe() {
-    let run = Tzap::new(&[TEST_QASM])
-        .env("CLICOLOR_FORCE", "1")
-        .run()
-        .ok("CLICOLOR_FORCE=1");
-    assert_colored(&run.stderr, "CLICOLOR_FORCE=1");
-    // Still a pipe: forcing color must not start moving the cursor around.
-    assert_no_cursor_motion(&run.stderr, "CLICOLOR_FORCE=1");
-
-    let run = Tzap::new(&[TEST_QASM])
-        .env("CLICOLOR_FORCE", "0")
-        .run()
-        .ok("CLICOLOR_FORCE=0");
-    assert_plain(&run.stderr, "CLICOLOR_FORCE=0");
-
-    // An explicit --color never outranks the environment's force.
-    let run = Tzap::new(&[TEST_QASM, "--color", "never"])
-        .env("CLICOLOR_FORCE", "1")
-        .run()
-        .ok("CLICOLOR_FORCE=1 --color never");
-    assert_plain(&run.stderr, "CLICOLOR_FORCE=1 --color never");
-}
-
-/// `TERM=dumb` describes a terminal that can't render escapes; it vetoes
-/// automatic color, and `CLICOLOR_FORCE` still overrides it.
-#[test]
-fn term_dumb_vetoes_color() {
-    let run = Tzap::new(&[TEST_QASM])
-        .env("TERM", "dumb")
-        .env("CLICOLOR_FORCE", "1")
-        .run()
-        .ok("TERM=dumb CLICOLOR_FORCE=1");
-    assert_colored(&run.stderr, "TERM=dumb CLICOLOR_FORCE=1");
-
-    let run = Tzap::new(&[TEST_QASM])
-        .env("TERM", "dumb")
-        .run()
-        .ok("TERM=dumb");
-    assert_plain(&run.stderr, "TERM=dumb");
-}
-
-#[test]
-fn a_bad_color_value_is_rejected_with_the_valid_ones_named() {
-    let run = tzap(&[TEST_QASM, "--color", "sometimes"]).failed("--color sometimes");
-    assert!(
-        run.stderr.contains("auto")
-            && run.stderr.contains("always")
-            && run.stderr.contains("never"),
-        "expected the valid values to be named:\n{}",
-        run.stderr
-    );
-
-    tzap(&[TEST_QASM, "--color"]).failed("--color with no value");
-    tzap(&[TEST_QASM, "--color="]).failed("--color= with an empty value");
-    tzap(&[TEST_QASM, "--color", "ALWAYS"]).failed("--color ALWAYS");
+fn the_environment_does_not_change_what_is_printed() {
+    let plain = tzap(&[MOD5_4_QASM, "-O1"]).ok("no environment");
+    for (name, value) in [
+        ("NO_COLOR", "1"),
+        ("CLICOLOR_FORCE", "1"),
+        ("CLICOLOR", "1"),
+        ("TERM", "dumb"),
+        ("TERM", "xterm-256color"),
+    ] {
+        let run = Tzap::new(&[MOD5_4_QASM, "-O1"])
+            .env(name, value)
+            .run()
+            .ok(&format!("{name}={value}"));
+        assert_plain(&run.stderr, &format!("{name}={value}"));
+        assert_eq!(
+            run.stderr, plain.stderr,
+            "{name}={value} changed what was printed"
+        );
+    }
 }
 
 /// Help is requested output: it goes to stdout, and takes its color from
@@ -250,13 +172,11 @@ fn help_goes_to_stdout_and_is_plain_when_piped() {
             "ENVIRONMENT",
             "--json",
             "--quiet",
-            "--color",
             "--cache-dir",
             "--cache-info",
             "--clear-cache",
             "TZAP_CACHE_DIR",
             "XDG_CACHE_HOME",
-            "NO_COLOR",
         ] {
             assert!(
                 run.stdout.contains(expected),
@@ -267,16 +187,17 @@ fn help_goes_to_stdout_and_is_plain_when_piped() {
     }
 }
 
-/// `--color` is honored wherever it appears on the line, including after the
-/// `--help` that consumes it.
+/// The whole line is parsed before help prints, so a flag that changes how it
+/// prints works on either side of the `--help` that consumes it.
 #[test]
-fn help_honors_a_color_flag_on_either_side_of_it() {
-    for args in [
-        vec!["--help", "--color", "always"],
-        vec!["--color", "always", "--help"],
-    ] {
+fn help_is_printed_whichever_side_its_flags_are_on() {
+    let plain = tzap(&["--help"]).ok("--help").stdout;
+    for args in [vec!["--help", "-q"], vec!["-q", "--help"]] {
         let run = tzap(&args).ok(&format!("{args:?}"));
-        assert_colored(&run.stdout, &format!("{args:?}"));
+        assert_eq!(
+            run.stdout, plain,
+            "{args:?}: help is requested output, so --quiet doesn't suppress it"
+        );
     }
 }
 
@@ -713,7 +634,7 @@ fn value_flags_accept_the_equals_spelling() {
     let out_flag = format!("-o={}", out.to_str().unwrap());
 
     // The long flags, in both spellings, must agree.
-    let pairs: [(Vec<&str>, Vec<&str>); 5] = [
+    let pairs: [(Vec<&str>, Vec<&str>); 4] = [
         (
             vec!["--epsilon=1e-2", "--decompose-rz"],
             vec!["--epsilon", "1e-2", "--decompose-rz"],
@@ -722,7 +643,6 @@ fn value_flags_accept_the_equals_spelling() {
             vec!["--passes=CancelGates,PhaseFoldRand"],
             vec!["--passes", "CancelGates,PhaseFoldRand"],
         ),
-        (vec!["--color=never"], vec!["--color", "never"]),
         (
             vec!["--superopt-qubits=2", "--passes=SuperOpt"],
             vec!["--superopt-qubits", "2", "--passes", "SuperOpt"],

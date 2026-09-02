@@ -61,16 +61,7 @@ fn optimizes_test_qasm_to_file() {
     let dir = tempfile::tempdir().unwrap();
     let out_path = dir.path().join("out.qasm");
 
-    // `--color always`: a test harness captures stderr through a pipe, where
-    // tzap correctly emits no escapes at all — see `cli_output.rs`. This test
-    // is about the banner's content, so it asks for the styled form.
-    let out = tzap_run(&[
-        TEST_QASM,
-        "-o",
-        out_path.to_str().unwrap(),
-        "--color",
-        "always",
-    ]);
+    let out = tzap_run(&[TEST_QASM, "-o", out_path.to_str().unwrap()]);
     assert!(
         out.status.success(),
         "tzap failed: {}",
@@ -81,8 +72,12 @@ fn optimizes_test_qasm_to_file() {
     assert!(content.starts_with("OPENQASM 2.0;"));
     assert!(content.contains("qreg q[3];"));
 
+    // A test harness captures stderr through a pipe, where tzap emits no
+    // escapes at all — so the banner arrives as plain text (see
+    // `cli_streams.rs` for that rule and `src/main.rs` for the styled form).
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains(&format!("\x1b[2mv{}\x1b[0m", env!("CARGO_PKG_VERSION"))));
+    assert!(stderr.contains(&format!("tzap v{}", env!("CARGO_PKG_VERSION"))));
+    assert!(!stderr.contains('\x1b'), "got: {stderr}");
     assert!(stderr.contains("test.qasm"));
     assert!(stderr.contains("gates"));
     assert!(stderr.contains("T/Tdg"));

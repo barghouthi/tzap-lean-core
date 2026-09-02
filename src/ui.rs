@@ -4,34 +4,14 @@
 //! Every escape sequence tzap emits goes out through a [`Ui`], so a run whose
 //! stderr is a pipe or a file gets plain text — no color, and above all no
 //! cursor motion, which is what turns a live progress box into `^[[6A^M`
-//! garbage in a CI log. The two decisions are kept separate on purpose:
-//! `--color=always` colors a piped run (someone rendering the output
-//! elsewhere) without also re-enabling the redraws, which only a real
-//! terminal can display.
+//! garbage in a CI log.
+//!
+//! There is nothing to configure: a stream that is a terminal is styled, and
+//! one that isn't, isn't. The two streams are asked separately, because they
+//! are redirected separately — `tzap --help | less` must not color its help
+//! while stderr is still a terminal.
 
 use std::io::{self, IsTerminal, Write};
-
-/// When to emit color, as selected by `--color`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ColorChoice {
-    /// Color a terminal, don't color anything else. Honors `NO_COLOR`,
-    /// `CLICOLOR_FORCE`, and `TERM=dumb`.
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
-impl ColorChoice {
-    pub(crate) fn parse(s: &str) -> Option<ColorChoice> {
-        match s {
-            "auto" => Some(ColorChoice::Auto),
-            "always" | "yes" | "force" => Some(ColorChoice::Always),
-            "never" | "no" | "none" => Some(ColorChoice::Never),
-            _ => None,
-        }
-    }
-}
 
 /// How much tzap says about what it's doing, as selected by `--quiet`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -43,54 +23,10 @@ pub(crate) enum Verbosity {
     Normal,
 }
 
-/// An environment variable's value, treating empty as unset.
-fn non_empty_env(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
-}
-
-/// What the environment says about color, independent of any stream — the
-/// three conventions nearly every CLI honors, so tzap in someone's pipeline
-/// behaves like the tools around it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EnvColor {
-    /// `CLICOLOR_FORCE` (any value but `0`): color even a pipe. Overrides a
-    /// veto, since it is the more specific instruction.
-    Force,
-    /// `NO_COLOR` (any non-empty value, per no-color.org) or `TERM=dumb`.
-    Veto,
-    /// Nothing to say; the stream itself decides.
-    Unset,
-}
-
-fn env_color() -> EnvColor {
-    if non_empty_env("CLICOLOR_FORCE").is_some_and(|value| value != "0") {
-        return EnvColor::Force;
-    }
-    if non_empty_env("NO_COLOR").is_some() || non_empty_env("TERM").as_deref() == Some("dumb") {
-        return EnvColor::Veto;
-    }
-    EnvColor::Unset
-}
-
-/// Whether to color a stream, given the user's choice, what the environment
-/// says, and whether that particular stream is a terminal. An explicit
-/// `--color` outranks the environment: it names this invocation, where an
-/// environment variable names every invocation in the shell.
-fn color_stream(choice: ColorChoice, env: EnvColor, is_terminal: bool) -> bool {
-    match choice {
-        ColorChoice::Always => true,
-        ColorChoice::Never => false,
-        ColorChoice::Auto => match env {
-            EnvColor::Force => true,
-            EnvColor::Veto => false,
-            EnvColor::Unset => is_terminal,
-        },
-    }
-}
-
 /// Whether in-place redraws are allowed: something to draw them on, and
-/// something to draw. Independent of the color choice — a redraw needs a real
-/// terminal whatever `--color` says, and `--quiet` has no frames to show.
+/// something to draw. Styling and redrawing follow from the same terminal
+/// check but are not the same question — a `--quiet` run on a terminal is
+/// still allowed to color the one error it might print.
 fn allow_live(is_terminal: bool, verbosity: Verbosity) -> bool {
     is_terminal && verbosity > Verbosity::Quiet
 }
@@ -102,9 +38,8 @@ pub(crate) struct Ui {
     /// Color the messaging stream (stderr).
     color: bool,
     /// Color the output stream (stdout) — help text and `--cache-info`, which
-    /// are requested output rather than messaging. Decided separately
-    /// because the two streams are redirected independently: `tzap --help |
-    /// less` must not color while its stderr is still a terminal.
+    /// are requested output rather than messaging. Asked separately because
+    /// the two streams are redirected separately.
     out_color: bool,
     /// Whether in-place redraws (cursor motion, line erasure) are allowed.
     live: bool,
@@ -112,12 +47,11 @@ pub(crate) struct Ui {
 }
 
 impl Ui {
-    pub(crate) fn new(choice: ColorChoice, verbosity: Verbosity) -> Ui {
+    pub(crate) fn new(verbosity: Verbosity) -> Ui {
         let stderr_tty = io::stderr().is_terminal();
-        let env = env_color();
         Ui {
-            color: color_stream(choice, env, stderr_tty),
-            out_color: color_stream(choice, env, io::stdout().is_terminal()),
+            color: stderr_tty,
+            out_color: io::stdout().is_terminal(),
             live: allow_live(stderr_tty, verbosity),
             verbosity,
         }
@@ -255,37 +189,6 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn color_choice_parses_the_documented_spellings() {
-        assert_eq!(ColorChoice::parse("auto"), Some(ColorChoice::Auto));
-        assert_eq!(ColorChoice::parse("always"), Some(ColorChoice::Always));
-        assert_eq!(ColorChoice::parse("never"), Some(ColorChoice::Never));
-        assert_eq!(ColorChoice::parse("Always"), None);
-        assert_eq!(ColorChoice::parse(""), None);
-    }
-
-    /// `--color` is about color only: an explicit choice must never depend on
-    /// terminal detection or on the environment.
-    #[test]
-    fn an_explicit_color_choice_outranks_everything() {
-        for env in [EnvColor::Force, EnvColor::Veto, EnvColor::Unset] {
-            for tty in [true, false] {
-                assert!(color_stream(ColorChoice::Always, env, tty), "{env:?} {tty}");
-                assert!(!color_stream(ColorChoice::Never, env, tty), "{env:?} {tty}");
-            }
-        }
-    }
-
-    /// Under `auto` the stream decides, unless the environment has an opinion.
-    #[test]
-    fn auto_follows_the_stream_then_the_environment() {
-        assert!(color_stream(ColorChoice::Auto, EnvColor::Unset, true));
-        assert!(!color_stream(ColorChoice::Auto, EnvColor::Unset, false));
-        // A veto beats a terminal; a force beats a pipe.
-        assert!(!color_stream(ColorChoice::Auto, EnvColor::Veto, true));
-        assert!(color_stream(ColorChoice::Auto, EnvColor::Force, false));
-    }
 
     /// A redraw needs a terminal to draw on, and quiet has nothing to draw.
     #[test]

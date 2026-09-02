@@ -11,19 +11,16 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-/// Every environment variable that can change tzap's output or cache
-/// location. Cleared on every invocation so a developer's shell — a
-/// `NO_COLOR` in their profile, an `XDG_CACHE_HOME` pointing somewhere
-/// unexpected — can't change what these tests observe. Tests that are *about*
-/// one of these set it back explicitly.
-const PINNED_ENV: [&str; 6] = [
-    "NO_COLOR",
-    "CLICOLOR_FORCE",
-    "TERM",
-    "TZAP_CACHE_DIR",
-    "XDG_CACHE_HOME",
-    "CLICOLOR",
-];
+/// Every environment variable that can change where tzap looks for its cache.
+/// Cleared on every invocation so a developer's shell — an `XDG_CACHE_HOME`
+/// pointing somewhere unexpected — can't change what these tests observe.
+/// Tests that are *about* one of these set it back explicitly.
+///
+/// Nothing about tzap's *output* is environment-driven: styling follows from
+/// whether the stream is a terminal and nothing else, which
+/// `cli_streams::the_environment_does_not_change_what_is_printed` pins down
+/// by setting the usual color conventions and checking they do nothing.
+const PINNED_ENV: [&str; 2] = ["TZAP_CACHE_DIR", "XDG_CACHE_HOME"];
 
 /// A tzap invocation under construction.
 pub struct Tzap {
@@ -147,8 +144,8 @@ pub fn tzap(args: &[&str]) -> Run {
     Tzap::new(args).run()
 }
 
-/// Every ANSI escape sequence — color *and* cursor motion — that tzap can
-/// emit, as raw bytes to look for.
+/// The byte every ANSI escape sequence starts with — color and cursor motion
+/// alike.
 pub const ESC: char = '\x1b';
 
 /// Assert that `text` contains no escape sequence and no bare carriage
@@ -164,36 +161,6 @@ pub fn assert_plain(text: &str, context: &str) {
     assert!(
         !text.contains('\r'),
         "{context}: expected no carriage returns (in-place redraw), got:\n{}",
-        text.escape_debug()
-    );
-}
-
-/// Assert that `text` carries color, and specifically SGR color — not just
-/// any escape.
-pub fn assert_colored(text: &str, context: &str) {
-    assert!(
-        text.contains("\x1b[1m") || text.contains("\x1b[2m") || text.contains("\x1b[36m"),
-        "{context}: expected SGR color escapes, got:\n{}",
-        text.escape_debug()
-    );
-}
-
-/// Assert that `text` contains no *cursor motion* — line erasure, cursor-up,
-/// or carriage return — even if it is colored. Color can be rendered by
-/// whatever consumes the stream; a cursor movement cannot, and is what turns
-/// a captured progress box into garbage.
-pub fn assert_no_cursor_motion(text: &str, context: &str) {
-    for sequence in ["\x1b[2K", "\x1b[1A", "\x1b[5A", "\x1b[6A", "\x1b[7A"] {
-        assert!(
-            !text.contains(sequence),
-            "{context}: found cursor motion {:?}:\n{}",
-            sequence.escape_debug().to_string(),
-            text.escape_debug()
-        );
-    }
-    assert!(
-        !text.contains('\r'),
-        "{context}: found a carriage return:\n{}",
         text.escape_debug()
     );
 }
