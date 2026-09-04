@@ -75,7 +75,7 @@ impl Scratch {
         for (i, gate) in gates.iter().enumerate() {
             let (n, qs) = qubit_operands(gate);
             for &q in &qs[..n] {
-                self.tracks[q].push(i);
+                self.tracks[q as usize].push(i);
             }
         }
         self.tracks_for = Some(gates.len());
@@ -116,7 +116,7 @@ fn cancel_pairs(gates: &[Gate], scratch: &mut Scratch) -> Vec<Gate> {
             // The blocker is the latest gate touching any of this gate's qubits.
             let mut blocker: Option<usize> = None;
             for j in 0..n {
-                if let Some(&last) = stacks[qs[j]].last() {
+                if let Some(&last) = stacks[qs[j] as usize].last() {
                     blocker = Some(match blocker {
                         Some(b) => b.max(last),
                         None => last,
@@ -130,8 +130,8 @@ fn cancel_pairs(gates: &[Gate], scratch: &mut Scratch) -> Vec<Gate> {
                 delete[block_idx] = stamp;
                 delete[i] = stamp;
                 for j in 0..n {
-                    debug_assert_eq!(*stacks[qs[j]].last().unwrap(), block_idx);
-                    stacks[qs[j]].pop();
+                    debug_assert_eq!(*stacks[qs[j] as usize].last().unwrap(), block_idx);
+                    stacks[qs[j] as usize].pop();
                 }
                 continue;
             }
@@ -139,7 +139,7 @@ fn cancel_pairs(gates: &[Gate], scratch: &mut Scratch) -> Vec<Gate> {
 
         let (n, qs) = qubit_operands(gate);
         for j in 0..n {
-            stacks[qs[j]].push(i);
+            stacks[qs[j] as usize].push(i);
         }
     }
 
@@ -226,10 +226,10 @@ fn gates_equal(a: &Gate, b: &Gate) -> bool {
     }
 }
 
-fn is_h(g: &Gate, q: usize) -> bool {
+fn is_h(g: &Gate, q: Qubit) -> bool {
     matches!(g, Gate::h(p) if *p == q)
 }
-fn is_x(g: &Gate, q: usize) -> bool {
+fn is_x(g: &Gate, q: Qubit) -> bool {
     matches!(g, Gate::x(p) if *p == q)
 }
 
@@ -237,7 +237,7 @@ fn is_x(g: &Gate, q: usize) -> bool {
 ///   `Some(Some(k))` — diagonal, rotates by k·π/4
 ///   `Some(None)`    — diagonal `rz` whose angle is not a π/4 multiple
 ///   `None`          — not a single-qubit diagonal gate on `q`
-fn diagonal_k(g: &Gate, q: usize) -> Option<Option<u32>> {
+fn diagonal_k(g: &Gate, q: Qubit) -> Option<Option<u32>> {
     let (k, p) = match g {
         Gate::t(p) => (1, p),
         Gate::tdg(p) => (7, p),
@@ -303,6 +303,7 @@ fn reduce_hadamards_pass(gates: &[Gate], scratch: &mut Scratch) -> Option<Vec<Ga
     let mut changed = false;
 
     for (q, track) in tracks.iter().enumerate() {
+        let q = q as Qubit;
         let mut p = 0;
         while p < track.len() {
             let io = track[p];
@@ -467,6 +468,7 @@ fn cancel_commuting_pairs_pass(gates: &[Gate], scratch: &mut Scratch) -> Option<
             _ => continue,
         };
         let (a, b) = pair.operands();
+        let (a, b) = (a as usize, b as usize);
 
         let pa_start = tracks[a]
             .binary_search(&i)

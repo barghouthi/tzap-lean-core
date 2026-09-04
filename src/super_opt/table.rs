@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 
-use crate::circuit::Gate;
+use crate::circuit::{Gate, Qubit};
 
 use super::matrix::{UnitaryFingerprint, UnitaryMatrix, unitary_fingerprint};
 use super::synthesis_arena::WidthTable;
@@ -221,7 +221,7 @@ impl UnitaryCircuitTable {
             let identity = UnitaryMatrix::identity(num_qubits)?;
             entries[num_qubits] = WidthTable::with_identity(unitary_fingerprint(&identity));
             let gates = library_gates(num_qubits);
-            let support: Vec<_> = (0..num_qubits).collect();
+            let support: Vec<Qubit> = (0..num_qubits as Qubit).collect();
             let mut frontier = vec![(0, identity)];
 
             // Parents per parallel batch: enough candidates to spread across
@@ -474,29 +474,122 @@ fn lock_cache(tables: &Mutex<TableCache>) -> std::sync::MutexGuard<'_, TableCach
         .expect("SuperOpt synthesis-table cache mutex was poisoned")
 }
 
-/// Directory holding on-disk synthesis-table caches. `None` when `$HOME`
-/// isn't set, in which case callers just skip disk caching entirely — it is
-/// always a pure speed optimization, never required for correctness.
-fn cache_dir() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    let mut dir = std::path::PathBuf::from(home);
+/// Process-wide override for the cache root, set once at startup by
+/// `super_opt::set_cache_dir` (the CLI's `--cache-dir`). Takes precedence
+/// over every environment-derived location below.
+static CACHE_ROOT_OVERRIDE: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// Basename of the tables subdirectory inside whichever cache root wins.
+const TABLES_SUBDIR: &str = "superopt-tables";
+
+/// Install a process-wide cache root, overriding `$TZAP_CACHE_DIR` and the
+/// XDG lookup. Returns `Err` with the already-installed root if one was set
+/// before — callers set this once, before any table is built or loaded, so a
+/// second call would silently mean half a run read from one directory and
+/// half from another.
+pub(super) fn set_cache_root(dir: std::path::PathBuf) -> Result<(), std::path::PathBuf> {
+    CACHE_ROOT_OVERRIDE.set(dir).map_err(|_| {
+        CACHE_ROOT_OVERRIDE
+            .get()
+            .cloned()
+            .unwrap_or_else(std::path::PathBuf::new)
+    })
+}
+
+/// tzap's cache root: `--cache-dir`, then `$TZAP_CACHE_DIR`, then the XDG
+/// Base Directory locations (`$XDG_CACHE_HOME/tzap`, then the spec's default
+/// of `$HOME/.cache/tzap`), then the Windows ones (`%LOCALAPPDATA%\tzap`,
+/// then `%USERPROFILE%\.cache\tzap`). `None` when none of them resolve, in
+/// which case callers just skip disk caching entirely — it is always a pure
+/// speed optimization, never required for correctness.
+///
+/// The Windows names are read on every platform rather than behind
+/// `cfg(windows)`, so the resolution order is one list that any platform's
+/// tests can exercise; nothing sets them on a Unix machine. They come last
+/// because `$HOME` is what a Unix-shell environment on Windows (MSYS,
+/// Git Bash) provides, and a user who has been caching there should keep
+/// reading the same tables from either shell. Without them a native Windows
+/// process — which gets no `$HOME` — cached nothing at all and rebuilt its
+/// synthesis table on every run.
+///
+/// An empty `$XDG_CACHE_HOME` counts as unset, per the spec, and a relative
+/// one is ignored the same way: the spec requires absolute paths, and
+/// honoring a relative one would scatter caches wherever tzap happened to be
+/// invoked from.
+pub(super) fn cache_root() -> Option<std::path::PathBuf> {
+    if let Some(dir) = CACHE_ROOT_OVERRIDE.get() {
+        return Some(dir.clone());
+    }
+    if let Some(dir) = non_empty_env("TZAP_CACHE_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
+    if let Some(dir) = non_empty_env("XDG_CACHE_HOME") {
+        let dir = std::path::PathBuf::from(dir);
+        if dir.is_absolute() {
+            return Some(dir.join("tzap"));
+        }
+    }
+    if let Some(home) = non_empty_env("HOME") {
+        return Some(std::path::Path::new(&home).join(".cache").join("tzap"));
+    }
+    if let Some(local) = non_empty_env("LOCALAPPDATA") {
+        return Some(std::path::Path::new(&local).join("tzap"));
+    }
+    let profile = non_empty_env("USERPROFILE")?;
+    Some(std::path::Path::new(&profile).join(".cache").join("tzap"))
+}
+
+fn non_empty_env(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name).filter(|value| !value.is_empty())
+}
+
+/// Directory holding on-disk synthesis-table caches.
+pub(super) fn cache_dir() -> Option<std::path::PathBuf> {
+    Some(cache_root()?.join(TABLES_SUBDIR))
+}
+
+/// Where tzap ≤0.6 kept its tables, before the move to the XDG cache
+/// directory. Read from (never written to) as a fallback, so an upgrade
+/// doesn't silently orphan an `-Osuper` table that cost minutes to build.
+/// Skipped whenever the cache location was chosen explicitly — an operator
+/// pointing tzap at a directory means *that* directory, not a union of it
+/// and a legacy one.
+fn legacy_cache_dir() -> Option<std::path::PathBuf> {
+    if CACHE_ROOT_OVERRIDE.get().is_some() || non_empty_env("TZAP_CACHE_DIR").is_some() {
+        return None;
+    }
+    let mut dir = std::path::PathBuf::from(non_empty_env("HOME")?);
     dir.push(".tzap");
-    dir.push("superopt-tables");
+    dir.push(TABLES_SUBDIR);
     Some(dir)
 }
 
-/// One file per distinct `config`, since different bounds produce different
-/// tables; the format version and crate version are in the name too so a
-/// bump of either can't collide with (and doesn't need to explicitly
-/// invalidate) old files — they're simply never looked up again and can be
-/// cleaned up manually.
-fn cache_file_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
-    let mut path = cache_dir()?;
-    path.push(format!(
+/// Filename for `config`'s table. One file per distinct `config`, since
+/// different bounds produce different tables; the format version and crate
+/// version are in the name too so a bump of either can't collide with (and
+/// doesn't need to explicitly invalidate) old files — they're simply never
+/// looked up again and can be cleaned up with `tzap --clear-cache`.
+fn cache_file_name(config: SuperOptTableConfig) -> String {
+    format!(
         "q{}_g{}_e{}.v{CACHE_FORMAT_VERSION}.tzap{CACHE_CRATE_VERSION}.bin",
         config.max_qubits, config.max_gates, config.max_entries_per_qubit
-    ));
-    Some(path)
+    )
+}
+
+/// Where `config`'s table is written, and the first place it's looked for.
+fn cache_file_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
+    Some(cache_dir()?.join(cache_file_name(config)))
+}
+
+/// Every path `config`'s table may be read from, in priority order: the
+/// current location first, then the pre-XDG one (see [`legacy_cache_dir`]).
+fn cache_read_paths(config: SuperOptTableConfig) -> Vec<std::path::PathBuf> {
+    let name = cache_file_name(config);
+    [cache_dir(), legacy_cache_dir()]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join(&name))
+        .collect()
 }
 
 /// Whether a valid on-disk cache for `config` already exists, checked by
@@ -508,23 +601,24 @@ fn cache_file_path(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
 /// another process writing the same file) can never cause a bad load, only
 /// a misleading message.
 pub(super) fn disk_cache_exists(config: SuperOptTableConfig) -> bool {
-    let Some(path) = cache_file_path(config) else {
-        return false;
-    };
-    let Ok(file) = std::fs::File::open(&path) else {
-        return false;
-    };
-    read_cache_header(&mut io::BufReader::new(file), config).is_ok()
+    existing_cache_file(config).is_some()
+}
+
+/// The first readable, valid cache file for `config` among
+/// [`cache_read_paths`], validated by reading just the header (magic, format
+/// version, config fields) rather than the full table body.
+fn existing_cache_file(config: SuperOptTableConfig) -> Option<std::path::PathBuf> {
+    cache_read_paths(config).into_iter().find(|path| {
+        std::fs::File::open(path)
+            .is_ok_and(|file| read_cache_header(&mut io::BufReader::new(file), config).is_ok())
+    })
 }
 
 /// Size in bytes of the on-disk cache file for `config`, if a valid one
 /// exists — a reporting aid alongside `disk_cache_exists`, never
 /// load-bearing for correctness.
 pub(super) fn disk_cache_size_bytes(config: SuperOptTableConfig) -> Option<u64> {
-    if !disk_cache_exists(config) {
-        return None;
-    }
-    let path = cache_file_path(config)?;
+    let path = existing_cache_file(config)?;
     std::fs::metadata(&path).ok().map(|metadata| metadata.len())
 }
 
@@ -536,16 +630,17 @@ pub(super) fn disk_cache_size_bytes(config: SuperOptTableConfig) -> Option<u64> 
 fn build_or_load_from_disk(
     config: SuperOptTableConfig,
 ) -> Result<UnitaryCircuitTable, SuperOptError> {
-    let path = cache_file_path(config);
-    if let Some(path) = &path
-        && let Ok(table) = UnitaryCircuitTable::read_from_disk(path, config)
-    {
-        return Ok(table);
+    // Reads may come from the legacy pre-XDG directory; writes only ever go
+    // to the current one, so a rebuild migrates the entry forward.
+    for path in cache_read_paths(config) {
+        if let Ok(table) = UnitaryCircuitTable::read_from_disk(&path, config) {
+            return Ok(table);
+        }
     }
 
     let table = UnitaryCircuitTable::build(config)?;
-    if let Some(path) = &path {
-        let _ = table.write_to_disk(path, config);
+    if let Some(path) = cache_file_path(config) {
+        let _ = table.write_to_disk(&path, config);
     }
     Ok(table)
 }
@@ -557,7 +652,7 @@ pub(super) fn library_circuit_matrix(
     num_qubits: usize,
     circuit: &[LibraryGate],
 ) -> Result<Option<UnitaryMatrix>, SuperOptError> {
-    let support: Vec<_> = (0..num_qubits).collect();
+    let support: Vec<Qubit> = (0..num_qubits as Qubit).collect();
     let mut matrix = UnitaryMatrix::identity(num_qubits)?;
     for &gate in circuit {
         if matrix.apply_gate_left(&gate.to_gate(), &support).is_err() {

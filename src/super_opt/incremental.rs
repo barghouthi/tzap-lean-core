@@ -16,7 +16,7 @@ fn qubit_streams(circuit: &Circuit) -> Vec<Vec<usize>> {
     let mut streams = vec![Vec::new(); circuit.num_qubits];
     for (index, gate) in circuit.gates.iter().enumerate() {
         for qubit in unique_qubits(gate) {
-            streams[qubit].push(index);
+            streams[qubit as usize].push(index);
         }
     }
     streams
@@ -83,7 +83,7 @@ pub(super) fn anchor_frontier(
         let mut next = Vec::new();
         for &gate_index in &ring {
             for qubit in unique_qubits(&circuit.gates[gate_index]) {
-                let stream = &streams[qubit];
+                let stream = &streams[qubit as usize];
                 let position = stream
                     .binary_search(&gate_index)
                     .expect("gate is in each of its qubits' streams");

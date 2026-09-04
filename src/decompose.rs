@@ -6,7 +6,7 @@
 
 use rayon::prelude::*;
 
-use crate::circuit::{Circuit, Gate};
+use crate::circuit::{Circuit, Gate, Qubit};
 use crate::pass::Pass;
 use rsgridsynth::config::config_from_theta_epsilon;
 use rsgridsynth::gridsynth::gridsynth_gates;
@@ -16,7 +16,7 @@ use rsgridsynth::gridsynth::gridsynth_gates;
 /// Rewrites every `ccx` and `ccz` gate into Clifford+T.
 pub struct DecomposeToffoli;
 
-fn emit_ccx_decomposition(output: &mut Circuit, c0: usize, c1: usize, t: usize) {
+fn emit_ccx_decomposition(output: &mut Circuit, c0: Qubit, c1: Qubit, t: Qubit) {
     output.apply(Gate::h(t));
     output.apply(Gate::cnot {
         control: c1,

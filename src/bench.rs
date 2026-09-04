@@ -3,7 +3,7 @@ mod tests {
     use std::time::Instant;
 
     use crate::cancel::CancelGates;
-    use crate::circuit::{Circuit, Gate};
+    use crate::circuit::{Circuit, Gate, Qubit};
     use crate::decompose::{DecomposeCz, DecomposeToffoli};
     use crate::pass::{Pass, count_t};
     use crate::phase_fold_rand::phase_fold_rand;
@@ -25,17 +25,22 @@ mod tests {
         fn range(&mut self, n: usize) -> usize {
             (self.next() % n as u64) as usize
         }
+
+        /// [`Rng::range`] as a qubit index.
+        fn qubit(&mut self, n: usize) -> Qubit {
+            self.range(n) as Qubit
+        }
     }
 
-    fn other_qubit(rng: &mut Rng, q: usize, num_qubits: usize) -> usize {
+    fn other_qubit(rng: &mut Rng, q: Qubit, num_qubits: usize) -> Qubit {
         debug_assert!(num_qubits >= 2);
-        (q + 1 + rng.range(num_qubits - 1)) % num_qubits
+        (q + 1 + rng.qubit(num_qubits - 1)) % num_qubits as Qubit
     }
 
     fn random_circuit(rng: &mut Rng, num_qubits: usize, num_gates: usize) -> Circuit {
         let mut c = Circuit::new(num_qubits);
         for _ in 0..num_gates {
-            let q = rng.range(num_qubits);
+            let q = rng.qubit(num_qubits);
             let kind = if num_qubits < 3 {
                 // skip ccx (needs 3 qubits) and cnot (needs 2 qubits) slots
                 let k = if num_qubits < 2 {
@@ -67,7 +72,7 @@ mod tests {
                     let mut qs = [q, 0, 0];
                     qs[1] = other_qubit(rng, q, num_qubits);
                     loop {
-                        qs[2] = rng.range(num_qubits);
+                        qs[2] = rng.qubit(num_qubits);
                         if qs[2] != qs[0] && qs[2] != qs[1] {
                             break;
                         }
@@ -98,7 +103,7 @@ mod tests {
     fn random_hxsz_circuit(rng: &mut Rng, num_qubits: usize, num_gates: usize) -> Circuit {
         let mut c = Circuit::new(num_qubits);
         for _ in 0..num_gates {
-            let q = rng.range(num_qubits);
+            let q = rng.qubit(num_qubits);
             match rng.range(24) {
                 0..=4 => c.apply(Gate::h(q)),
                 5..=9 => c.apply(Gate::x(q)),
@@ -138,7 +143,7 @@ mod tests {
         debug_assert!(num_qubits >= 2);
         let mut c = Circuit::new(num_qubits);
         for _ in 0..num_gates {
-            let q = rng.range(num_qubits);
+            let q = rng.qubit(num_qubits);
             let other = other_qubit(rng, q, num_qubits);
             match rng.range(24) {
                 0..=7 => {
@@ -177,17 +182,18 @@ mod tests {
     fn build_circuit(num_qubits: usize, num_gates: usize) -> Circuit {
         let mut c = Circuit::new(num_qubits);
         for i in 0..num_gates {
-            let q = i % num_qubits;
+            let q = (i % num_qubits) as Qubit;
+            let width = num_qubits as Qubit;
             match i % 24 {
                 0..=5 => {
-                    let target = (q + 1) % num_qubits;
+                    let target = (q + 1) % width;
                     c.apply(Gate::cnot { control: q, target });
                 }
                 6..=7 => c.apply(Gate::rz(0.123 * (i as f64), q)),
                 8..=9 => {
                     let c1 = q;
-                    let c2 = (q + 1) % num_qubits;
-                    let t = (q + 2) % num_qubits;
+                    let c2 = (q + 1) % width;
+                    let t = (q + 2) % width;
                     c.apply(Gate::ccx {
                         control1: c1,
                         control2: c2,

@@ -9,13 +9,13 @@ use std::borrow::Cow;
 
 use smallvec::SmallVec;
 
-use crate::circuit::{Circuit, Gate};
+use crate::circuit::{CBit, Circuit, Gate, Qubit};
 
 /// Qubit operands of one gate line. An arity above three only arises from
 /// malformed input, which `require_arity` rejects; `SmallVec` keeps the
 /// common case off the heap, where a `Vec` cost one allocation per gate
 /// parsed.
-type Operands = SmallVec<[usize; 3]>;
+type Operands = SmallVec<[Qubit; 3]>;
 
 /// Byte offsets of the `[` and `]` of a register subscript such as `q[12]`.
 ///
@@ -113,6 +113,16 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                             .map_err(|e| format!("line {line_num}: bad qreg size: {e}"))?;
                         registers.push((name, num_qubits, size));
                         num_qubits += size;
+                        // Qubit indices are `u32` (see `circuit::Qubit`), so
+                        // this is where a declaration too wide to index has to
+                        // be rejected -- every later `as Qubit` is a cast on
+                        // an index this bound has already cleared.
+                        if num_qubits > Qubit::MAX as usize {
+                            return Err(format!(
+                                "line {line_num}: circuit declares {num_qubits} qubits, more than the {} supported",
+                                Qubit::MAX
+                            ));
+                        }
                     }
                 }
                 "creg" => {
@@ -127,6 +137,13 @@ pub fn parse(qasm: &str) -> Result<Circuit, String> {
                             .map_err(|e| format!("line {line_num}: bad creg size: {e}"))?;
                         cregisters.push((name, num_cbits, size));
                         num_cbits += size;
+                        // See the qreg case: `CBit` is `u32` too.
+                        if num_cbits > CBit::MAX as usize {
+                            return Err(format!(
+                                "line {line_num}: circuit declares {num_cbits} classical bits, more than the {} supported",
+                                CBit::MAX
+                            ));
+                        }
                     }
                 }
                 "measure " => {
@@ -293,7 +310,7 @@ fn write_gate(s: &mut String, gate: &Gate) {
 
 fn require_arity(
     gate: &str,
-    qubits: &[usize],
+    qubits: &[Qubit],
     expected: usize,
     line_num: usize,
 ) -> Result<(), String> {
@@ -317,7 +334,7 @@ fn resolve_single_qubit(
     s: &str,
     registers: &[(String, usize, usize)],
     line_num: usize,
-) -> Result<usize, String> {
+) -> Result<Qubit, String> {
     let qubits = resolve_qubits(s, registers, line_num)?;
     require_arity(gate, &qubits, 1, line_num)?;
     Ok(qubits[0])
@@ -560,7 +577,7 @@ fn parse_measure(
     registers: &[(String, usize, usize)],
     cregisters: &[(String, usize, usize)],
     line_num: usize,
-) -> Result<Vec<(usize, usize)>, String> {
+) -> Result<Vec<(Qubit, CBit)>, String> {
     let arrow = s
         .find("->")
         .ok_or_else(|| format!("line {line_num}: measure missing '->' (got '{s}')"))?;
@@ -584,7 +601,7 @@ fn expand_qubit_operand(
     s: &str,
     registers: &[(String, usize, usize)],
     line_num: usize,
-) -> Result<Vec<usize>, String> {
+) -> Result<Vec<Qubit>, String> {
     let s = s.trim().trim_end_matches(';').trim();
     if s.contains('[') {
         // A bare register expands to arbitrarily many qubits, so this stays a
@@ -595,14 +612,14 @@ fn expand_qubit_operand(
         .iter()
         .find(|(n, _, _)| n == s)
         .ok_or_else(|| format!("line {line_num}: unknown register '{s}'"))?;
-    Ok((*offset..*offset + *size).collect())
+    Ok((*offset..*offset + *size).map(|q| q as Qubit).collect())
 }
 
 fn expand_cbit_operand(
     s: &str,
     cregisters: &[(String, usize, usize)],
     line_num: usize,
-) -> Result<Vec<usize>, String> {
+) -> Result<Vec<CBit>, String> {
     let s = s.trim().trim_end_matches(';').trim();
     if s.contains('[') {
         return resolve_cbits(s, cregisters, line_num);
@@ -611,14 +628,14 @@ fn expand_cbit_operand(
         .iter()
         .find(|(n, _, _)| n == s)
         .ok_or_else(|| format!("line {line_num}: unknown classical register '{s}'"))?;
-    Ok((*offset..*offset + *size).collect())
+    Ok((*offset..*offset + *size).map(|c| c as CBit).collect())
 }
 
 fn resolve_cbits(
     s: &str,
     cregisters: &[(String, usize, usize)],
     line_num: usize,
-) -> Result<Vec<usize>, String> {
+) -> Result<Vec<CBit>, String> {
     let mut result = Vec::new();
     for part in s.split(',') {
         let part = part.trim().trim_end_matches(';');
@@ -636,7 +653,7 @@ fn resolve_cbits(
                     "line {line_num}: index {idx} out of range for classical register '{name}' (size {size})"
                 ));
             }
-            result.push(offset + idx);
+            result.push((offset + idx) as _);
         }
     }
     Ok(result)
@@ -664,7 +681,7 @@ fn resolve_qubits(
                     "line {line_num}: index {idx} out of range for register '{name}' (size {size})"
                 ));
             }
-            result.push(offset + idx);
+            result.push((offset + idx) as _);
         }
     }
     Ok(result)
@@ -1267,7 +1284,7 @@ t q[0];
         assert_eq!(parsed.gates.len(), 4);
         assert!(matches!(&parsed.gates[0], Gate::h(0)));
         for (i, g) in parsed.gates[1..].iter().enumerate() {
-            assert!(matches!(g, Gate::reset(q) if *q == i));
+            assert!(matches!(g, Gate::reset(q) if *q as usize == i));
         }
     }
 

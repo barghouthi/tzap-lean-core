@@ -35,6 +35,10 @@ To use `measure` gates, allocate classical bits with
 | Measure | `Gate::measure { qubit, cbit }` |
 | Reset | `Gate::reset(qubit)` |
 
+Operands are `Qubit` and `CBit`, both aliases for `u32` — a `Gate` is 16
+bytes, which matters on circuits of tens of millions of gates. Integer
+literals still work unannotated; a `usize` index needs `as u32`.
+
 ### QASM I/O
 
 Parse from and convert to OpenQASM 2.0. `from_qasm` returns
@@ -247,14 +251,25 @@ expensive part — breadth-first enumeration over the gate library, bounded by
 1. **Per-process, in-memory.** Every `SuperOpt::new` call with the same
    `SuperOptTableConfig` shares one already-built table for the life of the
    process (`Arc`-backed, keyed by config).
-2. **On disk, across processes.** The built table is also persisted to
-   `~/.tzap/superopt-tables/` (one file per distinct config), so a later
+2. **On disk, across processes.** The built table is also persisted under
+   `<cache root>/superopt-tables/` (one file per distinct config), so a later
    process with the same config loads it in well under a second instead of
    rebuilding it. A missing, stale, or corrupt cache file is never a hard
    error — it just triggers a fresh build, which then gets cached for next
    time. Call `tzap::super_opt::table_is_cached(config)` to check up front
    whether a given config's table is already cached (useful for deciding
    whether to warn a caller that the next `SuperOpt::new` will be slow).
+
+   The cache root follows the XDG Base Directory Specification:
+   `$XDG_CACHE_HOME/tzap`, falling back to `$HOME/.cache/tzap`, with
+   `$TZAP_CACHE_DIR` overriding both. A native Windows process has none of
+   those, so `%LOCALAPPDATA%\tzap` and then `%USERPROFILE%\.cache\tzap` are
+   tried after them. `tzap::super_opt::set_cache_dir(dir)`
+   overrides it for the process (call it once, before any table is built);
+   `cache_dir()` reports the location in force, `cache_entries()` lists what
+   is cached, and `clear_cache()` deletes it. Tables written by tzap ≤0.6 to
+   `~/.tzap/superopt-tables/` are still read, so an upgrade doesn't orphan
+   them, but nothing new is written there.
 
 `SuperOpt` also implements `tzap::pass::Pass`. Chain `.without_subcircuits()` when
 only the optimized circuit is needed, to skip retaining per-window diagnostics.

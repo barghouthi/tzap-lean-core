@@ -367,7 +367,7 @@ mod exact_tests {
     const FLOAT_TOLERANCE: f64 = 2e-10;
 
     fn exact_matrix(circuit: &Circuit) -> UnitaryMatrix {
-        let support: Vec<_> = (0..circuit.num_qubits).collect();
+        let support: Vec<Qubit> = (0..circuit.num_qubits as Qubit).collect();
         let mut matrix = UnitaryMatrix::identity(circuit.num_qubits).unwrap();
         for gate in &circuit.gates {
             matrix.apply_gate_left(gate, &support).unwrap();
@@ -584,10 +584,10 @@ mod exact_tests {
     fn denominator_normalization_handles_nested_hadamards() {
         for num_qubits in 1..=5 {
             let mut gates = Vec::new();
-            for qubit in 0..num_qubits {
+            for qubit in 0..num_qubits as Qubit {
                 gates.push(Gate::h(qubit));
             }
-            for qubit in (0..num_qubits).rev() {
+            for qubit in (0..num_qubits as Qubit).rev() {
                 gates.push(Gate::h(qubit));
             }
             let matrix = exact_matrix(&circuit(num_qubits, &gates));
@@ -738,12 +738,17 @@ mod exact_tests {
             self.0 ^= self.0 << 17;
             self.0 as usize % upper
         }
+
+        /// [`TestRng::next`] as a qubit index.
+        fn qubit(&mut self, upper: usize) -> Qubit {
+            self.next(upper) as Qubit
+        }
     }
 
-    fn random_distinct_qubits(rng: &mut TestRng, num_qubits: usize, count: usize) -> Vec<usize> {
+    fn random_distinct_qubits(rng: &mut TestRng, num_qubits: usize, count: usize) -> Vec<Qubit> {
         let mut qubits = Vec::with_capacity(count);
         while qubits.len() < count {
-            let qubit = rng.next(num_qubits);
+            let qubit = rng.qubit(num_qubits);
             if !qubits.contains(&qubit) {
                 qubits.push(qubit);
             }
@@ -760,13 +765,13 @@ mod exact_tests {
             7
         };
         match rng.next(choices) {
-            0 => Gate::x(rng.next(num_qubits)),
-            1 => Gate::h(rng.next(num_qubits)),
-            2 => Gate::s(rng.next(num_qubits)),
-            3 => Gate::sdg(rng.next(num_qubits)),
-            4 => Gate::z(rng.next(num_qubits)),
-            5 => Gate::t(rng.next(num_qubits)),
-            6 => Gate::tdg(rng.next(num_qubits)),
+            0 => Gate::x(rng.qubit(num_qubits)),
+            1 => Gate::h(rng.qubit(num_qubits)),
+            2 => Gate::s(rng.qubit(num_qubits)),
+            3 => Gate::sdg(rng.qubit(num_qubits)),
+            4 => Gate::z(rng.qubit(num_qubits)),
+            5 => Gate::t(rng.qubit(num_qubits)),
+            6 => Gate::tdg(rng.qubit(num_qubits)),
             7 => {
                 let q = random_distinct_qubits(rng, num_qubits, 2);
                 Gate::cnot {
@@ -834,7 +839,7 @@ mod exact_tests {
             }
             let mut decorated = base.clone();
             for _ in 0..10 {
-                let qubit = rng.next(num_qubits);
+                let qubit = rng.qubit(num_qubits);
                 match rng.next(6) {
                     0 => {
                         decorated.apply(Gate::h(qubit));

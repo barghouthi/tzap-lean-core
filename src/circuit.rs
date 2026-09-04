@@ -3,9 +3,9 @@
 use std::fmt;
 
 /// Index of a qubit within a [`Circuit`].
-pub type Qubit = usize;
+pub type Qubit = u32;
 /// Index of a classical bit within a [`Circuit`].
-pub type CBit = usize;
+pub type CBit = u32;
 
 /// A single quantum (or classical `measure`/`reset`) operation.
 ///
@@ -274,7 +274,12 @@ pub fn qubits_of(gate: &Gate) -> Vec<Qubit> {
 /// Remap a gate's qubits through a lookup table: qubit i becomes its index in `qubits`.
 /// Classical bits are not remapped.
 pub fn remap_gate(gate: &Gate, qubits: &[Qubit]) -> Gate {
-    gate.map_qubits(|q| qubits.iter().position(|&x| x == q).unwrap())
+    gate.map_qubits(|q| {
+        qubits
+            .iter()
+            .position(|&x| x == q)
+            .expect("gate operand is in the remap table") as Qubit
+    })
 }
 
 /// Build a compact circuit with qubits remapped to 0..n.
@@ -312,7 +317,7 @@ mod tests {
         let n = 4;
         let mut c = Circuit::new(n);
         c.apply(Gate::h(0));
-        for i in 0..n - 1 {
+        for i in 0..n as Qubit - 1 {
             c.apply(Gate::cnot {
                 control: i,
                 target: i + 1,

@@ -107,6 +107,71 @@ pub fn table_cache_size_bytes(config: SuperOptTableConfig) -> Option<u64> {
     table::disk_cache_size_bytes(config)
 }
 
+/// One synthesis table cached on disk: where it lives and how big it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheEntry {
+    pub path: std::path::PathBuf,
+    pub bytes: u64,
+}
+
+/// Point tzap's on-disk caches at `dir` for the rest of the process,
+/// overriding `$TZAP_CACHE_DIR` and the XDG lookup. Returns `Err` with the
+/// root already in force if one was installed earlier: this must be called
+/// once, before any table is built or loaded, or a single run could read
+/// half its tables from one directory and half from another.
+pub fn set_cache_dir(dir: std::path::PathBuf) -> Result<(), std::path::PathBuf> {
+    table::set_cache_root(dir)
+}
+
+/// The cache root currently in force — `--cache-dir`, `$TZAP_CACHE_DIR`,
+/// `$XDG_CACHE_HOME/tzap`, `$HOME/.cache/tzap`, `%LOCALAPPDATA%\tzap`, or
+/// `%USERPROFILE%\.cache\tzap`, in that order. `None` when none of them
+/// resolve, in which case tzap simply doesn't cache to disk.
+pub fn cache_dir() -> Option<std::path::PathBuf> {
+    table::cache_root()
+}
+
+/// The synthesis tables currently cached on disk, oldest name first. An
+/// unreadable or absent cache directory reads as empty rather than as an
+/// error: a cache nobody can list is, for every purpose tzap has, a cache
+/// with nothing in it.
+pub fn cache_entries() -> Vec<CacheEntry> {
+    let Some(dir) = table::cache_dir() else {
+        return Vec::new();
+    };
+    let Ok(read_dir) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<CacheEntry> = read_dir
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "bin"))
+        .filter_map(|entry| {
+            let bytes = entry.metadata().ok().filter(|m| m.is_file())?.len();
+            Some(CacheEntry {
+                path: entry.path(),
+                bytes,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    entries
+}
+
+/// Delete every cached synthesis table, returning the entries removed.
+/// Only the table files themselves are touched — never the directory, and
+/// never anything else inside it — so a cache root shared with other tools
+/// (`$XDG_CACHE_HOME/tzap`, say) can't lose data that isn't tzap's to
+/// delete. The first failure stops the walk and is returned, with the
+/// entries removed up to that point discarded from the error path.
+pub fn clear_cache() -> std::io::Result<Vec<CacheEntry>> {
+    let mut removed = Vec::new();
+    for entry in cache_entries() {
+        std::fs::remove_file(&entry.path)?;
+        removed.push(entry);
+    }
+    Ok(removed)
+}
+
 /// Matrix and location information for one completed anchored window.
 #[derive(Clone, Debug)]
 pub struct SuperOptWindow {
@@ -422,7 +487,7 @@ impl SuperOpt {
                 // not unregistered when it dies, only marked dead, so the
                 // registrations to drop are exactly the ones whose recorded
                 // anchor order no longer matches their slot's tenant.
-                let live = &mut windows_by_qubit[qubit];
+                let live = &mut windows_by_qubit[qubit as usize];
                 let mut kept = 0;
                 for index in 0..live.len() {
                     let entry = live[index];
@@ -440,7 +505,7 @@ impl SuperOpt {
                     }
                 }
                 live.truncate(kept);
-                gates_by_qubit[qubit].push(gate_index);
+                gates_by_qubit[qubit as usize].push(gate_index);
             }
             // Registrations carry anchor order in their high bits, so this
             // sorts into the order greedy rewrite selection consumes without a
@@ -507,7 +572,7 @@ impl SuperOpt {
                     arena.retire(window_id);
                 } else {
                     for &qubit in &added_qubits {
-                        windows_by_qubit[qubit].push(entry);
+                        windows_by_qubit[qubit as usize].push(entry);
                     }
                 }
             }
@@ -540,7 +605,7 @@ impl SuperOpt {
                 if self.window_gates > 1 && !rewrites.is_claimed(gate_index) {
                     let entry = register(arena.slots[window_id as usize].seq, window_id);
                     for &qubit in &gate_qubits {
-                        windows_by_qubit[qubit].push(entry);
+                        windows_by_qubit[qubit as usize].push(entry);
                     }
                 } else {
                     arena.retire(window_id as usize);
@@ -658,14 +723,14 @@ fn validate_circuit(circuit: &Circuit) -> Result<Vec<usize>, SuperOptError> {
     let mut gates_per_qubit = vec![0usize; circuit.num_qubits];
     for (gate_index, gate) in circuit.gates.iter().enumerate() {
         for qubit in unique_qubits(gate) {
-            if qubit >= circuit.num_qubits {
+            if qubit as usize >= circuit.num_qubits {
                 return Err(SuperOptError::InvalidQubit {
                     gate_index,
                     qubit,
                     num_qubits: circuit.num_qubits,
                 });
             }
-            gates_per_qubit[qubit] += 1;
+            gates_per_qubit[qubit as usize] += 1;
         }
     }
     Ok(gates_per_qubit)
@@ -727,7 +792,7 @@ fn expand_component_closure(
     }
 
     while let Some(qubit) = pending.pop() {
-        let history = &gates_by_qubit[qubit];
+        let history = &gates_by_qubit[qubit as usize];
         let start = history.partition_point(|&gate_index| gate_index < anchor);
         for &gate_index in &history[start..] {
             if gate_index > current_gate {
@@ -854,7 +919,7 @@ impl RewriteSet {
 
         let replacement: Vec<_> = local
             .iter()
-            .map(|gate| gate.map_qubits(|q| qubits[q]))
+            .map(|gate| gate.map_qubits(|q| qubits[q as usize]))
             .collect();
         for &index in gate_indices {
             self.claimed[index] = true;
