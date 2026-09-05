@@ -2,7 +2,7 @@
 
 `tzap-lean` is a Lean 4 port of [tzap](https://github.com/qqq-wisc/tzap), the Rust quantum-circuit optimizer. It formalizes the circuit representation and channel semantics, then implements optimizer passes together with proofs that they preserve those semantics.
 
-Every executable optimizer pass is a `Pass`. Its certified action takes an indexed `Circuit.Checked n m`, which fixes the register sizes and carries the operand-distinctness invariant needed by the proofs. The verified executable core composes the selected passes and fixpoint loop; `runConfigured_correct` proves its result equivalent to its input. Checked serialization reparses generated OpenQASM before it is written, and `runConfigured_checkedOutput_correct` connects accepted input, optimization, and successful output emission.
+Every executable optimizer pass is a `Pass`. Its `run` function takes an indexed `Circuit.Checked n m`, which fixes the register sizes and carries the operand-distinctness invariant needed by the proofs. The verified executable core composes the selected passes and fixpoint loop; `runConfigured_correct` proves its result equivalent to its input. Checked serialization reparses generated OpenQASM before it is written, and `runConfigured_checkedOutput_correct` connects accepted input, optimization, and successful output emission.
 
 ```sh
 lake exe cache get
@@ -14,12 +14,9 @@ lake build
 ```lean
 structure Pass where
   name : String
-  run : Circuit → Circuit
-  certified : ∀ {n m}, Circuit.Checked n m → Circuit.Checked n m
-  certified_run : ∀ {n m} (c : Circuit.Checked n m),
-    (certified c).raw = run c.raw
+  run : ∀ {n m}, Circuit.Checked n m → Circuit.Checked n m
   correct : ∀ {n m} (c : Circuit.Checked n m),
-    Equivalent n m (certified c).raw.gates c.raw.gates
+    Equivalent n m (run c).raw.gates c.raw.gates
 ```
 
 `Pass.comp` and `Pass.runAll` compose that obligation, so any pipeline of passes is correct by construction (`Pass.correct_runAll`).

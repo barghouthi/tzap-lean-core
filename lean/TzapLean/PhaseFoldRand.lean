@@ -380,10 +380,8 @@ def phaseFoldExact (c : Circuit) : Circuit :=
 `Pass`: every output is correct. -/
 def PhaseFoldExact : Pass where
   name := "Phase folding"
-  run := phaseFoldExact
-  certified := fun c => ⟨phaseFoldExact c.raw, c.numQubits_eq, c.numCbits_eq,
+  run := fun c => ⟨phaseFoldExact c.raw, c.numQubits_eq, c.numCbits_eq,
     phaseFoldGates_wf _ c.wf⟩
-  certified_run := by intro n m c; rfl
   correct := by
     intro n m c
     rcases c with ⟨c, rfl, rfl, hc⟩

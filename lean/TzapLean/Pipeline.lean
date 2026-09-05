@@ -11,8 +11,8 @@ enter at `error = 0` with a one-point seed; phase folding is the one that consum
 This file is only that embedding, plus what it costs (nothing).
 
 The pipeline itself — which passes, in which order, repeated how often — is *not* here. It is
-`passOf` / `tzapRound` / `tzapRun` in `TzapLean/Optimize.lean`, sitting next to `stepOf` and
-`runToFixpoint`, the driver code that runs it. Keeping the two adjacent is deliberate: a
+`passOf` / `tzapRound` / `tzapRun` in `TzapLean/Optimize.lean`, sitting next to `verifiedStep`
+and `runToFixpoint`, the driver code that runs it. Keeping the two adjacent is deliberate: a
 pipeline modelled in one file and executed in another is a pipeline that drifts.
 -/
 
@@ -48,12 +48,12 @@ def deterministicRand (name : String) (f : Circuit → Circuit)
     rw [this]; simp
 
 /-- `CancelGates` as a zero-error randomized pass. -/
-def CancelGatesR : RandPass := deterministicRand "Gate cancellation" CancelGates.run
+def CancelGatesR : RandPass := deterministicRand "Gate cancellation" cancelGatesCircuit
   (by intro; rfl) (by intro; rfl) (fun _ => cancelGates_wf) (fun _ _ => cancelGates_inRange)
   (fun c _ => Circuit.flagsOk_withGates _ _) (fun c => cancelGates_correct c.gates)
 
 /-- `CnotMin` as a zero-error randomized pass. -/
-def CnotMinR : RandPass := deterministicRand "CNOT minimization" CnotMin.run
+def CnotMinR : RandPass := deterministicRand "CNOT minimization" cnotMinCircuit
   (by intro; rfl) (by intro; rfl)
   (fun c => cnotMinGates_wf _ _ c.gates) (fun c _ => cnotMinGates_inRange _ _ c.gates)
   (fun c _ => Circuit.flagsOk_withGates _ _) (fun c => cnotMinGates_correct _ _ c.gates)
@@ -73,10 +73,10 @@ def SuperOptR (cfg : SuperOptConfig) (tbl : SynthTable) : RandPass :=
     (SuperOptR cfg tbl).error c = 0 := rfl
 
 @[simp] theorem CancelGatesR_run (c : Circuit) (s : CancelGatesR.Seed c) :
-    CancelGatesR.run c s = CancelGates.run c := rfl
+    CancelGatesR.run c s = cancelGatesCircuit c := rfl
 
 @[simp] theorem CnotMinR_run (c : Circuit) (s : CnotMinR.Seed c) :
-    CnotMinR.run c s = CnotMin.run c := rfl
+    CnotMinR.run c s = cnotMinCircuit c := rfl
 
 @[simp] theorem SuperOptR_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit)
     (s : (SuperOptR cfg tbl).Seed c) : (SuperOptR cfg tbl).run c s = superOpt cfg tbl c := rfl
