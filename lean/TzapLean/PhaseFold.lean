@@ -301,17 +301,16 @@ boundary. The correctness theorem relates that stream to the theory's `Draws k` 
 `wordToBits`, which is why nothing in the inner loop ever touches an `F₂` function: the pass
 XORs machine words, and only the statement of the theorem talks about bits.
 
-The runtime draws a `Sample (varBound c) k` — an element of the very space
+The optional randomized runner draws a `Sample (varBound c) k` — an element of the very space
 `PhaseFoldRand.correct` bounds a measure over — and hands `phaseFold` the words it stands
 for. `PhaseFoldRand_run` records that `phaseFold k (wordsOf k (padSample s)) c` *is*
-`(PhaseFoldRand k).run c s`, so the optimizer runs the modelled experiment and not a
-lookalike. What no proof can supply is that `IO.rand` is uniform; that is the whole of the
-trusted base on the randomness side, and drawing a bit at a time is what keeps it to that.
+`(PhaseFoldRand k).run c s`. The main executable uses the collision-free seed from
+`PhaseFoldRand.lean`; this helper remains available for explicitly probabilistic callers.
 -/
 
 /-- The number of variables a circuit's analysis can allocate: one per wire, plus one per
 allocating gate (`h`, `ccx`, `reset`). Counting only those rather than every gate is worth the
-slightly longer proof in `bounded_visited`: it is the size of the sample the runtime draws,
+slightly longer proof in `bounded_visited`: it is the size of either seed representation,
 and on a typical circuit it is four or five times smaller. -/
 def varBound (c : Circuit) : Nat := c.numQubits + c.gates.countP Gate.allocates
 
@@ -329,14 +328,13 @@ def wordsOf (k : Nat) (draws : Draws k) : Nat → Tag := fun i => bitsToWord (dr
     wordToBits (k := k) (wordsOf k draws i) = draws i := by
   simp [wordsOf]
 
-/-- Draw one uniform `k`-bit tag per variable from the runtime's generator, as an element of
+/-- Draw one pseudorandom `k`-bit tag per variable from the runtime's generator, as an element of
 the finite space the failure bound is a measure over.
 
-A bit at a time, from the low bit of one generator step. `StdGen`'s range has even width, so
-that bit is uniform as soon as the generator is — whereas asking `randNat` for a whole `k`-bit
-word reduces a value that is *not* a multiple of `2^k` wide modulo `2^k`, and is not. Called
-directly rather than through `IO.rand` so the generator is checked out once instead of taken
-and put back for each of a few hundred thousand bits.
+A bit at a time, from the low bit of one generator step. This function makes no claim that the
+finite-state generator realizes the independent uniform PMF used by `PhaseFoldRand`; that is
+why it is not used by the verified CLI. Called directly rather than through `IO.rand` so the
+generator is checked out once instead of taken and put back for each bit.
 
 Rows are packed into `Nat`s and unpacked by `testBit`, so a drawn sample costs one machine
 word per variable rather than an array of `k` field elements. -/
@@ -353,7 +351,7 @@ def randomSample (m k : Nat) : IO (Sample m k) := do
   IO.stdGenRef.set gen
   return fun i j => bit ((rows[i.val]!).testBit j.val)
 
-/-- Phase folding with freshly drawn tags: the pass as the optimizer runs it.
+/-- Phase folding with freshly drawn tags: an optional probabilistic runner.
 
 Fresh *per call*, which is what makes the round loop's union bound apply. A single stream
 reused across rounds would be adaptive — round two's circuit depends on round one's draws —

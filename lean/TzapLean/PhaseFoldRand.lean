@@ -13,11 +13,9 @@ Pr_{s ← uniform} [ ⟦phaseFold s c⟧ ≠ ⟦c⟧ ]  ≤  C(L, 2) · 2⁻ᵏ
 ```
 
 where `L` is the number of parities (and complements) this circuit makes the pass compare.
-The seed is one uniform `k`-bit tag per variable — `Sample (varBound c) k` — drawn afresh on
-every call, which is exactly what `phaseFoldIO` does at runtime and what
-`phaseFoldIO_run` below records. Afresh matters: the driver runs the pipeline in rounds, and
-the union bound over rounds needs each round's tags to be a new draw, not a new slice of one
-stream chosen before the circuit those rounds see existed.
+The seed is one ideal uniform `k`-bit tag per variable — `Sample (varBound c) k`.
+`phaseFoldIO_run` records the pure correspondence for callers that choose this probabilistic
+variant. The CLI uses the collision-free `PhaseFoldExact` defined below instead.
 -/
 
 namespace TzapLean
@@ -308,6 +306,89 @@ theorem faithful_of_not_collides {m k : Nat} {ps : List Form} {sample : Sample m
   by_contra hne
   exact h ⟨p, hp, q, hq, hne, hpq⟩
 
+/-! ## A collision-free executable seed
+
+The probabilistic development above remains useful for analysing fixed-width hashing, but the
+executable uses this seed.  It gives variable `i` the `i`-th basis vector in `m + 1` bits; the
+last bit separates the affine constant.  Consequently hashing is injective on forms bounded by
+`m`, with no assumption about a runtime random-number generator. -/
+
+/-- Collision-free draws for affine forms over variables below `m`. -/
+def exactDraws (m : Nat) : Draws (m + 1) :=
+  fun i j => if j.val = i then 1 else 0
+
+theorem hash_exactDraws_last (m : Nat) (p : Form) (hp : Form.Bounded m p) :
+    hash (exactDraws m) p ⟨m, Nat.lt_succ_self m⟩ = p.constant := by
+  unfold hash Form.eval
+  have hz : p.coefficients.sum
+      (fun i coefficient => coefficient * exactDraws m i ⟨m, Nat.lt_succ_self m⟩) = 0 := by
+    calc
+      _ = p.coefficients.sum (fun _ (_ : F₂) => (0 : F₂)) := Finsupp.sum_congr fun i hi => by
+        have hil := hp i hi
+        simp [exactDraws]
+        omega
+      _ = 0 := by simp
+  rw [hz, add_zero]
+
+theorem hash_exactDraws_coord {m : Nat} (p : Form) {i : Nat} (hi : i < m) :
+    hash (exactDraws m) p ⟨i, Nat.lt_succ_of_lt hi⟩ = p.constant + p.coefficients i := by
+  unfold hash Form.eval
+  congr 1
+  rw [Finsupp.sum_eq_single i]
+  · simp [exactDraws]
+  · intro b _ hbi
+    simp [exactDraws, Ne.symm hbi]
+  · simp [exactDraws]
+
+theorem exactDraws_injective {m : Nat} {p q : Form} (hp : Form.Bounded m p)
+    (hq : Form.Bounded m q) (h : hash (exactDraws m) p = hash (exactDraws m) q) : p = q := by
+  apply Form.ext
+  · simpa [hash_exactDraws_last m p hp, hash_exactDraws_last m q hq] using
+      congrFun h ⟨m, Nat.lt_succ_self m⟩
+  · apply Finsupp.ext
+    intro i
+    by_cases hi : i < m
+    · have hc : p.constant = q.constant := by
+        simpa [hash_exactDraws_last m p hp, hash_exactDraws_last m q hq] using
+          congrFun h ⟨m, Nat.lt_succ_self m⟩
+      have hcoord := congrFun h ⟨i, Nat.lt_succ_of_lt hi⟩
+      rw [hash_exactDraws_coord p hi, hash_exactDraws_coord q hi, hc] at hcoord
+      exact add_left_cancel hcoord
+    · have hp0 : p.coefficients i = 0 := by
+        by_contra hn
+        exact hi (hp i (Finsupp.mem_support_iff.mpr hn))
+      have hq0 : q.coefficients i = 0 := by
+        by_contra hn
+        exact hi (hq i (Finsupp.mem_support_iff.mpr hn))
+      rw [hp0, hq0]
+
+theorem exactDraws_faithful (c : Circuit) :
+    Faithful (exactDraws (varBound c)) (relevantForms c) := by
+  intro p hp q hq heq
+  exact exactDraws_injective (bounded_relevantForms c p hp) (bounded_relevantForms c q hq) heq
+
+@[simp] theorem wordToBits_pow (m i : Nat) :
+    wordToBits (k := m + 1) (2 ^ i) = exactDraws m i := by
+  funext j
+  simp [wordToBits, exactDraws, bit, Nat.testBit_two_pow, eq_comm]
+
+/-- The executable collision-free phase folder. -/
+def phaseFoldExact (c : Circuit) : Circuit :=
+  phaseFold (varBound c + 1) (fun i => 2 ^ i) c
+
+/-- Phase folding with a collision-free seed.  Unlike `PhaseFoldRand`, this is a deterministic
+`Pass`: every output is correct. -/
+def PhaseFoldExact : Pass where
+  name := "Phase folding"
+  run := phaseFoldExact
+  numQubits_run _ := rfl
+  numCbits_run _ := rfl
+  wf_run c hc := phaseFoldGates_wf _ hc
+  wellFormed_run c _ hc := phaseFoldGates_inRange _ hc
+  flagsOk_run c _ := Circuit.flagsOk_withGates _ _
+  correct c hc := phaseFoldGates_correct (wordToBits_pow (varBound c))
+    c.gates hc (exactDraws_faithful c)
+
 /-! ## The pass -/
 
 noncomputable section
@@ -337,7 +418,7 @@ def PhaseFoldRand (k : Nat) : RandPass where
 @[simp] theorem PhaseFoldRand_run (k : Nat) (c : Circuit) (s : (PhaseFoldRand k).Seed c) :
     (PhaseFoldRand k).run c s = phaseFold k (wordsOf k (liftSample s)) c := rfl
 
-/-- **What `phaseFoldIO` computes is what the bound is about.** The runtime draws an element
+/-- **What `phaseFoldIO` computes is what the bound is about.** This optional runner draws an element
 of `Sample (varBound c) k` — the space `correct` above takes a measure over — and applies the
 pass at it; this says the two are the same function, by definition and not by resemblance.
 The one thing left unproved is that the draw is uniform, which is a fact about `IO.rand` and

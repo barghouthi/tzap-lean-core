@@ -401,6 +401,33 @@ def serialize (c : Circuit) : String :=
       (if c.numCbits > 0 then s!"creg c[{c.numCbits}];\n" else "")
   c.gates.foldl (fun acc g => acc ++ gateLine g ++ "\n") header
 
+/-- Serialize only when the parser confirms that the emitted text reconstructs the same
+circuit.  This executable check makes the output boundary fail closed, including for syntax
+such as `rz` that this build can print but intentionally cannot parse. -/
+def serializeChecked (c : Circuit) : Except String String :=
+  let source := serialize c
+  match parse source with
+  | .error e => .error s!"internal QASM serialization check failed: {e}"
+  | .ok c' =>
+      if c' = c.withGates c.gates then .ok source
+      else .error "internal QASM serialization check failed: round trip changed the circuit"
+
+/-- A successful checked serialization parses to exactly the circuit supplied, modulo the
+intentional rebuilding of cached flags. -/
+theorem serializeChecked_sound {c : Circuit} {source : String}
+    (h : serializeChecked c = .ok source) :
+    source = serialize c ∧ parse source = .ok (c.withGates c.gates) := by
+  cases hp : parse (serialize c) with
+  | error e => simp [serializeChecked, hp] at h
+  | ok c' =>
+      by_cases heq : c' = c.withGates c.gates
+      · have hs : source = serialize c := by
+          have : serialize c = source := by simpa [serializeChecked, hp, heq] using h
+          exact this.symm
+        subst source
+        exact ⟨rfl, by simpa [heq] using hp⟩
+      · simp [serializeChecked, hp, heq] at h
+
 end Qasm
 
 end TzapLean

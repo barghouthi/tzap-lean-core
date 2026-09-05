@@ -203,7 +203,7 @@ structure Circuit where
   hasToffoli : Bool := false
   hasCcz : Bool := false
   hasMeasurement : Bool := false
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, DecidableEq
 
 namespace Circuit
 

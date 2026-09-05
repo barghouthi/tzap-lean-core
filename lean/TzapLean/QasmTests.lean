@@ -115,8 +115,8 @@ def parseAccepts (src : String) : Bool := (parse src).toOption.isSome
 #guard (PassName.parse "DecomposeRz").isNone
 #guard (PassName.parse "nonsense").isNone
 #guard PassName.all.length == 4
--- Only `PhaseFoldRand` carries a probabilistic bound rather than an unconditional proof.
-#guard (PassName.all.filter (fun p => !p.2.1.verified)).map (·.1) == ["PhaseFoldRand"]
+-- Every executable pass carries an unconditional proof.
+#guard (PassName.all.filter (fun p => !p.2.1.verified)).map (·.1) == []
 -- `O1` is the only level that skips the table.
 #guard !Level.O1.usesSuperOpt
 #guard Level.O2.usesSuperOpt && Level.O3.usesSuperOpt && !Level.O1.usesSuperOpt
@@ -126,6 +126,17 @@ def parseAccepts (src : String) : Bool := (parse src).toOption.isSome
 -- `CnotMin` leads the superoptimizing sweep.
 #guard Level.O3.pipeline.head? == some PassName.CnotMin
 #guard Level.O1.pipeline == [PassName.CancelGates, PassName.PhaseFoldRand]
+
+/-! ## Checked serialization -/
+
+#guard (match Qasm.serializeChecked (Circuit.ofGates 2 0 [.h 0, .cnot 0 1, .t 1]) with
+  | .ok _ => true
+  | .error _ => false)
+
+-- This build deliberately cannot parse `rz`, so the checked writer fails closed.
+#guard (match Qasm.serializeChecked (Circuit.ofGates 1 0 [.rz (1/3) 0]) with
+  | .ok _ => false
+  | .error _ => true)
 
 /-! ## Metrics and formatting -/
 

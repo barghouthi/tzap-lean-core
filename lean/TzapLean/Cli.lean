@@ -12,7 +12,7 @@ What is absent, and says so when asked for: `--parallel` (deliberately not porte
 report those as unknown flags — which would read as a typo — each gets an error saying it is
 not in this build.
 
-`--seed` is new: `PhaseFoldRand` is randomized, so a run is only reproducible if its tags are.
+`--seed` is accepted for command-line compatibility; exact phase folding no longer consumes it.
 -/
 
 namespace TzapLean
@@ -83,10 +83,8 @@ def printHelp : IO Unit := do
   IO.println "  \x1b[1;33mUSAGE\x1b[0m"
   IO.println "    tzap-lean <input.qasm> [output.qasm] [options]"
   IO.println ""
-  IO.println "  Every rewrite this optimizer makes is machine-checked: three of its four"
-  IO.println "  passes carry an unconditional proof that the output denotes the same channel"
-  IO.println "  as the input, and the fourth (PhaseFoldRand) carries a proved bound on how"
-  IO.println "  often its randomness can mislead it."
+  IO.println "  Every executable pass carries an unconditional machine-checked proof"
+  IO.println "  that its output denotes the same channel as its input."
   IO.println ""
   IO.println "  \x1b[1;33mARGS\x1b[0m"
   IO.println "    \x1b[1m<input.qasm>\x1b[0m     Input OpenQASM 2.0 file"
@@ -97,8 +95,8 @@ def printHelp : IO Unit := do
   IO.println "    \x1b[1m--passes\x1b[0m <list>  Run these passes in order, overriding the default pipeline"
   IO.println "                     (see PASSES)"
   IO.println "    \x1b[1m--fixpoint\x1b[0m       Repeat the pipeline until gate count stops decreasing"
-  IO.println "    \x1b[1m--seed\x1b[0m <n>       Seed PhaseFoldRand's tags (default: drawn from the OS)"
-  IO.println "    \x1b[1m--verbose\x1b[0m        Report every pass of every round, not just the result"
+  IO.println "    \x1b[1m--seed\x1b[0m <n>       Accepted for compatibility (exact tags need no seed)"
+  IO.println "    \x1b[1m--verbose\x1b[0m        Report detailed input and table-loading information"
   IO.println "    \x1b[1m-O1\x1b[0m              Fastest: phase folding + gate cancellation only"
   IO.println "    \x1b[1m-O2\x1b[0m              Adds a superoptimization pass to O1 (2 rounds)"
   IO.println "    \x1b[1m-O3\x1b[0m              Runs -O2 to a fixpoint (default)"
@@ -111,8 +109,7 @@ def printHelp : IO Unit := do
     let mark := if p.verified then "proved  " else "bounded "
     IO.println s!"    \x1b[1m{name}\x1b[0m{String.ofList (List.replicate (16 - name.length) ' ')}\x1b[2m{mark}\x1b[0m {desc}"
   IO.println ""
-  IO.println "  \x1b[2mproved  = output proved equivalent to input, unconditionally\x1b[0m"
-  IO.println "  \x1b[2mbounded = randomized; failure probability proved at most C(t,2)·2⁻ᵏ\x1b[0m"
+  IO.println "  \x1b[2mproved = output proved equivalent to input, unconditionally\x1b[0m"
   IO.println ""
 
 /-- Parse the command line. -/
@@ -237,7 +234,10 @@ def main (argv : List String) : IO UInt32 := do
   | none => pure ()
   | some p => do
       try
-        IO.FS.writeFile p (Qasm.serialize result)
+        let source ← match Qasm.serializeChecked result with
+          | .ok source => pure source
+          | .error e => throw (IO.userError e)
+        IO.FS.writeFile p source
         IO.eprintln s!"  wrote {p}"
       catch e => do
         IO.eprintln s!"Error writing {p}: {e}"
