@@ -22,16 +22,49 @@ open scoped ENNReal
 
 noncomputable section
 
+/-- Embed a concrete deterministic transformation in the legacy randomized theory.  This is
+kept separate from `Pass`: the executable `Pass` interface is indexed by `Circuit.Checked`. -/
+def deterministicRand (name : String) (f : Circuit → Circuit)
+    (hn : ∀ c, (f c).numQubits = c.numQubits)
+    (hm : ∀ c, (f c).numCbits = c.numCbits)
+    (hwf : ∀ c, c.Wf → (f c).Wf)
+    (hform : ∀ c, c.Wf → c.WellFormed → (f c).WellFormed)
+    (hflags : ∀ c, c.FlagsOk → (f c).FlagsOk)
+    (hcorrect : ∀ c, c.Wf → Equivalent c.numQubits c.numCbits (f c).gates c.gates) : RandPass where
+  name := name
+  Seed := fun _ => Unit
+  dist := fun _ => PMF.pure ()
+  run := fun c _ => f c
+  error := fun _ => 0
+  numQubits_run c _ := hn c
+  numCbits_run c _ := hm c
+  wf_run c _ := hwf c
+  wellFormed_run c _ := hform c
+  flagsOk_run c _ := hflags c
+  correct c hc := by
+    have : {s : Unit | ¬ Equivalent c.numQubits c.numCbits (f c).gates c.gates} = ∅ := by
+      ext s; simp only [Set.mem_ofPred_eq, Set.mem_empty_iff_false, iff_false, not_not]
+      exact hcorrect c hc
+    rw [this]; simp
+
 /-- `CancelGates` as a zero-error randomized pass. -/
-def CancelGatesR : RandPass := Pass.toRand CancelGates
+def CancelGatesR : RandPass := deterministicRand "Gate cancellation" CancelGates.run
+  (by intro; rfl) (by intro; rfl) (fun _ => cancelGates_wf) (fun _ _ => cancelGates_inRange)
+  (fun c _ => Circuit.flagsOk_withGates _ _) (fun c => cancelGates_correct c.gates)
 
 /-- `CnotMin` as a zero-error randomized pass. -/
-def CnotMinR : RandPass := Pass.toRand CnotMin
+def CnotMinR : RandPass := deterministicRand "CNOT minimization" CnotMin.run
+  (by intro; rfl) (by intro; rfl)
+  (fun c => cnotMinGates_wf _ _ c.gates) (fun c _ => cnotMinGates_inRange _ _ c.gates)
+  (fun c _ => Circuit.flagsOk_withGates _ _) (fun c => cnotMinGates_correct _ _ c.gates)
 
 /-- `SuperOpt` as a zero-error randomized pass: it verifies each rewrite by exact matrix
 comparison, so despite the search inside it there is nothing probabilistic about it. -/
 def SuperOptR (cfg : SuperOptConfig) (tbl : SynthTable) : RandPass :=
-  Pass.toRand (SuperOpt cfg tbl)
+  deterministicRand "Superoptimization" (superOpt cfg tbl)
+    (by intro; rfl) (by intro; rfl)
+    (fun c => superOptGates_wf cfg tbl c.gates) (fun c _ => superOptGates_inRange cfg tbl c.gates)
+    (fun c _ => Circuit.flagsOk_withGates _ _) (fun c _ => superOptGates_correct cfg tbl c.gates)
 
 @[simp] theorem CancelGatesR_error (c : Circuit) : CancelGatesR.error c = 0 := rfl
 @[simp] theorem CnotMinR_error (c : Circuit) : CnotMinR.error c = 0 := rfl
@@ -47,16 +80,6 @@ def SuperOptR (cfg : SuperOptConfig) (tbl : SynthTable) : RandPass :=
 
 @[simp] theorem SuperOptR_run (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit)
     (s : (SuperOptR cfg tbl).Seed c) : (SuperOptR cfg tbl).run c s = superOpt cfg tbl c := rfl
-
-/-- **Nothing is given up by moving to the randomized setting.** A pipeline built only from
-`Pass`es carries error `0`, and `correct_of_error_eq_zero` turns that back into the
-unconditional statement `Pass.correct_runAll` already made. -/
-theorem pipeline_toRand_correct (ps : List Pass) (c : Circuit) (hc : c.Wf)
-    {s : (RandPass.pipeline (ps.map Pass.toRand)).Seed c}
-    (hs : s ∈ ((RandPass.pipeline (ps.map Pass.toRand)).dist c).support) :
-    Equivalent c.numQubits c.numCbits
-      ((RandPass.pipeline (ps.map Pass.toRand)).run c s).gates c.gates :=
-  RandPass.correct_of_error_eq_zero _ c hc (RandPass.pipeline_error_eq_zero ps c) hs
 
 /-- Phase folding's bound, in closed form, for reference from the pipeline: `t` compared
 parities collide with probability at most `C(t,2)·2⁻ᵏ`, so doubling the tag width squares the

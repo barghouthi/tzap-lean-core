@@ -222,7 +222,7 @@ unconditional `Pass` guarantee. -/
 
 theorem passOf_error_eq_zero {nm : PassName} (h : nm ≠ .PhaseFoldRand) (cfg : SuperOptConfig)
     (tbl : SynthTable) (c : Circuit) : (passOf cfg tbl nm).error c = 0 := by
-  cases nm <;> simp_all [passOf, CancelGatesR, CnotMinR, SuperOptR]
+  cases nm <;> simp_all [passOf, CancelGatesR, CnotMinR, SuperOptR, deterministicRand]
 
 theorem tzapRound_error_eq_zero {names : List PassName} (h : PassName.PhaseFoldRand ∉ names)
     (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) :
@@ -313,13 +313,45 @@ theorem stepOf_eq_verifiedStep (cfg : SuperOptConfig) (tbl : SynthTable) (nm : P
 theorem stepOf_correct (cfg : SuperOptConfig) (tbl : SynthTable) (nm : PassName)
     (c : Circuit) (hc : c.Wf) :
     Equivalent c.numQubits c.numCbits ((stepOf cfg tbl nm).run c).gates c.gates := by
-  rw [stepOf_eq_verifiedStep]
-  exact (verifiedStep cfg tbl nm).correct c hc
+  let checked := Circuit.Checked.of c hc
+  let out := (verifiedStep cfg tbl nm).certified checked
+  have hrun : out.raw = (stepOf cfg tbl nm).run c := by
+    rw [stepOf_eq_verifiedStep]
+    exact (verifiedStep cfg tbl nm).certified_run checked
+  have h := (verifiedStep cfg tbl nm).correct checked
+  change Equivalent c.numQubits c.numCbits out.raw.gates checked.raw.gates at h
+  simpa [checked, Circuit.Checked.of, ← hrun] using h
 
 theorem stepOf_wf (cfg : SuperOptConfig) (tbl : SynthTable) (nm : PassName)
     (c : Circuit) (hc : c.Wf) : ((stepOf cfg tbl nm).run c).Wf := by
-  rw [stepOf_eq_verifiedStep]
-  exact (verifiedStep cfg tbl nm).wf_run c hc
+  let checked := Circuit.Checked.of c hc
+  let out := (verifiedStep cfg tbl nm).certified checked
+  have hrun : out.raw = (stepOf cfg tbl nm).run c := by
+    rw [stepOf_eq_verifiedStep]
+    exact (verifiedStep cfg tbl nm).certified_run checked
+  simpa [← hrun] using out.wf
+
+theorem stepOf_numQubits (cfg : SuperOptConfig) (tbl : SynthTable) (nm : PassName)
+    (c : Circuit) (hc : c.Wf) : ((stepOf cfg tbl nm).run c).numQubits = c.numQubits := by
+  let checked := Circuit.Checked.of c hc
+  let out := (verifiedStep cfg tbl nm).certified checked
+  have hrun : out.raw = (stepOf cfg tbl nm).run c := by
+    rw [stepOf_eq_verifiedStep]
+    exact (verifiedStep cfg tbl nm).certified_run checked
+  calc
+    ((stepOf cfg tbl nm).run c).numQubits = out.raw.numQubits := congrArg Circuit.numQubits hrun.symm
+    _ = c.numQubits := out.numQubits_eq
+
+theorem stepOf_numCbits (cfg : SuperOptConfig) (tbl : SynthTable) (nm : PassName)
+    (c : Circuit) (hc : c.Wf) : ((stepOf cfg tbl nm).run c).numCbits = c.numCbits := by
+  let checked := Circuit.Checked.of c hc
+  let out := (verifiedStep cfg tbl nm).certified checked
+  have hrun : out.raw = (stepOf cfg tbl nm).run c := by
+    rw [stepOf_eq_verifiedStep]
+    exact (verifiedStep cfg tbl nm).certified_run checked
+  calc
+    ((stepOf cfg tbl nm).run c).numCbits = out.raw.numCbits := congrArg Circuit.numCbits hrun.symm
+    _ = c.numCbits := out.numCbits_eq
 
 /-- How many fixpoint rounds a level allows: `O2` is the cheap bounded tier, the rest run out
 fully. -/
@@ -379,9 +411,8 @@ theorem runPipeline_correct (cfg : SuperOptConfig) (tbl : SynthTable) (names : L
       have hstep := stepOf_correct cfg tbl nm c hc
       have hwf := stepOf_wf cfg tbl nm c hc
       have htail := ih c' hwf
-      have hnq := (verifiedStep cfg tbl nm).numQubits_run c
-      have hnc := (verifiedStep cfg tbl nm).numCbits_run c
-      rw [← stepOf_eq_verifiedStep] at hnq hnc
+      have hnq := stepOf_numQubits cfg tbl nm c hc
+      have hnc := stepOf_numCbits cfg tbl nm c hc
       rw [hnq, hnc] at htail
       exact Equivalent.trans htail hstep
 
