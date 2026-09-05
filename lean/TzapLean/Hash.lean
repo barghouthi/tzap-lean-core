@@ -24,9 +24,8 @@ two different parities hash the same.
   by writing collision as membership in one fiber of a surjective 𝔽₂-linear map.
 * `collides_probability_le` — the union bound over the parities a run compares.
 
-This module is a port of `Affine.lean`, `Collision.lean` and `FiniteProbability.lean` from
-the `formalization/` development, restated directly on `Form` (that development also carried
-a syntactic parity-expression type, which the analysis here does not need).
+This module combines the affine-form, collision, and finite-probability developments directly
+on `Form`; the analysis does not need a separate syntactic parity-expression type.
 -/
 
 namespace TzapLean
