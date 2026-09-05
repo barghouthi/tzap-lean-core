@@ -342,7 +342,7 @@ def runToFixpoint (passes : List Pass) : Nat → Circuit.Checked n m → Circuit
       if out.raw.gates.length < c.raw.gates.length then runToFixpoint passes fuel out else out
 
 theorem runToFixpoint_correct (passes : List Pass) : ∀ fuel (c : Circuit.Checked n m),
-    Equivalent n m (runToFixpoint passes fuel c).raw.gates c.raw.gates := by
+    (runToFixpoint passes fuel c).Equivalent c := by
   intro fuel
   induction fuel with
   | zero => intro c; exact Equivalent.refl _ _ _
@@ -383,7 +383,7 @@ def runConfigured (cfg : SuperOptConfig) (tbl : SynthTable) (c : Circuit) (o : O
 /-- Correctness of the checked optimization core. -/
 theorem runConfiguredChecked_correct (cfg : SuperOptConfig) (tbl : SynthTable)
     (c : Circuit.Checked n m) (o : Options) :
-    Equivalent n m (runConfiguredChecked cfg tbl c o).raw.gates c.raw.gates := by
+    (runConfiguredChecked cfg tbl c o).Equivalent c := by
   unfold runConfiguredChecked
   split <;> split
   · exact runToFixpoint_correct _ _ _

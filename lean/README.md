@@ -16,7 +16,7 @@ structure Pass where
   name : String
   run : ∀ {n m}, Circuit.Checked n m → Circuit.Checked n m
   correct : ∀ {n m} (c : Circuit.Checked n m),
-    Equivalent n m (run c).raw.gates c.raw.gates
+    (run c).Equivalent c
 ```
 
 `Pass.comp` and `Pass.runAll` compose that obligation, so any pipeline of passes is correct by construction (`Pass.correct_runAll`).

@@ -30,7 +30,7 @@ structure Pass where
   run : ∀ {n m}, Circuit.Checked n m → Circuit.Checked n m
   /-- **The correctness obligation**: the output denotes the same channel as the input. -/
   correct : ∀ {n m} (c : Circuit.Checked n m),
-    Equivalent n m (run c).raw.gates c.raw.gates
+    (run c).Equivalent c
 
 namespace Pass
 
@@ -47,7 +47,7 @@ def runAll : List Pass → Circuit.Checked n m → Circuit.Checked n m
 
 /-- **Composed correctness**: any pipeline of passes preserves the semantics. -/
 theorem correct_runAll (ps : List Pass) (c : Circuit.Checked n m) :
-    Equivalent n m (runAll ps c).raw.gates c.raw.gates := by
+    (runAll ps c).Equivalent c := by
   induction ps generalizing c with
   | nil => exact Equivalent.refl _ _ _
   | cons p ps ih =>

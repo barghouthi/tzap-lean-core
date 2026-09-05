@@ -89,8 +89,8 @@ def cbitsOf : Gate → List CBit
 
 `cnot q q` is not a gate QASM can express and the Rust implementation never builds one;
 semantically it would be the map `b ↦ b[q := 0]`, which is idempotent rather than
-self-inverse, so cancelling a pair of them would be unsound. It is the precondition of
-`Pass.correct`, and `Qasm.validate` is what establishes it. -/
+self-inverse, so cancelling a pair of them would be unsound. It is carried by
+`Circuit.Checked`, and `Qasm.validate` is what establishes it. -/
 def Wf : Gate → Prop
   | .cnot c tgt | .cz c tgt => c ≠ tgt
   | .ccx c₁ c₂ tgt | .ccz c₁ c₂ tgt => c₁ ≠ c₂ ∧ c₁ ≠ tgt ∧ c₂ ≠ tgt
