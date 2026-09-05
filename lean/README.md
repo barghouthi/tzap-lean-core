@@ -33,8 +33,6 @@ The final two structural fields ensure that output remains serializable: `WellFo
 
 | Component | Role in the trust boundary | Consequence if wrong |
 |---|---|---|
-| Lean kernel and its standard axioms (`propext`, `Classical.choice`, `Quot.sound`) | Checks the formal proofs. | The proof guarantees themselves would not be reliable. |
 | Formal circuit semantics and specification | Define what “correct” means: equality of the modeled quantum channels. | The development could prove preservation of an unintended model. |
-| `SuperOpt` search, synthesis-table cache, and other proposal accelerators | Untrusted optimization hints; each proposed rewrite is checked by the proved path before use. | At most a missed optimization or slower run, not an unsound rewrite. |
 | OpenQASM output boundary | `serializeChecked` reparses emitted text and refuses to write it unless it reconstructs the optimized circuit. | A failed check stops output rather than emitting a changed circuit. |
 | Lean compiler and runtime | Execute the proved definitions and IO shell. | Outside the logic’s proof guarantee, as for any compiled verification artifact. |
